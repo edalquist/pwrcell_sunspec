@@ -65,26 +65,28 @@ try:
 
     # TODO is there any way to do these in parallel?
     # TODO handle sunspec2.modbus.modbus.ModbusClientException from any of these
-    inverter.REbus_status[0].read()
+    inverter.inverter[0].read()
     inverter.REbus_exp[0].read()
-    battery.REbus_status[0].read()
+    battery.battery[0].read()
     for pv_link in pv_links:
       pv_link.REbus_status[0].read()
 
-    inverter_output = inverter.REbus_status[0].P.get_value()
+    inverter_output = inverter.inverter[0].W.get_value()
     grid_flow = inverter.REbus_exp[0].Px1.get_value() + inverter.REbus_exp[0].Px2.get_value()
-    house_flow = grid_flow - inverter_output
-    battery_flow = battery.REbus_status[0].P.get_value()
+    house_use = abs(grid_flow - inverter_output)
+    battery_flow = battery.battery[0].W.get_value()
+    battery_soc = battery.battery[0].SoC.get_value() / 10
     pvlink_output = 0
     for pv_link in pv_links:
       pvlink_output += pv_link.REbus_status[0].P.get_value()
     pvlink_output /= 10
 
-    print("\t   Solar Output {:,}KW DC".format(pvlink_output))
-    print("\t   Battery Flow {:,}KW DC".format(battery_flow))
-    print("\tInverter Output {:,}KW AC".format(inverter_output))
-    print("\t      Grid Flow {:,}KW AC".format(grid_flow))
-    print("\t     House Flow {:,}KW AC".format(house_flow))
+    print("\t   Solar Output\t{:,}W DC".format(pvlink_output))
+    print("\t   Battery Flow\t{:,}W DC".format(battery_flow))
+    print("\t    Battery SoC\t{:,}%".format(battery_soc))
+    print("\tInverter Output\t{:,}W AC".format(inverter_output))
+    print("\t      Grid Flow\t{:,}W AC".format(grid_flow))
+    print("\t      House Use\t{:,}W AC".format(house_use))
     time.sleep(3)
   
 except KeyboardInterrupt as e:
