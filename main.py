@@ -50,14 +50,14 @@ try:
     for t in range(3):
       try:
         d.scan()
-        print('{}: Scanned {}'.format(datetime.datetime.now(), d.common[0].Md.get_value()))
+        print('{}: Scanned {}'.format(datetime.datetime.now(), d.common[0].Md.value))
         break
       except sunspec2.modbus.modbus.ModbusClientException as e:
         print('retry: {}'.format(e))
 
 
   # Gets JSON Model Data, useful for reading enums?
-  # model_def = device.get_model_def(inverter.REbus_status[0].ID.get_value())
+  # model_def = device.get_model_def(inverter.REbus_status[0].ID.value)
   # print(model_def)
 
   while True:
@@ -65,20 +65,24 @@ try:
 
     # TODO is there any way to do these in parallel?
     # TODO handle sunspec2.modbus.modbus.ModbusClientException from any of these
-    inverter.inverter[0].read()
-    inverter.REbus_exp[0].read()
-    battery.battery[0].read()
-    for pv_link in pv_links:
-      pv_link.REbus_status[0].read()
+    try:
+      inverter.inverter[0].read()
+      inverter.REbus_exp[0].read()
+      battery.battery[0].read()
+      for pv_link in pv_links:
+        pv_link.REbus_status[0].read()
+    except sunspec2.modbus.modbus.ModbusClientException as e:
+      print('read error: {}'.format(e))
+      continue
 
-    inverter_output = inverter.inverter[0].W.get_value()
-    grid_flow = inverter.REbus_exp[0].Px1.get_value() + inverter.REbus_exp[0].Px2.get_value()
+    inverter_output = inverter.inverter[0].W.value
+    grid_flow = inverter.REbus_exp[0].Px1.value + inverter.REbus_exp[0].Px2.value
     house_use = abs(grid_flow - inverter_output)
-    battery_flow = battery.battery[0].W.get_value()
-    battery_soc = battery.battery[0].SoC.get_value() / 10
+    battery_flow = battery.battery[0].W.value
+    battery_soc = battery.battery[0].SoC.value / 10
     pvlink_output = 0
     for pv_link in pv_links:
-      pvlink_output += pv_link.REbus_status[0].P.get_value()
+      pvlink_output += pv_link.REbus_status[0].P.value
     pvlink_output /= 10
 
     print("\t   Solar Output\t{:,}W DC".format(pvlink_output))
@@ -95,6 +99,3 @@ finally:
   print('{}: Closing'.format(datetime.datetime.now()))
   for d in devices:
     d.close()
-
-# battery.SoCRsvMin
-# battery.SoC
