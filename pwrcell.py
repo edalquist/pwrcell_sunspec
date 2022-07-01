@@ -28,7 +28,7 @@ class GeneracPwrCell():
       self.__battery = self.__init_device('battery', device_config['battery'])
 
     self.__executor = concurrent.futures.ThreadPoolExecutor(
-        thread_name_prefix='ModBusPool', max_workers=len(self.__devices) * 2)
+        thread_name_prefix='ModBusPool', max_workers=len(self.__devices))
 
   def __init_device(self, name: str, device_id: int):
     if name in self.__devices:
@@ -44,7 +44,9 @@ class GeneracPwrCell():
     self.__devices[name] = device
     return device
 
-  def __connect_device(self, device: ss2_client.SunSpecModbusClientDeviceTCP, tries=3):
+  def __connect_device(self, device: ss2_client.SunSpecModbusClientDeviceTCP, tries=3, reconnect=False):
+    if not reconnect and device.is_connected():
+      return
     for t in range(tries):
       try:
         device.connect()
@@ -54,9 +56,11 @@ class GeneracPwrCell():
         logging.warning("Error connecting %s on try %s: %s", device.name, t, e)
 
   def __scan_device(self, device: ss2_client.SunSpecModbusClientDeviceTCP, tries=3):
+    # Ensure device is connected before scanning
+    self.__connect_device(device, tries=tries)
     for t in range(tries):
       try:
-        # Assume already connected and don't read all model data (it is slow)
+        # Don't read all model data (it is slow)
         device.scan(connect=False, full_model_read=False)
         device.common[0].read()
         logging.info("Scanned %s as %s %s - %s",
@@ -69,20 +73,13 @@ class GeneracPwrCell():
         logging.warning("Error scanning %s on try %s: %s", device.name, t, e)
 
   def init(self):
-    conncect_futures = {self.__executor.submit(
-        self.__connect_device, device): device for device in self.__devices.values()}
-    scan_futures = {}
-    for future in concurrent.futures.as_completed(conncect_futures):
-      device = conncect_futures[future]
-      try:
-        future.result()
-        scan_futures[self.__executor.submit(
-            self.__scan_device, device)] = device
-      except Exception as exc:
-        logging.error("Failed to connect %s: %s", device.name, exc)
+    futures_to_devices = {}
+    for device in self.__devices.values():
+      scan_future = self.__executor.submit(self.__scan_device, device)
+      futures_to_devices[scan_future] = device
 
-    for future in concurrent.futures.as_completed(scan_futures):
-      device = scan_futures[future]
+    for future in concurrent.futures.as_completed(futures_to_devices):
+      device = futures_to_devices[future]
       try:
         future.result()
       except Exception as exc:
