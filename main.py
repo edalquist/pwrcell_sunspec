@@ -15,7 +15,7 @@ def main():
   }
   gpc = pwrcell.GeneracPwrCell(device_config, ipport=5020, timeout=60)
   try:
-    gpc.scan()
+    gpc.init()
   finally:
     gpc.close()
 
