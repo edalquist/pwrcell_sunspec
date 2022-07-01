@@ -4,7 +4,7 @@ import logging
 
 
 def main():
-  FORMAT = '%(asctime)s %(message)s'
+  FORMAT = '%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s'
   logging.basicConfig(format=FORMAT, level=logging.DEBUG)
 
   device_config = {

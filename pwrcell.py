@@ -52,12 +52,18 @@ class GeneracPwrCell():
                      device.common[0].SN.get_value())
         break
       except mb.ModbusClientException as e:
-        logging.warning("Error scanning %s on try %s: %s", name, t, e)
+        logging.warning("Error scanning %s on try %s: %s", device.name, t, e)
 
   def scan(self):
-    for device in self.__devices.values():
-      self.__scan_device(device)
-      # TODO make parallel https://docs.python.org/3/library/concurrent.futures.html
+    with concurrent.futures.ThreadPoolExecutor(thread_name_prefix='ScanPool', max_workers=len(self.__devices)) as executor:
+      future_to_device = {executor.submit(
+          self.__scan_device, device): device for device in self.__devices.values()}
+      for future in concurrent.futures.as_completed(future_to_device):
+        device = future_to_device[future]
+        try:
+          future.result()
+        except Exception as exc:
+          logging.error("Failed to scan %s: %s", device.name, exc)
 
   def close(self):
     logging.debug("Closing all devices")
