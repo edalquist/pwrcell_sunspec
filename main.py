@@ -1,21 +1,23 @@
+import logging
 import pwrcell
 import sys
-import logging
+import time
 
 
 def main():
   FORMAT = '%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s'
   logging.basicConfig(format=FORMAT, level=logging.DEBUG)
 
-  device_config = {
-      'rebus_beacon': 1,
-      'inverter': 8,
-      'pv_links': [3, 4, 5, 6, 7],
-      'battery': 9
-  }
+  device_config = pwrcell.Config(
+      rebus_beacon=1, inverter=8, battery=9, pv_links=[3, 4, 5, 6, 7])
   gpc = pwrcell.GeneracPwrCell(device_config, ipport=5020, timeout=60)
   try:
     gpc.init()
+    while True:
+      gpc.read()
+      time.sleep(3)
+  except KeyboardInterrupt as e:
+    logging.info("Closing: %s", e)
   finally:
     gpc.close()
 
