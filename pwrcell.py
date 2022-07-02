@@ -16,10 +16,9 @@ class Config:
 
 
 class GeneracPwrCell():
-  def __init__(self, device_config: Config, ipaddr='127.0.0.1', ipport=502, timeout=None):
-    # TODO make this configurable
-    device.set_model_defs_path(
-        ['/Users/edalquist/personal/pwrcell/pika/sunspec-models'] + device.get_model_defs_path())
+  def __init__(self, device_config: Config, ipaddr='127.0.0.1', ipport=502, timeout=None, extra_model_defs: list[str] = []):
+    # Configure additional model def locations
+    device.set_model_defs_path(extra_model_defs + device.get_model_defs_path())
 
     self.__devices = {}
     self.__ipaddr = ipaddr
