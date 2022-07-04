@@ -59,7 +59,6 @@ try:
   # Gets JSON Model Data, useful for reading enums?
   # model_def = device.get_model_def(inverter.REbus_status[0].ID.value)
   # print(model_def)
-
   while True:
     print('{}: Updating Data'.format(datetime.datetime.now()))
 

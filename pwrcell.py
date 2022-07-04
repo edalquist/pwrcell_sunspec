@@ -1,18 +1,22 @@
 import concurrent.futures
 import dataclasses
 import datetime
+from email.policy import default
 import logging
+from typing import overload
 import sunspec2.device as device
 import sunspec2.modbus.client as ss2_client
 import sunspec2.modbus.modbus as mb
+import traceback
+import time
 
 
 @dataclasses.dataclass
 class Config:
   rebus_beacon: int
   inverter: int
-  battery: int
   pv_links: list[int]
+  battery: int = -1
 
 
 class GeneracPwrCell():
@@ -37,7 +41,7 @@ class GeneracPwrCell():
       self.__pv_links[pv_link_name] = self.__init_device(
           pv_link_name, pv_link_id)
 
-    if device_config.battery is not None:
+    if device_config.battery > 0:
       self.__battery = self.__init_device('battery', device_config.battery)
 
     self.__executor = concurrent.futures.ThreadPoolExecutor(
@@ -46,8 +50,8 @@ class GeneracPwrCell():
   def __init_device(self, name: str, device_id: int):
     if name in self.__devices:
       raise ValueError("Device {} is already configured".format(name))
-    if device_id is None:
-      raise ValueError("{} id must be set".format(name))
+    if device_id is None or device_id <= 0:
+      raise ValueError("{} id must be set to a positive int".format(name))
 
     device = ss2_client.SunSpecModbusClientDeviceTCP(
         slave_id=device_id, ipaddr=self.__ipaddr, ipport=self.__ipport, timeout=self.__iptimeout)
@@ -87,48 +91,74 @@ class GeneracPwrCell():
         self.__connect_device(device, tries=tries, reconnect=True)
 
   def init(self):
+    # Kick off scans of all devices
     futures_to_devices = {}
     for device in self.__devices.values():
       scan_future = self.__executor.submit(self.__scan_device, device)
       futures_to_devices[scan_future] = device
 
+    # Wait for all the scans to complete
     for future in concurrent.futures.as_completed(futures_to_devices):
       device = futures_to_devices[future]
       try:
         future.result()
       except Exception as exc:
+        # TODO fail hard here?
         logging.error("Failed to scan %s: %s", device.name, exc)
 
-  def __read_models(self, device: ss2_client.SunSpecModbusClientDeviceTCP, models: list[list[ss2_client.SunSpecModbusClientModel]], tries=3):
+    # Configure the points to poll data for
+    self.__watched_points_by_device = {}
+    self.__watch_points([
+        self.__rebus_beacon.REbus_dir[0].SysMd,
+        self.__inverter.inverter[0].W,
+        self.__inverter.REbus_exp[0].Px1,
+        self.__inverter.REbus_exp[0].Px2,
+        self.__battery.battery[0].W,
+        self.__battery.battery[0].SoC,
+    ])
+    for pv_link in self.__pv_links.values():
+      self.__watch_points([pv_link.string_combiner[0].DCW,
+                          pv_link.string_combiner[0].DCWh])
+
+  def __watch_point(self, point: ss2_client.SunSpecModbusClientPoint):
+    device = point.model.device
+    points = self.__watched_points_by_device.setdefault(device, set())
+    points.add(point)
+
+  def __watch_points(self, points: list[ss2_client.SunSpecModbusClientPoint]):
+    for point in points:
+      self.__watch_point(point)
+
+  @property
+  def system_mode(self):
+    # TODO this is an enum
+    return self.__rebus_beacon.REbus_dir[0].SysMd.value
+
+  def __read_points(self, device: ss2_client.SunSpecModbusClientDeviceTCP, points: set[ss2_client.SunSpecModbusClientPoint], tries=3):
     self.__connect_device(device, tries=tries)
-    for model in models:
+    for point in points:
       for t in range(tries):
         try:
-          model[0].read()
-          # TODO how to get model group name instead of number?
-          logging.debug("Read %s on %s", model[0].model_id, device.name)
+          point.read()
+          logging.debug("Read %s on %s: %s",
+                        point.pdef['name'], device.name, point.value)
           break
         except Exception as e:
           logging.warning("Error reading %s on try %s: %s", device.name, t, e)
           self.__connect_device(device, tries=tries, reconnect=True)
 
-  def __do_read_models(self, device: ss2_client.SunSpecModbusClientDeviceTCP, models: list[list[ss2_client.SunSpecModbusClientModel]], tries=3):
-    return self.__executor.submit(self.__read_models, device, models, tries=tries)
+  def __do_read_points(self, device: ss2_client.SunSpecModbusClientDeviceTCP, points: set[ss2_client.SunSpecModbusClientPoint], tries=3):
+    return self.__executor.submit(self.__read_points, device, points, tries=tries)
 
   def read(self):
-    logging.info("POLLING")
+
+    start = time.time()
+    logging.info("POLLING POINTS")
     futures_to_devices = {}
 
-    # Hard coded list of models we care about data from
-    futures_to_devices[self.__do_read_models(self.__rebus_beacon, [
-        self.__rebus_beacon.REbus_dir])] = self.__rebus_beacon
-    futures_to_devices[self.__do_read_models(self.__inverter, [
-        self.__inverter.inverter, self.__inverter.REbus_exp])] = self.__inverter
-    futures_to_devices[self.__do_read_models(self.__battery, [
-        self.__battery.battery])] = self.__battery
-    for pv_link in self.__pv_links.values():
-      futures_to_devices[self.__do_read_models(pv_link, [
-          pv_link.string_combiner])] = pv_link
+    # Kick off reads for all watched devices/models
+    for device, points in self.__watched_points_by_device.items():
+      futures_to_devices[self.__do_read_points(device, points)] = device
 
     for future in concurrent.futures.as_completed(futures_to_devices):
       device = futures_to_devices[future]
@@ -136,6 +166,8 @@ class GeneracPwrCell():
         future.result()
       except Exception as exc:
         logging.error("Failed to read %s: %s", device.name, exc)
+
+    logging.info("POLLED POINTS IN %fms", (time.time() - start) * 1000)
 
   def close(self):
     logging.debug("Closing all devices")

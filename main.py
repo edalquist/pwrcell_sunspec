@@ -17,9 +17,14 @@ def main():
     zf.extractall(tempdir)
 
     device_config = pwrcell.Config(
-        rebus_beacon=1, inverter=8, battery=9, pv_links=[3, 4, 5, 6, 7])
+        rebus_beacon=1,
+        inverter=8,
+        battery=9,
+        # pv_links=[3, 4, 5, 6, 7],
+        pv_links=[3]
+    )
     gpc = pwrcell.GeneracPwrCell(
-        device_config, ipport=5020, timeout=60, extra_model_defs=[os.path.join(tempdir, "sunspec-models")])
+        device_config, ipaddr='192.168.0.25', ipport=5020, timeout=60, extra_model_defs=[os.path.join(tempdir, "sunspec-models")])
     try:
       gpc.init()
       while True:
