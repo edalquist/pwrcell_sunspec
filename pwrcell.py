@@ -106,30 +106,69 @@ class GeneracPwrCell():
         # TODO fail hard here?
         logging.error("Failed to scan %s: %s", device.name, exc)
 
-    # Configure the points to poll data for
+    # Configure the points to poll data for and bind them to properties on the GeneracPwrCell class
     self.__watched_points_by_device = {}
-    self.__watch_points([
-        self.__rebus_beacon.REbus_dir[0].SysMd,
-        self.__inverter.inverter[0].W,
-        self.__inverter.REbus_exp[0].Px1,
-        self.__inverter.REbus_exp[0].Px2,
-        self.__battery.battery[0].W,
-        self.__battery.battery[0].SoC,
-    ])
+    self.__watch_points({
+        self.__rebus_beacon.REbus_dir[0].SysMd: 'system_mode',
+        self.__inverter.inverter[0].W: 'inverter_output_watts',
+        self.__inverter.inverter[0].WH: 'inverter_output_watt_hours',
+        self.__inverter.REbus_exp[0].Px1: 'grid_export_phase_a',
+        self.__inverter.REbus_exp[0].Px2: 'grid_export_phase_b',
+        self.__inverter.REbus_exp[0].Whx: 'grid_export_watt_hours',
+        self.__inverter.REbus_exp[0].Whin: 'grid_import_watt_hours',
+        self.__battery.battery[0].W: 'battery_watts',
+        self.__battery.battery[0].SoC: 'battery_state_of_charge',
+        self.__battery.battery[0].SoCMax: 'battery_state_of_charge_max',
+        self.__battery.battery[0].SoCMin: 'battery_state_of_charge_min',
+        self.__battery.battery[0].SoCRsvMax: 'battery_state_of_charge_reserve_max',
+        self.__battery.battery[0].SoCRsvMin: 'battery_state_of_charge_reserve_min',
+        self.__battery.battery_status[0].WhIn: 'battery_in_watt_hours',
+        self.__battery.battery_status[0].WhOut: 'battery_out_watt_hours',
+    })
     for pv_link in self.__pv_links.values():
-      self.__watch_points([pv_link.string_combiner[0].DCW,
-                          pv_link.string_combiner[0].DCWh])
+      self.__watch_points({pv_link.string_combiner[0].DCW: '%s_watts' % pv_link.name,
+                          pv_link.string_combiner[0].DCWh: '%s_watt_hours' % pv_link.name})
 
-  def __watch_point(self, point: ss2_client.SunSpecModbusClientPoint):
+  def __watch_point(self, point: ss2_client.SunSpecModbusClientPoint, prop_name: str):
     device = point.model.device
     points = self.__watched_points_by_device.setdefault(device, set())
     points.add(point)
+    if point.pdef.get('access') == 'RW':
+      setattr(GeneracPwrCell, prop_name, property(
+          lambda self: self.__get_point_value(point),
+          lambda self, value: self.__set_point_value(point, value)))
+    else:
+      setattr(GeneracPwrCell, prop_name, property(
+          lambda self: self.__get_point_value(point)))
+    logging.debug("Bind %s.%s.%s to %s",
+                  device.name, point.model.gname, point.pdef['name'], prop_name)
 
-  def __watch_points(self, points: list[ss2_client.SunSpecModbusClientPoint]):
-    for point in points:
-      self.__watch_point(point)
+  def __watch_points(self, points: dict[ss2_client.SunSpecModbusClientPoint, str]):
+    for point, prop_name in points.items():
+      self.__watch_point(point, prop_name)
 
-  @property
+  def __get_point_value(self, point: ss2_client.SunSpecModbusClientPoint):
+    if point.pdef.get('type') == 'enum16' and 'symbols' in point.pdef:
+      symbols = {}
+      for symbol_dict in point.pdef['symbols']:
+        symbols[int(symbol_dict['value'])] = symbol_dict['name']
+      return symbols[point.value]
+    else:
+      return point.value
+
+  def __set_point_value(self, point: ss2_client.SunSpecModbusClientPoint, value):
+    if point.pdef.get('type') == 'enum16' and 'symbols' in point.pdef:
+      symbols = {}
+      for symbol_dict in point.pdef['symbols']:
+        symbols[symbol_dict['name']] = int(symbol_dict['value'])
+      value = symbols[value]
+    print("Write %s to %s" % (value, point.pdef['name']))
+    # TODO this needs to be in a retry block
+    # point.value = value
+    # point.write()
+    # point.read()
+
+  @ property
   def system_mode(self):
     # TODO this is an enum
     return self.__rebus_beacon.REbus_dir[0].SysMd.value
@@ -151,7 +190,6 @@ class GeneracPwrCell():
     return self.__executor.submit(self.__read_points, device, points, tries=tries)
 
   def read(self):
-
     start = time.time()
     logging.info("POLLING POINTS")
     futures_to_devices = {}

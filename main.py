@@ -29,6 +29,14 @@ def main():
       gpc.init()
       while True:
         gpc.read()
+        print(gpc.system_mode)
+        print(gpc.inverter_output_watt_hours)
+        print(gpc.grid_export_watt_hours)
+        print(gpc.grid_import_watt_hours)
+        print(gpc.battery_in_watt_hours)
+        print(gpc.battery_out_watt_hours)
+        print(gpc.pv_link_0_watt_hours)
+        # gpc.system_mode = 'CLEAN_BACKUP'
         time.sleep(3)
     except KeyboardInterrupt as e:
       logging.info("Closing: %s", e)
