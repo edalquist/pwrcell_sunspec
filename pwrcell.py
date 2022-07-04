@@ -1,14 +1,14 @@
+from email.policy import default
+from typing import overload
 import concurrent.futures
 import dataclasses
 import datetime
-from email.policy import default
 import logging
-from typing import overload
 import sunspec2.device as device
 import sunspec2.modbus.client as ss2_client
 import sunspec2.modbus.modbus as mb
-import traceback
 import time
+import traceback
 
 
 @dataclasses.dataclass
@@ -133,13 +133,14 @@ class GeneracPwrCell():
     device = point.model.device
     points = self.__watched_points_by_device.setdefault(device, set())
     points.add(point)
-    if point.pdef.get('access') == 'RW':
-      setattr(GeneracPwrCell, prop_name, property(
-          lambda self: self.__get_point_value(point),
-          lambda self, value: self.__set_point_value(point, value)))
-    else:
-      setattr(GeneracPwrCell, prop_name, property(
-          lambda self: self.__get_point_value(point)))
+    setattr(GeneracPwrCell, prop_name, property(lambda self: point))
+    # if point.pdef.get('access') == 'RW':
+    #   setattr(GeneracPwrCell, prop_name, property(
+    #       lambda self: self.__get_point_value(point),
+    #       lambda self, value: self.__set_point_value(point, value)))
+    # else:
+    #   setattr(GeneracPwrCell, prop_name, property(
+    #       lambda self: self.__get_point_value(point)))
     logging.debug("Bind %s.%s.%s to %s",
                   device.name, point.model.gname, point.pdef['name'], prop_name)
 
@@ -147,26 +148,27 @@ class GeneracPwrCell():
     for point, prop_name in points.items():
       self.__watch_point(point, prop_name)
 
-  def __get_point_value(self, point: ss2_client.SunSpecModbusClientPoint):
-    if point.pdef.get('type') == 'enum16' and 'symbols' in point.pdef:
-      symbols = {}
-      for symbol_dict in point.pdef['symbols']:
-        symbols[int(symbol_dict['value'])] = symbol_dict['name']
-      return symbols[point.value]
-    else:
-      return point.value
+  # def __get_point_value(self, point: ss2_client.SunSpecModbusClientPoint):
+  #   if point.pdef.get('type') == 'enum16' and 'symbols' in point.pdef:
+  #     symbols = {}
+  #     for symbol_dict in point.pdef['symbols']:
+  #       symbols[int(symbol_dict['value'])] = symbol_dict['name']
+  #     return symbols[point.value]
+  #   else:
+  #     return point.value
 
-  def __set_point_value(self, point: ss2_client.SunSpecModbusClientPoint, value):
-    if point.pdef.get('type') == 'enum16' and 'symbols' in point.pdef:
-      symbols = {}
-      for symbol_dict in point.pdef['symbols']:
-        symbols[symbol_dict['name']] = int(symbol_dict['value'])
-      value = symbols[value]
-    print("Write %s to %s" % (value, point.pdef['name']))
-    # TODO this needs to be in a retry block
-    # point.value = value
-    # point.write()
-    # point.read()
+  # # TODO not sure I like this approach, it prevents use of "real" enums and the like
+  # def __set_point_value(self, point: ss2_client.SunSpecModbusClientPoint, value):
+  #   if point.pdef.get('type') == 'enum16' and 'symbols' in point.pdef:
+  #     symbols = {}
+  #     for symbol_dict in point.pdef['symbols']:
+  #       symbols[symbol_dict['name']] = int(symbol_dict['value'])
+  #     value = symbols[value]
+  #   print("Write %s to %s" % (value, point.pdef['name']))
+  #   # TODO this needs to be in a retry block
+  #   # point.value = value
+  #   # point.write()
+  #   # point.read()
 
   @ property
   def system_mode(self):
