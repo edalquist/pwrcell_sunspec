@@ -116,18 +116,25 @@ class GeneracPwrCell():
         self.__inverter.REbus_exp[0].Px2: 'grid_export_phase_b',
         self.__inverter.REbus_exp[0].Whx: 'grid_export_watt_hours',
         self.__inverter.REbus_exp[0].Whin: 'grid_import_watt_hours',
-        self.__battery.battery[0].W: 'battery_watts',
-        self.__battery.battery[0].SoC: 'battery_state_of_charge',
-        self.__battery.battery[0].SoCMax: 'battery_state_of_charge_max',
-        self.__battery.battery[0].SoCMin: 'battery_state_of_charge_min',
-        self.__battery.battery[0].SoCRsvMax: 'battery_state_of_charge_reserve_max',
-        self.__battery.battery[0].SoCRsvMin: 'battery_state_of_charge_reserve_min',
-        self.__battery.battery_status[0].WhIn: 'battery_in_watt_hours',
-        self.__battery.battery_status[0].WhOut: 'battery_out_watt_hours',
     })
+    if self.__battery:
+      self.__watch_points({
+          self.__battery.battery[0].W: 'battery_watts',
+          self.__battery.battery[0].SoC: 'battery_state_of_charge',
+          self.__battery.battery[0].SoCMax: 'battery_state_of_charge_max',
+          self.__battery.battery[0].SoCMin: 'battery_state_of_charge_min',
+          self.__battery.battery[0].SoCRsvMax: 'battery_state_of_charge_reserve_max',
+          self.__battery.battery[0].SoCRsvMin: 'battery_state_of_charge_reserve_min',
+          self.__battery.battery_status[0].WhIn: 'battery_in_watt_hours',
+          self.__battery.battery_status[0].WhOut: 'battery_out_watt_hours',
+      })
     for pv_link in self.__pv_links.values():
       self.__watch_points({pv_link.string_combiner[0].DCW: '%s_watts' % pv_link.name,
                           pv_link.string_combiner[0].DCWh: '%s_watt_hours' % pv_link.name})
+
+  def watch_point(self, point: ss2_client.SunSpecModbusClientPoint):
+    # TODO watch point with callback
+    pass
 
   def __watch_point(self, point: ss2_client.SunSpecModbusClientPoint, prop_name: str):
     device = point.model.device
