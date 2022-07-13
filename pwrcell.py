@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from email.policy import default
 from typing import overload
 import concurrent.futures
@@ -24,25 +25,26 @@ class GeneracPwrCell():
     # Configure additional model def locations
     device.set_model_defs_path(extra_model_defs + device.get_model_defs_path())
 
+    self.__watched_points_by_device = {}
     self.__devices = {}
     self.__ipaddr = ipaddr
     self.__ipport = ipport
     self.__iptimeout = timeout
 
-    self.__rebus_beacon = self.__init_device(
+    self.rebus_beacon = self.__init_device(
         'rebus_beacon', device_config.rebus_beacon)
-    self.__inverter = self.__init_device('inverter', device_config.inverter)
+    self.inverter = self.__init_device('inverter', device_config.inverter)
 
     if len(device_config.pv_links) == 0:
       raise ValueError("pv_links array must be set and not empty")
-    self.__pv_links = {}
+    self.pv_links = {}
     for idx, pv_link_id in enumerate(device_config.pv_links):
       pv_link_name = 'pv_link_{}'.format(idx)
-      self.__pv_links[pv_link_name] = self.__init_device(
+      self.pv_links[pv_link_name] = self.__init_device(
           pv_link_name, pv_link_id)
 
     if device_config.battery > 0:
-      self.__battery = self.__init_device('battery', device_config.battery)
+      self.battery = self.__init_device('battery', device_config.battery)
 
     self.__executor = concurrent.futures.ThreadPoolExecutor(
         thread_name_prefix='ModBusPool', max_workers=(len(self.__devices) * 2))
@@ -106,85 +108,26 @@ class GeneracPwrCell():
         # TODO fail hard here?
         logging.error("Failed to scan %s: %s", device.name, exc)
 
-    # Configure the points to poll data for and bind them to properties on the GeneracPwrCell class
-    self.__watched_points_by_device = {}
-    self.__watch_points({
-        self.__rebus_beacon.REbus_dir[0].SysMd: 'system_mode',
-        self.__inverter.inverter[0].W: 'inverter_output_watts',
-        self.__inverter.inverter[0].WH: 'inverter_output_watt_hours',
-        self.__inverter.REbus_exp[0].Px1: 'grid_export_phase_a',
-        self.__inverter.REbus_exp[0].Px2: 'grid_export_phase_b',
-        self.__inverter.REbus_exp[0].Whx: 'grid_export_watt_hours',
-        self.__inverter.REbus_exp[0].Whin: 'grid_import_watt_hours',
-    })
-    if self.__battery:
-      self.__watch_points({
-          self.__battery.battery[0].W: 'battery_watts',
-          self.__battery.battery[0].SoC: 'battery_state_of_charge',
-          self.__battery.battery[0].SoCMax: 'battery_state_of_charge_max',
-          self.__battery.battery[0].SoCMin: 'battery_state_of_charge_min',
-          self.__battery.battery[0].SoCRsvMax: 'battery_state_of_charge_reserve_max',
-          self.__battery.battery[0].SoCRsvMin: 'battery_state_of_charge_reserve_min',
-          self.__battery.battery_status[0].WhIn: 'battery_in_watt_hours',
-          self.__battery.battery_status[0].WhOut: 'battery_out_watt_hours',
-      })
-    for pv_link in self.__pv_links.values():
-      self.__watch_points({pv_link.string_combiner[0].DCW: '%s_watts' % pv_link.name,
-                          pv_link.string_combiner[0].DCWh: '%s_watt_hours' % pv_link.name})
-
-  def watch_point(self, point: ss2_client.SunSpecModbusClientPoint):
-    # TODO watch point with callback
-    pass
-
-  def __watch_point(self, point: ss2_client.SunSpecModbusClientPoint, prop_name: str):
+  def watch_point(self, point: ss2_client.SunSpecModbusClientPoint, callback: Callable[[ss2_client.SunSpecModbusClientPoint], None]):
     device = point.model.device
-    points = self.__watched_points_by_device.setdefault(device, set())
-    points.add(point)
-    setattr(GeneracPwrCell, prop_name, property(lambda self: point))
-    # if point.pdef.get('access') == 'RW':
-    #   setattr(GeneracPwrCell, prop_name, property(
-    #       lambda self: self.__get_point_value(point),
-    #       lambda self, value: self.__set_point_value(point, value)))
-    # else:
-    #   setattr(GeneracPwrCell, prop_name, property(
-    #       lambda self: self.__get_point_value(point)))
+    points = self.__watched_points_by_device.setdefault(device, dict())
+    points[point] = callback
+    # setattr(GeneracPwrCell, prop_name, property(lambda self: point))
     logging.debug("Bind %s.%s.%s to %s",
-                  device.name, point.model.gname, point.pdef['name'], prop_name)
+                  device.name, point.model.gname, point.pdef['name'], callback)
 
-  def __watch_points(self, points: dict[ss2_client.SunSpecModbusClientPoint, str]):
-    for point, prop_name in points.items():
-      self.__watch_point(point, prop_name)
+  def watch_points(self, points: dict[ss2_client.SunSpecModbusClientPoint, Callable[[ss2_client.SunSpecModbusClientPoint], None]]):
+    for point, callback in points.items():
+      self.watch_point(point, callback)
 
-  # def __get_point_value(self, point: ss2_client.SunSpecModbusClientPoint):
-  #   if point.pdef.get('type') == 'enum16' and 'symbols' in point.pdef:
-  #     symbols = {}
-  #     for symbol_dict in point.pdef['symbols']:
-  #       symbols[int(symbol_dict['value'])] = symbol_dict['name']
-  #     return symbols[point.value]
-  #   else:
-  #     return point.value
+  # @ property
+  # def system_mode(self):
+  #   # TODO this is an enum
+  #   return self.rebus_beacon.REbus_dir[0].SysMd.value
 
-  # # TODO not sure I like this approach, it prevents use of "real" enums and the like
-  # def __set_point_value(self, point: ss2_client.SunSpecModbusClientPoint, value):
-  #   if point.pdef.get('type') == 'enum16' and 'symbols' in point.pdef:
-  #     symbols = {}
-  #     for symbol_dict in point.pdef['symbols']:
-  #       symbols[symbol_dict['name']] = int(symbol_dict['value'])
-  #     value = symbols[value]
-  #   print("Write %s to %s" % (value, point.pdef['name']))
-  #   # TODO this needs to be in a retry block
-  #   # point.value = value
-  #   # point.write()
-  #   # point.read()
-
-  @ property
-  def system_mode(self):
-    # TODO this is an enum
-    return self.__rebus_beacon.REbus_dir[0].SysMd.value
-
-  def __read_points(self, device: ss2_client.SunSpecModbusClientDeviceTCP, points: set[ss2_client.SunSpecModbusClientPoint], tries=3):
+  def __read_points(self, device: ss2_client.SunSpecModbusClientDeviceTCP, points: dict[ss2_client.SunSpecModbusClientPoint, Callable[[ss2_client.SunSpecModbusClientPoint]]], tries=3):
     self.__connect_device(device, tries=tries)
-    for point in points:
+    for point, callback in points.items():
       for t in range(tries):
         try:
           point.read()
@@ -194,8 +137,10 @@ class GeneracPwrCell():
         except Exception as e:
           logging.warning("Error reading %s on try %s: %s", device.name, t, e)
           self.__connect_device(device, tries=tries, reconnect=True)
+      # Execute read callback
+      callback(point)
 
-  def __do_read_points(self, device: ss2_client.SunSpecModbusClientDeviceTCP, points: set[ss2_client.SunSpecModbusClientPoint], tries=3):
+  def __do_read_points(self, device: ss2_client.SunSpecModbusClientDeviceTCP, points: dict[ss2_client.SunSpecModbusClientPoint, Callable[[ss2_client.SunSpecModbusClientPoint]]], tries=3):
     return self.__executor.submit(self.__read_points, device, points, tries=tries)
 
   def read(self):

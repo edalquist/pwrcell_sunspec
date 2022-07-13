@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import zipfile
+import sunspec2.modbus.client as ss2_client
 
 
 def on_connect(client, userdata, flags, rc):
@@ -22,6 +23,11 @@ def on_connect(client, userdata, flags, rc):
 def on_message(client, userdata, msg):
   # The callback for when a PUBLISH message is received from the server.
   print(msg.topic+" "+str(msg.payload))
+
+
+def on_read(point: ss2_client.SunSpecModbusClientPoint):
+  logging.debug("Callback: %s.%s.%s to %s",
+                point.model.device.name, point.model.gname, point.pdef['name'], point.value)
 
 
 def main():
@@ -39,7 +45,7 @@ def main():
 
   mqtt_client.username_pw_set(
       config['mqtt']['username'], config['mqtt']['password'])
-  mqtt_client.connect_async(config['mqtt']['host'], config['mqtt']['port'], 60)
+  # mqtt_client.connect_async(config['mqtt']['host'], config['mqtt']['port'], 60)
 
   with tempfile.TemporaryDirectory() as tempdir:
     logging.debug("Extracting sunspec models to %s", tempdir)
@@ -56,39 +62,17 @@ def main():
     gpc = pwrcell.GeneracPwrCell(
         device_config, ipaddr=config['pwrcell']['host'], ipport=config['pwrcell']['port'], timeout=60, extra_model_defs=[os.path.join(tempdir, "sunspec-models")])
     try:
-      mqtt_client.loop_start()
+      # mqtt_client.loop_start()
       gpc.init()
 
       pwrcell_ha = homeassistant.PwrCellHA(gpc, mqtt_client)
       pwrcell_ha.init()
 
-      # while True:
-      #   gpc.read()
-      #   pwrcell_ha.loop()
-
-      #   # print(gpc.system_mode.value)
-      #   # mqtt_client.publish('pwrcell/inverter/output_watt_hours',
-      #   #                     gpc.inverter_output_watt_hours.value)
-      #   # mqtt_client.publish('pwrcell/grid/export_watt_hours',
-      #   #                     gpc.grid_export_watt_hours.value)
-      #   # mqtt_client.publish('pwrcell/grid/import_watt_hours',
-      #   #                     gpc.grid_import_watt_hours.value)
-      #   # mqtt_client.publish('pwrcell/battery/input_watt_hours',
-      #   #                     gpc.battery_in_watt_hours.value)
-      #   # mqtt_client.publish('pwrcell/battery/output_watt_hours',
-      #   #                     gpc.battery_out_watt_hours.value)
-      #   # mqtt_client.publish('pwrcell/pv_link/0/output_watt_hours',
-      #   #                     gpc.pv_link_0_watt_hours.value)
-      #   # mqtt_client.publish('pwrcell/pv_link/1/output_watt_hours',
-      #   #                     gpc.pv_link_1_watt_hours.value)
-      #   # mqtt_client.publish('pwrcell/pv_link/2/output_watt_hours',
-      #   #                     gpc.pv_link_2_watt_hours.value)
-      #   # mqtt_client.publish('pwrcell/pv_link/3/output_watt_hours',
-      #   #                     gpc.pv_link_3_watt_hours.value)
-      #   # mqtt_client.publish('pwrcell/pv_link/4/output_watt_hours',
-      #   #                     gpc.pv_link_4_watt_hours.value)
-      #   # gpc.system_mode = 'CLEAN_BACKUP'
-      #   time.sleep(3)
+      while True:
+        start = time.time()
+        gpc.read()
+        pwrcell_ha.loop()
+        time.sleep(max(0, 3 - (time.time() - start)))
     except KeyboardInterrupt as e:
       logging.info("Closing: %s", e)
     finally:
