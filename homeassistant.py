@@ -6,8 +6,11 @@ import sunspec2.modbus.client as ss2_client
 
 
 class PwrCellHA():
-  def __init__(self, pwrcell: pwrcell.GeneracPwrCell, mqttc: mqtt.Client):
-    self.__ha_topic = "TEST/homeassistant"
+  def __init__(self, pwrcell: pwrcell.GeneracPwrCell, mqttc: mqtt.Client, testing: bool = False):
+    self.__ha_topic = "homeassistant"
+    if testing:
+      self.__ha_topic = "TEST/{}".format(self.__ha_topic)
+
     self.__pwrcell = pwrcell
     self.__mqttc = mqttc
 

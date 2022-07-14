@@ -1,4 +1,4 @@
-import json
+import yaml
 import logging
 import os
 import paho.mqtt.client as mqtt
@@ -35,8 +35,8 @@ def main():
   logging.basicConfig(format=FORMAT, level=logging.INFO)
 
   config = {}
-  with open(os.path.join(sys.path[0], "config.json")) as config_file:
-    config = json.load(config_file)
+  with open(os.path.join(sys.path[0], "config.yaml")) as config_file:
+    config = yaml.safe_load(config_file)
 
   mqtt_client = mqtt.Client(client_id='pwrcell')
   mqtt_client.enable_logger()
@@ -65,7 +65,8 @@ def main():
       # mqtt_client.loop_start()
       gpc.init()
 
-      pwrcell_ha = homeassistant.PwrCellHA(gpc, mqtt_client)
+      pwrcell_ha = homeassistant.PwrCellHA(
+          gpc, mqtt_client, testing=config.get('testing', default=False))
       pwrcell_ha.init()
 
       # while True:
