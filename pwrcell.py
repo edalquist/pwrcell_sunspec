@@ -139,7 +139,7 @@ class GeneracPwrCell():
 
   def read(self):
     start = time.time()
-    logging.info("POLLING POINTS")
+    logging.debug("POLLING POINTS")
     futures_to_devices = {}
 
     # Kick off reads for all watched devices/models
@@ -153,7 +153,7 @@ class GeneracPwrCell():
       except Exception as exc:
         logging.error("Failed to read %s: %s", device.name, exc)
 
-    logging.info("POLLED POINTS IN %fms", (time.time() - start) * 1000)
+    logging.debug("POLLED POINTS IN %fms", (time.time() - start) * 1000)
 
   def close(self):
     logging.info("Closing all devices")

@@ -45,7 +45,7 @@ def main():
 
   mqtt_client.username_pw_set(
       config['mqtt']['username'], config['mqtt']['password'])
-  # mqtt_client.connect_async(config['mqtt']['host'], config['mqtt']['port'], 60)
+  mqtt_client.connect_async(config['mqtt']['host'], config['mqtt']['port'], 60)
 
   with tempfile.TemporaryDirectory() as tempdir:
     logging.debug("Extracting sunspec models to %s", tempdir)
@@ -62,18 +62,20 @@ def main():
     gpc = pwrcell.GeneracPwrCell(
         device_config, ipaddr=config['pwrcell']['host'], ipport=config['pwrcell']['port'], timeout=60, extra_model_defs=[os.path.join(tempdir, "sunspec-models")])
     try:
-      # mqtt_client.loop_start()
+      mqtt_client.loop_start()
       gpc.init()
 
       pwrcell_ha = homeassistant.PwrCellHA(
-          gpc, mqtt_client, testing=config.get('testing', default=False))
+          gpc, mqtt_client, testing=config.get('testing', False))
       pwrcell_ha.init()
 
-      # while True:
-      #   start = time.time()
-      #   gpc.read()
-      #   pwrcell_ha.loop()
-      #   time.sleep(max(0, 3 - (time.time() - start)))
+      while True:
+        start = time.time()
+        gpc.read()
+        pwrcell_ha.loop()
+        sleep_time = max(0, config['poll_rate'] - (time.time() - start))
+        logging.debug("Sleep for {}s".format(sleep_time))
+        time.sleep(sleep_time)
     except KeyboardInterrupt as e:
       logging.info("Closing: %s", e)
     finally:
