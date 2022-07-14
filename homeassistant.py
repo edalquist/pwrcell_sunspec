@@ -56,23 +56,19 @@ class PwrCellHA():
     self.__define_number(
         self.__pwrcell.battery.battery[0].SoCMax,
         device_id='battery',
-        sensor_id='state_of_charge_max',
-        scale=.1)
+        sensor_id='state_of_charge_max')
     self.__define_number(
         self.__pwrcell.battery.battery[0].SoCMin,
         device_id='battery',
-        sensor_id='state_of_charge_min',
-        scale=.1)
+        sensor_id='state_of_charge_min')
     self.__define_number(
         self.__pwrcell.battery.battery[0].SoCRsvMax,
         device_id='battery',
-        sensor_id='state_of_charge_reserve_max',
-        scale=.1)
+        sensor_id='state_of_charge_reserve_max')
     self.__define_number(
         self.__pwrcell.battery.battery[0].SoCRsvMin,
         device_id='battery',
-        sensor_id='state_of_charge_reserve_min',
-        scale=.1)
+        sensor_id='state_of_charge_reserve_min')
     self.__define_sensor(
         self.__pwrcell.battery.battery_status[0].WhIn,
         device_id='battery',
@@ -99,9 +95,9 @@ class PwrCellHA():
     p_type = point.pdef['type']
     if p_type in ['enum16']:
       symbols = point.pdef.get('symbols')
-      return next(x for x in symbols if x['value'] == point.value)['name']
+      return next(x for x in symbols if x['value'] == point.cvalue)['name']
 
-    return point.value
+    return point.cvalue
 
   def __ha_to_point(self, point: ss2_client.SunSpecModbusClientPoint, payload):
     p_type = point.pdef['type']
@@ -115,7 +111,7 @@ class PwrCellHA():
 
   def __update_state(self, point: ss2_client.SunSpecModbusClientPoint, state_topic: str):
     p_value = self.__point_to_ha(point)
-    logging.debug("Publish {}: {}".format(state_topic, p_value))
+    logging.info("Publish {}: {}".format(state_topic, p_value))
     self.__mqttc.publish(state_topic, p_value)
 
   def __handle_command(self, point: ss2_client.SunSpecModbusClientPoint, command_topic: str, client, userdata, msg):
@@ -124,7 +120,7 @@ class PwrCellHA():
       new_value = self.__ha_to_point(point, payload)
       logging.info("Changing {} from {} to {}".format(
           pwrcell.point_to_str(point), point.value, new_value))
-      point.value = new_value
+      point.cvalue = new_value
       point.write()
       # Immediately re-read the value
       self.__pwrcell.read_point(point)
@@ -135,7 +131,7 @@ class PwrCellHA():
   def __publish_discovery(self, topic, payload):
     logging.info("Publishing HA entity on: %s", topic)
     logging.debug(payload)
-    self.__mqttc.publish(topic, payload)
+    self.__mqttc.publish(topic, payload)  # TODO, retain=True)
 
   def __define_sensor(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None):
     device = point.model.device
@@ -159,7 +155,7 @@ class PwrCellHA():
     self.__pwrcell.watch_point(
         point, (lambda p: self.__update_state(p, state_topic)))
 
-  def __define_number(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, scale: float = 1, min: float = 1, max: float = 100):
+  def __define_number(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, min: float = 1, max: float = 100):
     if point.pdef.get('access') != 'RW':
       raise ValueError(
           "Point must have 'access' set to 'RW' to be mutable: {}".format(point.pdef))
@@ -182,13 +178,12 @@ class PwrCellHA():
         "command_topic": command_topic,
         "expire_after": 14400,
         "min": min,
-        "max": max,
-        "step": scale
+        "max": max
     }, indent=2, sort_keys=True))
     self.__pwrcell.watch_point(
-        point, (lambda p: self.__update_state(p, state_topic)))  # TODO scale
+        point, (lambda p: self.__update_state(p, state_topic)))
     self.__mqttc.subscribe(command_topic)
-    self.__mqttc.message_callback_add(  # TODO scale
+    self.__mqttc.message_callback_add(
         command_topic, lambda client, userdata, msg: self.__handle_command(point, command_topic, client, userdata, msg))
 
   def __define_select(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None):

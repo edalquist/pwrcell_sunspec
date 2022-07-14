@@ -117,7 +117,14 @@ class GeneracPwrCell():
     device = point.model.device
     points = self.__watched_points_by_device.setdefault(device, dict())
     points[point] = callback
-    logging.debug("Bind %s to %s", point_to_str(point), callback)
+    # If the point has a scale-factor point read it's value to ensure it gets used?
+    if point.sf is not None:
+      sf_point = point.model.points[point.sf]
+      sf_point.read()  # TODO retries
+      logging.info("Bind %s with scale factor %s=%s", point_to_str(
+          point), point_to_str(sf_point), sf_point.cvalue)
+    else:
+      logging.info("Bind %s with no scale factor", point_to_str(point))
 
   def watch_points(self, points: dict[ss2_client.SunSpecModbusClientPoint, Callable[[ss2_client.SunSpecModbusClientPoint], None]]):
     for point, callback in points.items():

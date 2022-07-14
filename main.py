@@ -57,7 +57,7 @@ def main():
         inverter=8,
         battery=9,
         # pv_links=[3, 4, 5, 6, 7],
-        pv_links=[3, 4],
+        pv_links=[3],
     )
     gpc = pwrcell.GeneracPwrCell(
         device_config, ipaddr=config['pwrcell']['host'], ipport=config['pwrcell']['port'], timeout=60, extra_model_defs=[os.path.join(tempdir, "sunspec-models")])
