@@ -32,7 +32,7 @@ def on_read(point: ss2_client.SunSpecModbusClientPoint):
 
 def main():
   FORMAT = '%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s'
-  logging.basicConfig(format=FORMAT, level=logging.DEBUG)
+  logging.basicConfig(format=FORMAT, level=logging.INFO)
 
   config = {}
   with open(os.path.join(sys.path[0], "config.json")) as config_file:
@@ -57,7 +57,7 @@ def main():
         inverter=8,
         battery=9,
         # pv_links=[3, 4, 5, 6, 7],
-        pv_links=[3],
+        pv_links=[3, 4],
     )
     gpc = pwrcell.GeneracPwrCell(
         device_config, ipaddr=config['pwrcell']['host'], ipport=config['pwrcell']['port'], timeout=60, extra_model_defs=[os.path.join(tempdir, "sunspec-models")])
@@ -68,11 +68,11 @@ def main():
       pwrcell_ha = homeassistant.PwrCellHA(gpc, mqtt_client)
       pwrcell_ha.init()
 
-      while True:
-        start = time.time()
-        gpc.read()
-        pwrcell_ha.loop()
-        time.sleep(max(0, 3 - (time.time() - start)))
+      # while True:
+      #   start = time.time()
+      #   gpc.read()
+      #   pwrcell_ha.loop()
+      #   time.sleep(max(0, 3 - (time.time() - start)))
     except KeyboardInterrupt as e:
       logging.info("Closing: %s", e)
     finally:

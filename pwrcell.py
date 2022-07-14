@@ -38,9 +38,9 @@ class GeneracPwrCell():
     if len(device_config.pv_links) == 0:
       raise ValueError("pv_links array must be set and not empty")
     self.pv_links = {}
-    for idx, pv_link_id in enumerate(device_config.pv_links):
-      pv_link_name = 'pv_link_{}'.format(idx)
-      self.pv_links[pv_link_name] = self.__init_device(
+    for pv_link_id in device_config.pv_links:
+      pv_link_name = 'pv_link_{}'.format(pv_link_id)
+      self.pv_links[pv_link_id] = self.__init_device(
           pv_link_name, pv_link_id)
 
     if device_config.battery > 0:
@@ -112,18 +112,12 @@ class GeneracPwrCell():
     device = point.model.device
     points = self.__watched_points_by_device.setdefault(device, dict())
     points[point] = callback
-    # setattr(GeneracPwrCell, prop_name, property(lambda self: point))
     logging.debug("Bind %s.%s.%s to %s",
                   device.name, point.model.gname, point.pdef['name'], callback)
 
   def watch_points(self, points: dict[ss2_client.SunSpecModbusClientPoint, Callable[[ss2_client.SunSpecModbusClientPoint], None]]):
     for point, callback in points.items():
       self.watch_point(point, callback)
-
-  # @ property
-  # def system_mode(self):
-  #   # TODO this is an enum
-  #   return self.rebus_beacon.REbus_dir[0].SysMd.value
 
   def __read_points(self, device: ss2_client.SunSpecModbusClientDeviceTCP, points: dict[ss2_client.SunSpecModbusClientPoint, Callable[[ss2_client.SunSpecModbusClientPoint]]], tries=3):
     self.__connect_device(device, tries=tries)
@@ -162,7 +156,7 @@ class GeneracPwrCell():
     logging.info("POLLED POINTS IN %fms", (time.time() - start) * 1000)
 
   def close(self):
-    logging.debug("Closing all devices")
+    logging.info("Closing all devices")
     for name, device in self.__devices.items():
       device.close()
       logging.debug('Closed %s', name)

@@ -34,7 +34,7 @@ try:
   sys_mode = beacon.REbus_dir[0].SysMd.value
   print("\t    System Mode\t{:,}".format(sys_mode))
 
-  beacon.REbus_dir[0].SysMd.value = 6
+  beacon.REbus_dir[0].SysMd.value = 3
   beacon.REbus_dir[0].write()
 
   beacon.REbus_dir[0].read()
