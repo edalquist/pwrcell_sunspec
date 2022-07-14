@@ -20,6 +20,11 @@ class Config:
   battery: int = -1
 
 
+def point_to_str(point: ss2_client.SunSpecModbusClientPoint):
+  device = point.model.device
+  return "{}.{}.{}".format(device.name, point.model.gname, point.pdef['name'])
+
+
 class GeneracPwrCell():
   def __init__(self, device_config: Config, ipaddr='127.0.0.1', ipport=502, timeout=None, extra_model_defs: list[str] = []):
     # Configure additional model def locations
@@ -112,8 +117,7 @@ class GeneracPwrCell():
     device = point.model.device
     points = self.__watched_points_by_device.setdefault(device, dict())
     points[point] = callback
-    logging.debug("Bind %s.%s.%s to %s",
-                  device.name, point.model.gname, point.pdef['name'], callback)
+    logging.debug("Bind %s to %s", point_to_str(point), callback)
 
   def watch_points(self, points: dict[ss2_client.SunSpecModbusClientPoint, Callable[[ss2_client.SunSpecModbusClientPoint], None]]):
     for point, callback in points.items():
@@ -125,8 +129,7 @@ class GeneracPwrCell():
       for t in range(tries):
         try:
           point.read()
-          logging.debug("Read %s on %s: %s",
-                        point.pdef['name'], device.name, point.value)
+          logging.debug("Read %s", point_to_str(point))
           break
         except Exception as e:
           logging.warning("Error reading %s on try %s: %s", device.name, t, e)
@@ -138,12 +141,21 @@ class GeneracPwrCell():
     return self.__executor.submit(self.__read_points, device, points, tries=tries)
 
   def read(self):
+    self.__read(self.__watched_points_by_device)
+
+  def read_point(self, point: ss2_client.SunSpecModbusClientPoint):
+    device = point.model.device
+    points = self.__watched_points_by_device[device]
+    callback = points[point]
+    self.__read({device: {point: callback}})
+
+  def __read(self, points: dict[ss2_client.SunSpecModbusClientDeviceTCP, dict[ss2_client.SunSpecModbusClientPoint, Callable[[ss2_client.SunSpecModbusClientPoint]]]]):
     start = time.time()
     logging.debug("POLLING POINTS")
     futures_to_devices = {}
 
     # Kick off reads for all watched devices/models
-    for device, points in self.__watched_points_by_device.items():
+    for device, points in points.items():
       futures_to_devices[self.__do_read_points(device, points)] = device
 
     for future in concurrent.futures.as_completed(futures_to_devices):

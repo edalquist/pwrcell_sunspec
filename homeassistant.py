@@ -105,36 +105,36 @@ class PwrCellHA():
 
   def __ha_to_point(self, point: ss2_client.SunSpecModbusClientPoint, payload):
     p_type = point.pdef['type']
-    print(payload)
+
+    # For enum types look up the value for the symbol
     if p_type in ['enum16']:
-      symbols = point.pdef.get('symbols')
-      try:
-        return next(x for x in symbols if x['name'] == payload)['value']
-      except StopIteration:
-        # TODO this should fail, but how?
-        return payload
+      symbols = point.pdef['symbols']
+      return next(x for x in symbols if x['name'] == payload)['value']
 
     return payload
 
   def __update_state(self, point: ss2_client.SunSpecModbusClientPoint, state_topic: str):
     p_value = self.__point_to_ha(point)
-    print("UPDATE:\t{}: {}".format(state_topic, p_value))
+    logging.debug("Publish {}: {}".format(state_topic, p_value))
     self.__mqttc.publish(state_topic, p_value)
 
   def __handle_command(self, point: ss2_client.SunSpecModbusClientPoint, command_topic: str, client, userdata, msg):
-    payload = msg.payload.decode('utf-8')
-    new_value = self.__ha_to_point(point, payload)
-    logging.info("Changing {} from {} to {}".format(
-        "FOO", point.value, new_value))
-    point.value = new_value
-    point.write()
-    # TODO how to immediately trigger a read/update here?
-    # Add new read(point) method which does a read + callback call on just that point
-    # self.__pwrcell.read(point)
+    try:
+      payload = msg.payload.decode('utf-8')
+      new_value = self.__ha_to_point(point, payload)
+      logging.info("Changing {} from {} to {}".format(
+          pwrcell.point_to_str(point), point.value, new_value))
+      point.value = new_value
+      point.write()
+      # Immediately re-read the value
+      self.__pwrcell.read_point(point)
+    except Exception:
+      logging.exception("Failed to handle command %s on %s for %s",
+                        msg.payload, command_topic, pwrcell.point_to_str(point))
 
   def __publish_discovery(self, topic, payload):
-    print(topic)
-    print(payload)
+    logging.info("Publishing HA entity on: %s", topic)
+    logging.debug(payload)
     self.__mqttc.publish(topic, payload)
 
   def __define_sensor(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None):
