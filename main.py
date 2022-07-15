@@ -38,7 +38,8 @@ def main():
   with open(os.path.join(sys.path[0], "config.yaml")) as config_file:
     config = yaml.safe_load(config_file)
 
-  mqtt_client = mqtt.Client(client_id='pwrcell')
+  mqtt_client = mqtt.Client(
+      client_id=config['mqtt']['client_name'] + ('_test' if config.get('testing', False) else ''))
   mqtt_client.enable_logger()
   mqtt_client.on_connect = on_connect
   mqtt_client.on_message = on_message
@@ -56,8 +57,8 @@ def main():
         rebus_beacon=1,
         inverter=8,
         battery=9,
-        pv_links=[3, 4, 5, 6, 7],
-        # pv_links=[3],
+        # pv_links=[3, 4, 5, 6, 7],
+        pv_links=[3],
     )
     gpc = pwrcell.GeneracPwrCell(
         device_config, ipaddr=config['pwrcell']['host'], ipport=config['pwrcell']['port'], timeout=60,

@@ -5,6 +5,7 @@ pwrcell:
   host: 192.168.0.2
   port: 5020
 mqtt:
+  client_name: pwrcell-ha
   host: homeassistant
   port: 1883
   username: mqtt-pwrcell

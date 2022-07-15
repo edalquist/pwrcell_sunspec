@@ -22,14 +22,6 @@ class PwrCellHA():
         sensor_id='system_mode')
 
     self.__define_sensor(
-        self.__pwrcell.inverter.REbus_exp[0].Whx,
-        device_id='pwrcell_inverter',
-        sensor_id='grid_export_watt_hours')
-    self.__define_sensor(
-        self.__pwrcell.inverter.REbus_exp[0].Whin,
-        device_id='pwrcell_inverter',
-        sensor_id='grid_import_watt_hours')
-    self.__define_sensor(
         self.__pwrcell.inverter.REbus_exp[0].Px1,
         device_id='pwrcell_inverter',
         sensor_id='grid_export_phase_a')
@@ -38,11 +30,15 @@ class PwrCellHA():
         device_id='pwrcell_inverter',
         sensor_id='grid_export_phase_b')
     self.__define_sensor(
-        self.__pwrcell.inverter.REbus_exp[0].Whx,
+        self.__pwrcell.inverter.inverter_status[0].CTPow,
+        device_id='pwrcell_inverter',
+        sensor_id='grid_export_total')
+    self.__define_sensor(
+        self.__pwrcell.inverter.inverter_status[0].WhOut,
         device_id='pwrcell_inverter',
         sensor_id='grid_export_watt_hours')
     self.__define_sensor(
-        self.__pwrcell.inverter.REbus_exp[0].Whin,
+        self.__pwrcell.inverter.inverter_status[0].WhIn,
         device_id='pwrcell_inverter',
         sensor_id='grid_import_watt_hours')
 
@@ -193,7 +189,7 @@ class PwrCellHA():
     logging.info("Binding %s to %s %s", config_topic,
                  pwrcell.point_id(point), pwrcell.point_sf_info(point))
     self.__mqttc.publish(config_topic, json.dumps(
-        entity_config, indent=2, sort_keys=True), retain=False)
+        entity_config, indent=2, sort_keys=True), retain=True)
 
   def __create_device(self, device: ss2_client.SunSpecModbusClientDevice, device_name: str):
     return {
