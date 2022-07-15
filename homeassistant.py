@@ -127,106 +127,93 @@ class PwrCellHA():
       logging.exception("Failed to handle command %s on %s for %s",
                         msg.payload, command_topic, pwrcell.point_id(point))
 
-  def __publish_discovery(self, point: ss2_client.SunSpecModbusClientPoint, topic, payload):
-    logging.info("Binding %s to %s %s", topic,
-                 pwrcell.point_id(point), pwrcell.point_sf_info(point))
-    self.__mqttc.publish(topic, payload)  # TODO, retain=True)
-
-  def __define_sensor(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None):
+  def __discovery_base(self, entity_type: str, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None):
     device = point.model.device
     device_name = device_name or device.common[0].Md.value
     if device_name_suffix is not None:
       device_name += device_name_suffix
-    state_topic = "{}/sensor/{}/{}/state".format(
-        self.__ha_topic, device_id, sensor_id)
-    config_topic = "{}/sensor/{}/{}/config".format(
-        self.__ha_topic, device_id, sensor_id)
-    payload = json.dumps({
+
+    state_topic = "{}/{}/{}/{}/state".format(
+        self.__ha_topic, entity_type, device_id, sensor_id)
+    config_topic = "{}/{}/{}/{}/config".format(
+        self.__ha_topic, entity_type, device_id, sensor_id)
+
+    return state_topic, config_topic, {
         "device": self.__create_device(device, device_name),
-        "name": "{}: {}".format(device_name, point.pdef['label']),
+        # TODO what is label is missing?
+        "name": "{}: {}".format(device_name, point.pdef[mdef.LABEL]),
         "unique_id": "{}_{}".format(device_id, sensor_id),
+        "state_topic": state_topic,
+    }
+
+  def __define_sensor(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None):
+    sensor_config = {
         "device_class": self.__device_class(point),
         "state_class": self.__state_class(point),
         "unit_of_measurement": self.__unit_of_measurement(point),
-        "state_topic": state_topic,
-        "expire_after": 14400
-    }, indent=2, sort_keys=True)
+    }
+    self.__publish_entity('sensor', sensor_config, point, device_id,
+                          sensor_id, device_name, device_name_suffix, has_command=False)
 
-    # Register watch/callback with pwrcell for point
-    self.__pwrcell.watch_point(
-        point, (lambda p: self.__update_state(p, state_topic)))
-    # Publish Discovery
-    self.__publish_discovery(point, config_topic, payload)
-
-  def __define_number(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, min: float = 1, max: float = 100):
-    if point.pdef.get('access') != 'RW':
-      raise ValueError(
-          "Point must have 'access' set to 'RW' to be mutable: {}".format(point.pdef))
-
-    device = point.model.device
-    device_name = device_name or device.common[0].Md.value
-    state_topic = "{}/number/{}/{}/state".format(
-        self.__ha_topic, device_id, sensor_id)
-    config_topic = "{}/number/{}/{}/config".format(
-        self.__ha_topic, device_id, sensor_id)
-    command_topic = "{}/number/{}/{}/command".format(
-        self.__ha_topic, device_id, sensor_id)
-    payload = json.dumps({
-        "device": self.__create_device(device, device_name),
-        "name": "{}: {}".format(device_name, point.pdef['label']),
-        "unique_id": "{}_{}".format(device_id, sensor_id),
+  def __define_number(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None, min: float = 1, max: float = 100):
+    sensor_config = {
         "device_class": self.__device_class(point),
         "unit_of_measurement": self.__unit_of_measurement(point),
-        "state_topic": state_topic,
-        "command_topic": command_topic,
-        "expire_after": 14400,
         "min": min,
-        "max": max
-    }, indent=2, sort_keys=True)
+        "max": max,
+    }
+    self.__publish_entity('number', sensor_config, point, device_id,
+                          sensor_id, device_name, device_name_suffix, has_command=True)
 
-    # Register watch/callback with pwrcell for point
-    self.__pwrcell.watch_point(
-        point, (lambda p: self.__update_state(p, state_topic)))
-    # Subscribe to command topic and register callback
-    self.__mqttc.subscribe(command_topic)
-    self.__mqttc.message_callback_add(
-        command_topic, lambda client, userdata, msg: self.__handle_command(point, command_topic, client, userdata, msg))
-    # Publish Discovery
-    self.__publish_discovery(point, config_topic, payload)
+  def __define_select(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None):
+    sensor_config = {
+        "options": self.__select_options(point),
+        "entity_category": 'config',
+    }
+    self.__publish_entity('select', sensor_config, point, device_id,
+                          sensor_id, device_name, device_name_suffix, has_command=True)
 
-  def __define_select(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None):
-    if point.pdef.get('access') != 'RW':
-      raise ValueError(
-          "Point must have 'access' set to 'RW' to be mutable: {}".format(point.pdef))
-
+  def __publish_entity(self, entity_type: str, entity_config: dict[str, str], point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None, has_command: bool = False):
     device = point.model.device
     device_name = device_name or device.common[0].Md.value
-    config_topic = "{}/select/{}/{}/config".format(
-        self.__ha_topic, device_id, sensor_id)
-    state_topic = "{}/select/{}/{}/state".format(
-        self.__ha_topic, device_id, sensor_id)
-    command_topic = "{}/select/{}/{}/command".format(
-        self.__ha_topic, device_id, sensor_id)
-    payload = json.dumps({
+    if device_name_suffix is not None:
+      device_name += device_name_suffix
+
+    config_topic = "{}/{}/{}/{}/config".format(
+        self.__ha_topic, entity_type, device_id, sensor_id)
+    state_topic = "{}/{}/{}/{}/state".format(
+        self.__ha_topic, entity_type, device_id, sensor_id)
+    entity_config = entity_config | {
         "device": self.__create_device(device, device_name),
-        "name": "{}: {}".format(device_name, point.pdef['label']),
+        # TODO what is label is missing?
+        "name": "{}: {}".format(device_name, point.pdef[mdef.LABEL]),
         "unique_id": "{}_{}".format(device_id, sensor_id),
-        "options": self.__select_options(point),
         "state_topic": state_topic,
-        "command_topic": command_topic,
-        "entity_category": 'config',
-        "expire_after": 14400
-    }, indent=2, sort_keys=True)
+        "expires_after": 14400,
+    }
+
+    if has_command:
+      if point.pdef.get(mdef.ACCESS) != mdef.ACCESS_RW:
+        raise ValueError(
+            "Point must have '{}' set to '{}' to be mutable: {}".format(mdef.ACCESS, mdef.ACCESS_RW, point.pdef))
+
+      command_topic = "{}/{}/{}/{}/command".format(
+          self.__ha_topic, entity_type, device_id, sensor_id)
+      entity_config['command_topic'] = command_topic
+      # Subscribe to command topic and register callback
+      self.__mqttc.subscribe(command_topic)
+      self.__mqttc.message_callback_add(
+          command_topic, lambda client, userdata, msg: self.__handle_command(point, command_topic, client, userdata, msg))
 
     # Register watch/callback with pwrcell for point
     self.__pwrcell.watch_point(
         point, (lambda p: self.__update_state(p, state_topic)))
-    # Subscribe to command topic and register callback
-    self.__mqttc.subscribe(command_topic)
-    self.__mqttc.message_callback_add(
-        command_topic, lambda client, userdata, msg: self.__handle_command(point, command_topic, client, userdata, msg))
+
     # Publish Discovery
-    self.__publish_discovery(point, config_topic, payload)
+    logging.info("Binding %s to %s %s", config_topic,
+                 pwrcell.point_id(point), pwrcell.point_sf_info(point))
+    self.__mqttc.publish(config_topic, json.dumps(
+        entity_config, indent=2, sort_keys=True), retain=False)
 
   def __device_class(self, point: ss2_client.SunSpecModbusClientPoint):
     p_type = point.pdef.get('type')
