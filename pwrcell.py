@@ -40,6 +40,21 @@ def is_enum(point: ss2_client.SunSpecModbusClientPoint):
   return p_type in [mdef.TYPE_ENUM16, mdef.TYPE_ENUM32]
 
 
+def is_acc(point: ss2_client.SunSpecModbusClientPoint):
+  p_type = point.pdef[mdef.TYPE]
+  return p_type in [mdef.TYPE_ACC16, mdef.TYPE_ACC32, mdef.TYPE_ACC64]
+
+
+def is_int(point: ss2_client.SunSpecModbusClientPoint):
+  p_type = point.pdef[mdef.TYPE]
+  return p_type in [mdef.TYPE_INT16, mdef.TYPE_INT32, mdef.TYPE_INT64]
+
+
+def is_uint(point: ss2_client.SunSpecModbusClientPoint):
+  p_type = point.pdef[mdef.TYPE]
+  return p_type in [mdef.TYPE_UINT16, mdef.TYPE_UINT32, mdef.TYPE_UINT64]
+
+
 class GeneracPwrCell():
   def __init__(self, device_config: Config, ipaddr='127.0.0.1', ipport=502, timeout=None, extra_model_defs: list[str] = []):
     # Configure additional model def locations
@@ -180,7 +195,8 @@ class GeneracPwrCell():
   def read_point(self, point: ss2_client.SunSpecModbusClientPoint):
     device = point.model.device
     points = self.__watched_points_by_device[device]
-    callback = points[point] # TODO better error message if being asked to read point with no callback
+    # TODO better error message if being asked to read point with no callback
+    callback = points[point]
     self.__read({device: {point: callback}})
 
   def __read(self, points: dict[ss2_client.SunSpecModbusClientDeviceTCP, dict[ss2_client.SunSpecModbusClientPoint, Callable[[ss2_client.SunSpecModbusClientPoint]]]]):

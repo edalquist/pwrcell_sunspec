@@ -215,41 +215,6 @@ class PwrCellHA():
     self.__mqttc.publish(config_topic, json.dumps(
         entity_config, indent=2, sort_keys=True), retain=False)
 
-  def __device_class(self, point: ss2_client.SunSpecModbusClientPoint):
-    p_type = point.pdef.get('type')
-    if p_type in ['acc16', 'acc32']:
-      return 'total_increasing'
-    elif p_type in ['int16', 'int32', 'uint16', 'uint32']:
-      return 'measurement'
-    else:
-      logging.error("DC UNKNOWN Type(%s)\n\t%s", p_type, point.pdef)
-
-  def __state_class(self, point: ss2_client.SunSpecModbusClientPoint):
-    p_type = point.pdef.get('type')
-    if p_type in ['int16', 'int32', 'uint16', 'uint32', 'acc16', 'acc32']:
-      p_units = point.pdef.get('units')
-      if p_units in ['W', 'Wh']:
-        return 'energy'
-      if p_units in ['%WHRtg']:
-        return 'battery'
-      else:
-        logging.error("SC UNKNOWN Units(%s) for Type(%s)\n\t%s",
-                      p_units, p_type, point.pdef)
-    else:
-      logging.error("SC UNKNOWN Type(%s)\n\t%s", p_type, point.pdef)
-
-  def __unit_of_measurement(self, point: ss2_client.SunSpecModbusClientPoint):
-    p_units = point.pdef.get('units')
-    if p_units in ['%WHRtg']:
-      return '%'
-    else:
-      return p_units
-
-  def __select_options(self, point: ss2_client.SunSpecModbusClientPoint):
-    symbols = point.pdef.get('symbols')
-    symbols = sorted(symbols, key=lambda s: s['value'])
-    return list(map(lambda s: s['name'], symbols))
-
   def __create_device(self, device: ss2_client.SunSpecModbusClientDevice, device_name: str):
     return {
         "name": device_name,
@@ -261,5 +226,43 @@ class PwrCellHA():
         ]
     }
 
+  def __device_class(self, point: ss2_client.SunSpecModbusClientPoint):
+    if pwrcell.is_acc(point):
+      return 'total_increasing'
+    elif pwrcell.is_int(point) or pwrcell.is_uint(point):
+      return 'measurement'
+    else:
+      logging.error("DC UNKNOWN Type(%s)\n\t%s",
+                    point.pdef[mdef.TYPE], point.pdef)
+
+  def __state_class(self, point: ss2_client.SunSpecModbusClientPoint):
+    if pwrcell.is_int(point) or pwrcell.is_uint(point) or pwrcell.is_acc(point):
+      p_units = point.pdef.get(mdef.UNITS)
+      if p_units in ['W', 'Wh']:
+        return 'energy'
+      if p_units in ['%WHRtg']:
+        return 'battery'
+      else:
+        logging.error("SC UNKNOWN Units(%s) for Type(%s)\n\t%s",
+                      p_units, point.pdef[mdef.TYPE], point.pdef)
+    else:
+      logging.error("SC UNKNOWN Type(%s)\n\t%s",
+                    point.pdef[mdef.TYPE], point.pdef)
+
+  def __unit_of_measurement(self, point: ss2_client.SunSpecModbusClientPoint):
+    p_units = point.pdef.get(mdef.UNITS)
+    if p_units in ['%WHRtg']:
+      return '%'
+    else:
+      return p_units
+
+  def __select_options(self, point: ss2_client.SunSpecModbusClientPoint):
+    symbols = point.pdef.get(mdef.SYMBOLS)
+    symbols = sorted(symbols, key=lambda s: s[mdef.VALUE])
+    return list(map(lambda symbol: symbol[mdef.NAME], symbols))
+
   def loop(self):
+    """
+    No-impl for now, may be used in future
+    """
     pass
