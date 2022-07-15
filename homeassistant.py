@@ -36,11 +36,13 @@ class PwrCellHA():
     self.__define_sensor(
         self.__pwrcell.inverter.inverter_status[0].WhOut,
         device_id='pwrcell_inverter',
-        sensor_id='grid_export_watt_hours')
+        sensor_id='grid_export_watt_hours',
+        state_class='total_increasing')
     self.__define_sensor(
         self.__pwrcell.inverter.inverter_status[0].WhIn,
         device_id='pwrcell_inverter',
-        sensor_id='grid_import_watt_hours')
+        sensor_id='grid_import_watt_hours',
+        state_class='total_increasing')
     self.__define_sensor(
         self.__pwrcell.inverter.inverter[0].W,
         device_id='pwrcell_inverter',
@@ -73,11 +75,13 @@ class PwrCellHA():
     self.__define_sensor(
         self.__pwrcell.battery.battery_status[0].WhIn,
         device_id='battery',
-        sensor_id='in_watt_hours')
+        sensor_id='in_watt_hours',
+        state_class='total_increasing')
     self.__define_sensor(
         self.__pwrcell.battery.battery_status[0].WhOut,
         device_id='battery',
-        sensor_id='out_watt_hours')
+        sensor_id='out_watt_hours',
+        state_class='total_increasing')
 
     for pv_link_id, pv_link in self.__pwrcell.pv_links.items():
       device_id = 'pv_link_{}'.format(pv_link_id)
@@ -127,10 +131,11 @@ class PwrCellHA():
       logging.exception("Failed to handle command %s on %s for %s",
                         msg.payload, command_topic, pwrcell.point_id(point))
 
-  def __define_sensor(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None):
+  def __define_sensor(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None, state_class: str = None):
+    print(point.pdef)
     sensor_config = {
         "device_class": self.__device_class(point),
-        "state_class": self.__state_class(point),
+        "state_class": self.__state_class(point) if state_class is None else state_class,
         "unit_of_measurement": self.__unit_of_measurement(point),
     }
     self.__publish_entity('sensor', sensor_config, point, device_id,
