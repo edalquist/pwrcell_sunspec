@@ -24,15 +24,15 @@ class PwrCellHA():
     self.__define_sensor(
         self.__pwrcell.inverter.REbus_exp[0].Px1,
         device_id='pwrcell_inverter',
-        sensor_id='grid_export_phase_a')
+        sensor_id='grid_watts_phase_a')
     self.__define_sensor(
         self.__pwrcell.inverter.REbus_exp[0].Px2,
         device_id='pwrcell_inverter',
-        sensor_id='grid_export_phase_b')
+        sensor_id='grid_watts_phase_b')
     self.__define_sensor(
         self.__pwrcell.inverter.inverter_status[0].CTPow,
         device_id='pwrcell_inverter',
-        sensor_id='grid_export_total')
+        sensor_id='grid_watts')
     self.__define_sensor(
         self.__pwrcell.inverter.inverter_status[0].WhOut,
         device_id='pwrcell_inverter',
@@ -41,6 +41,10 @@ class PwrCellHA():
         self.__pwrcell.inverter.inverter_status[0].WhIn,
         device_id='pwrcell_inverter',
         sensor_id='grid_import_watt_hours')
+    self.__define_sensor(
+        self.__pwrcell.inverter.inverter[0].W,
+        device_id='pwrcell_inverter',
+        sensor_id='inverter_watts')
 
     self.__define_sensor(
         self.__pwrcell.battery.battery[0].W,
