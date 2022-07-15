@@ -118,7 +118,7 @@ class PwrCellHA():
       payload = msg.payload.decode('utf-8')
       new_value = self.__ha_to_point(point, payload)
       logging.info("Changing {} from {} to {}".format(
-          pwrcell.point_id(point), point.value, new_value))
+          pwrcell.point_id(point), point.cvalue, new_value))
       point.cvalue = new_value
       point.write()
       # Immediately re-read the value after writing, will update the state topic
@@ -126,25 +126,6 @@ class PwrCellHA():
     except Exception:
       logging.exception("Failed to handle command %s on %s for %s",
                         msg.payload, command_topic, pwrcell.point_id(point))
-
-  def __discovery_base(self, entity_type: str, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None):
-    device = point.model.device
-    device_name = device_name or device.common[0].Md.value
-    if device_name_suffix is not None:
-      device_name += device_name_suffix
-
-    state_topic = "{}/{}/{}/{}/state".format(
-        self.__ha_topic, entity_type, device_id, sensor_id)
-    config_topic = "{}/{}/{}/{}/config".format(
-        self.__ha_topic, entity_type, device_id, sensor_id)
-
-    return state_topic, config_topic, {
-        "device": self.__create_device(device, device_name),
-        # TODO what is label is missing?
-        "name": "{}: {}".format(device_name, point.pdef[mdef.LABEL]),
-        "unique_id": "{}_{}".format(device_id, sensor_id),
-        "state_topic": state_topic,
-    }
 
   def __define_sensor(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None):
     sensor_config = {
@@ -157,7 +138,6 @@ class PwrCellHA():
 
   def __define_number(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None, min: float = 1, max: float = 100):
     sensor_config = {
-        "device_class": self.__device_class(point),
         "unit_of_measurement": self.__unit_of_measurement(point),
         "min": min,
         "max": max,
@@ -226,28 +206,30 @@ class PwrCellHA():
         ]
     }
 
-  def __device_class(self, point: ss2_client.SunSpecModbusClientPoint):
+  def __state_class(self, point: ss2_client.SunSpecModbusClientPoint):
     if pwrcell.is_acc(point):
       return 'total_increasing'
     elif pwrcell.is_int(point) or pwrcell.is_uint(point):
       return 'measurement'
     else:
-      logging.error("DC UNKNOWN Type(%s)\n\t%s",
-                    point.pdef[mdef.TYPE], point.pdef)
+      raise ValueError("DC UNKNOWN Type(%s)\n\t%s" %
+                       (point.pdef[mdef.TYPE], point.pdef))
 
-  def __state_class(self, point: ss2_client.SunSpecModbusClientPoint):
+  def __device_class(self, point: ss2_client.SunSpecModbusClientPoint):
     if pwrcell.is_int(point) or pwrcell.is_uint(point) or pwrcell.is_acc(point):
       p_units = point.pdef.get(mdef.UNITS)
-      if p_units in ['W', 'Wh']:
+      if p_units in ['W']:
+        return 'power'
+      if p_units in ['Wh']:
         return 'energy'
       if p_units in ['%WHRtg']:
         return 'battery'
       else:
-        logging.error("SC UNKNOWN Units(%s) for Type(%s)\n\t%s",
-                      p_units, point.pdef[mdef.TYPE], point.pdef)
+        raise ValueError("SC UNKNOWN Units(%s) for Type(%s)\n\t%s" %
+                         (p_units, point.pdef[mdef.TYPE], point.pdef))
     else:
-      logging.error("SC UNKNOWN Type(%s)\n\t%s",
-                    point.pdef[mdef.TYPE], point.pdef)
+      raise ValueError("SC UNKNOWN Type(%s)\n\t%s" %
+                       (point.pdef[mdef.TYPE], point.pdef))
 
   def __unit_of_measurement(self, point: ss2_client.SunSpecModbusClientPoint):
     p_units = point.pdef.get(mdef.UNITS)
