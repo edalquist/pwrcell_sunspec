@@ -60,7 +60,8 @@ def main():
         pv_links=[3],
     )
     gpc = pwrcell.GeneracPwrCell(
-        device_config, ipaddr=config['pwrcell']['host'], ipport=config['pwrcell']['port'], timeout=60, extra_model_defs=[os.path.join(tempdir, "sunspec-models")])
+        device_config, ipaddr=config['pwrcell']['host'], ipport=config['pwrcell']['port'], timeout=60,
+        extra_model_defs=[os.path.join(tempdir, "sunspec-models")])
     try:
       mqtt_client.loop_start()
       gpc.init()

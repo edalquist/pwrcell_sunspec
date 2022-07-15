@@ -6,6 +6,7 @@ import dataclasses
 import datetime
 import logging
 import sunspec2.device as device
+import sunspec2.mdef as mdef
 import sunspec2.modbus.client as ss2_client
 import sunspec2.modbus.modbus as mb
 import time
@@ -20,9 +21,23 @@ class Config:
   battery: int = -1
 
 
-def point_to_str(point: ss2_client.SunSpecModbusClientPoint):
+def point_id(point: ss2_client.SunSpecModbusClientPoint):
   device = point.model.device
-  return "{}.{}.{}".format(device.name, point.model.gname, point.pdef['name'])
+  return "{}.{}.{}".format(device.name, point.model.gname, point.pdef[mdef.NAME])
+
+
+def point_sf_info(point: ss2_client.SunSpecModbusClientPoint):
+  if point.sf is not None:
+    sf_point = point.model.points[point.sf]
+    return "scale factor {} ({})".format(sf_point.cvalue, point_id(sf_point))
+  if point.sf_value is not None:
+    return "scale factor {}".format(point.sf_value)
+  return ""
+
+
+def is_enum(point: ss2_client.SunSpecModbusClientPoint):
+  p_type = point.pdef[mdef.TYPE]
+  return p_type in [mdef.TYPE_ENUM16, mdef.TYPE_ENUM32]
 
 
 class GeneracPwrCell():
@@ -92,10 +107,21 @@ class GeneracPwrCell():
                      device.common[0].Mn.get_value(),
                      device.common[0].Md.get_value(),
                      device.common[0].SN.get_value())
+        self.__fix_device(device)
         break
       except Exception as e:
         logging.warning("Error scanning %s on try %s: %s", device.name, t, e)
         self.__connect_device(device, tries=tries, reconnect=True)
+
+  def __fix_device(self, device: ss2_client.SunSpecModbusClientDeviceTCP):
+    """
+    Apply various overrides/fixes to devices after they have been loaded
+    """
+    for string_combiner in device.models.get(404, []):
+      # DCW has a scale factor point of DCW_SF but that is set to zero in the system. Clear the sf point
+      # reference and manually set the sf_value to -1
+      string_combiner.DCW.sf = None
+      string_combiner.DCW.sf_value = -1
 
   def init(self):
     # Kick off scans of all devices
@@ -120,11 +146,12 @@ class GeneracPwrCell():
     # If the point has a scale-factor point read it's value to ensure it gets used?
     if point.sf is not None:
       sf_point = point.model.points[point.sf]
-      sf_point.read()  # TODO retries
-      logging.info("Bind %s with scale factor %s=%s", point_to_str(
-          point), point_to_str(sf_point), sf_point.cvalue)
+      if sf_point.value is None:
+        sf_point.read()  # TODO retries
+      logging.debug("Bind %s with scale factor %s=%s", point_id(
+          point), point_id(sf_point), sf_point.cvalue)
     else:
-      logging.info("Bind %s with no scale factor", point_to_str(point))
+      logging.debug("Bind %s with no scale factor", point_id(point))
 
   def watch_points(self, points: dict[ss2_client.SunSpecModbusClientPoint, Callable[[ss2_client.SunSpecModbusClientPoint], None]]):
     for point, callback in points.items():
@@ -136,7 +163,7 @@ class GeneracPwrCell():
       for t in range(tries):
         try:
           point.read()
-          logging.debug("Read %s", point_to_str(point))
+          logging.debug("Read %s", point_id(point))
           break
         except Exception as e:
           logging.warning("Error reading %s on try %s: %s", device.name, t, e)
@@ -153,7 +180,7 @@ class GeneracPwrCell():
   def read_point(self, point: ss2_client.SunSpecModbusClientPoint):
     device = point.model.device
     points = self.__watched_points_by_device[device]
-    callback = points[point]
+    callback = points[point] # TODO better error message if being asked to read point with no callback
     self.__read({device: {point: callback}})
 
   def __read(self, points: dict[ss2_client.SunSpecModbusClientDeviceTCP, dict[ss2_client.SunSpecModbusClientPoint, Callable[[ss2_client.SunSpecModbusClientPoint]]]]):

@@ -2,6 +2,7 @@ import json
 import logging
 import paho.mqtt.client as mqtt
 import pwrcell
+import sunspec2.mdef as mdef
 import sunspec2.modbus.client as ss2_client
 
 
@@ -92,20 +93,18 @@ class PwrCellHA():
           device_name_suffix=" {}".format(pv_link_id))
 
   def __point_to_ha(self, point: ss2_client.SunSpecModbusClientPoint):
-    p_type = point.pdef['type']
-    if p_type in ['enum16']:
-      symbols = point.pdef.get('symbols')
-      return next(x for x in symbols if x['value'] == point.cvalue)['name']
+    # For enum types find the name for the value
+    if pwrcell.is_enum(point):
+      symbols = point.pdef[mdef.SYMBOLS]
+      return next(symbol for symbol in symbols if symbol[mdef.VALUE] == point.cvalue)[mdef.NAME]
 
     return point.cvalue
 
   def __ha_to_point(self, point: ss2_client.SunSpecModbusClientPoint, payload):
-    p_type = point.pdef['type']
-
-    # For enum types look up the value for the symbol
-    if p_type in ['enum16']:
-      symbols = point.pdef['symbols']
-      return next(x for x in symbols if x['name'] == payload)['value']
+    # For enum types look up the value for the name, throws if no match
+    if pwrcell.is_enum(point):
+      symbols = point.pdef[mdef.SYMBOLS]
+      return next(symbol for symbol in symbols if symbol[mdef.NAME] == payload)[mdef.VALUE]
 
     return payload
 
@@ -119,18 +118,18 @@ class PwrCellHA():
       payload = msg.payload.decode('utf-8')
       new_value = self.__ha_to_point(point, payload)
       logging.info("Changing {} from {} to {}".format(
-          pwrcell.point_to_str(point), point.value, new_value))
+          pwrcell.point_id(point), point.value, new_value))
       point.cvalue = new_value
       point.write()
-      # Immediately re-read the value
+      # Immediately re-read the value after writing, will update the state topic
       self.__pwrcell.read_point(point)
     except Exception:
       logging.exception("Failed to handle command %s on %s for %s",
-                        msg.payload, command_topic, pwrcell.point_to_str(point))
+                        msg.payload, command_topic, pwrcell.point_id(point))
 
-  def __publish_discovery(self, topic, payload):
-    logging.info("Publishing HA entity on: %s", topic)
-    logging.debug(payload)
+  def __publish_discovery(self, point: ss2_client.SunSpecModbusClientPoint, topic, payload):
+    logging.info("Binding %s to %s %s", topic,
+                 pwrcell.point_id(point), pwrcell.point_sf_info(point))
     self.__mqttc.publish(topic, payload)  # TODO, retain=True)
 
   def __define_sensor(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None):
@@ -142,7 +141,7 @@ class PwrCellHA():
         self.__ha_topic, device_id, sensor_id)
     config_topic = "{}/sensor/{}/{}/config".format(
         self.__ha_topic, device_id, sensor_id)
-    self.__publish_discovery(config_topic, json.dumps({
+    payload = json.dumps({
         "device": self.__create_device(device, device_name),
         "name": "{}: {}".format(device_name, point.pdef['label']),
         "unique_id": "{}_{}".format(device_id, sensor_id),
@@ -151,9 +150,13 @@ class PwrCellHA():
         "unit_of_measurement": self.__unit_of_measurement(point),
         "state_topic": state_topic,
         "expire_after": 14400
-    }, indent=2, sort_keys=True))
+    }, indent=2, sort_keys=True)
+
+    # Register watch/callback with pwrcell for point
     self.__pwrcell.watch_point(
         point, (lambda p: self.__update_state(p, state_topic)))
+    # Publish Discovery
+    self.__publish_discovery(point, config_topic, payload)
 
   def __define_number(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, min: float = 1, max: float = 100):
     if point.pdef.get('access') != 'RW':
@@ -168,7 +171,7 @@ class PwrCellHA():
         self.__ha_topic, device_id, sensor_id)
     command_topic = "{}/number/{}/{}/command".format(
         self.__ha_topic, device_id, sensor_id)
-    self.__publish_discovery(config_topic, json.dumps({
+    payload = json.dumps({
         "device": self.__create_device(device, device_name),
         "name": "{}: {}".format(device_name, point.pdef['label']),
         "unique_id": "{}_{}".format(device_id, sensor_id),
@@ -179,12 +182,17 @@ class PwrCellHA():
         "expire_after": 14400,
         "min": min,
         "max": max
-    }, indent=2, sort_keys=True))
+    }, indent=2, sort_keys=True)
+
+    # Register watch/callback with pwrcell for point
     self.__pwrcell.watch_point(
         point, (lambda p: self.__update_state(p, state_topic)))
+    # Subscribe to command topic and register callback
     self.__mqttc.subscribe(command_topic)
     self.__mqttc.message_callback_add(
         command_topic, lambda client, userdata, msg: self.__handle_command(point, command_topic, client, userdata, msg))
+    # Publish Discovery
+    self.__publish_discovery(point, config_topic, payload)
 
   def __define_select(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None):
     if point.pdef.get('access') != 'RW':
@@ -199,7 +207,7 @@ class PwrCellHA():
         self.__ha_topic, device_id, sensor_id)
     command_topic = "{}/select/{}/{}/command".format(
         self.__ha_topic, device_id, sensor_id)
-    self.__publish_discovery(config_topic, json.dumps({
+    payload = json.dumps({
         "device": self.__create_device(device, device_name),
         "name": "{}: {}".format(device_name, point.pdef['label']),
         "unique_id": "{}_{}".format(device_id, sensor_id),
@@ -208,13 +216,17 @@ class PwrCellHA():
         "command_topic": command_topic,
         "entity_category": 'config',
         "expire_after": 14400
-    }, indent=2, sort_keys=True))
+    }, indent=2, sort_keys=True)
+
+    # Register watch/callback with pwrcell for point
     self.__pwrcell.watch_point(
         point, (lambda p: self.__update_state(p, state_topic)))
-    # Subscribe to command_topic & register callback
+    # Subscribe to command topic and register callback
     self.__mqttc.subscribe(command_topic)
     self.__mqttc.message_callback_add(
         command_topic, lambda client, userdata, msg: self.__handle_command(point, command_topic, client, userdata, msg))
+    # Publish Discovery
+    self.__publish_discovery(point, config_topic, payload)
 
   def __device_class(self, point: ss2_client.SunSpecModbusClientPoint):
     p_type = point.pdef.get('type')
