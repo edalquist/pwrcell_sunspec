@@ -4,6 +4,28 @@ import paho.mqtt.client as mqtt
 import pwrcell
 import sunspec2.mdef as mdef
 import sunspec2.modbus.client as ss2_client
+import time
+
+
+class TimeMovingAvg():
+  def __init__(self, max_age: int = 60):
+    self.__max_age = max_age
+    self.__points = []
+
+  def accumulate(self, value: float):
+    now = time.time()
+    self.__points.append({'ts': now, 'v': value})
+    average = None
+    slice_idx = 0
+    for idx, p in enumerate(self.__points):
+      if (now - p['ts']) > self.__max_age:
+        slice_idx = idx + 1
+      elif average is None:
+        average = p['v']
+      else:
+        average += p['v']
+    self.__points = self.__points[slice_idx:]
+    return average / len(self.__points)
 
 
 class PwrCellHA():
@@ -24,15 +46,22 @@ class PwrCellHA():
     self.__define_sensor(
         self.__pwrcell.inverter.REbus_exp[0].Px1,
         device_id='pwrcell_inverter',
-        sensor_id='grid_watts_phase_a')
+        sensor_id='grid_watts_phase_a',
+        round_digits=1,
+        moving_average=True)
     self.__define_sensor(
         self.__pwrcell.inverter.REbus_exp[0].Px2,
         device_id='pwrcell_inverter',
-        sensor_id='grid_watts_phase_b')
+        sensor_id='grid_watts_phase_b',
+        round_digits=1,
+        moving_average=True)
     self.__define_sensor(
         self.__pwrcell.inverter.inverter_status[0].CTPow,
         device_id='pwrcell_inverter',
-        sensor_id='grid_watts')
+        sensor_id='grid_watts',
+        round_digits=1,
+        moving_average=True,
+        negate=True)
     self.__define_sensor(
         self.__pwrcell.inverter.inverter_status[0].WhOut,
         device_id='pwrcell_inverter',
@@ -46,16 +75,22 @@ class PwrCellHA():
     self.__define_sensor(
         self.__pwrcell.inverter.inverter[0].W,
         device_id='pwrcell_inverter',
-        sensor_id='inverter_watts')
+        sensor_id='inverter_watts',
+        round_digits=1,
+        moving_average=True)
 
     self.__define_sensor(
         self.__pwrcell.battery.battery[0].W,
         device_id='battery',
-        sensor_id='watts')
+        sensor_id='watts',
+        round_digits=1,
+        moving_average=True,
+        negate=True)
     self.__define_sensor(
         self.__pwrcell.battery.battery[0].SoC,
         device_id='battery',
-        sensor_id='state_of_charge')
+        sensor_id='state_of_charge',
+        round_digits=1)
     self.__define_number(
         self.__pwrcell.battery.battery[0].SoCMax,
         device_id='battery',
@@ -89,7 +124,9 @@ class PwrCellHA():
           pv_link.string_combiner[0].DCW,
           device_id=device_id,
           sensor_id='watts',
-          device_name_suffix=" {}".format(pv_link_id))
+          device_name_suffix=" {}".format(pv_link_id),
+          round_digits=1,
+          moving_average=True)
       self.__define_sensor(
           pv_link.string_combiner[0].DCWh,
           device_id=device_id,
@@ -112,8 +149,12 @@ class PwrCellHA():
 
     return payload
 
-  def __update_state(self, point: ss2_client.SunSpecModbusClientPoint, state_topic: str):
+  def __update_state(self, point: ss2_client.SunSpecModbusClientPoint, state_topic: str, round_digits: int = -1,
+                     tma: TimeMovingAvg = None, negate: bool = False):
     p_value = self.__point_to_ha(point)
+    p_value = tma.accumulate(p_value) if tma is not None else p_value
+    p_value = round(p_value, round_digits) if round_digits >= 0 else p_value
+    p_value = -1 * p_value if negate else p_value
     logging.info("Publish {}: {}".format(state_topic, p_value))
     self.__mqttc.publish(state_topic, p_value)
 
@@ -131,15 +172,17 @@ class PwrCellHA():
       logging.exception("Failed to handle command %s on %s for %s",
                         msg.payload, command_topic, pwrcell.point_id(point))
 
-  def __define_sensor(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None, state_class: str = None):
+  def __define_sensor(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None,
+                      device_name_suffix: str = None, state_class: str = None, round_digits: int = -1, negate: bool = False,
+                      moving_average: bool = False):
     print(point.pdef)
     sensor_config = {
         "device_class": self.__device_class(point),
         "state_class": self.__state_class(point) if state_class is None else state_class,
         "unit_of_measurement": self.__unit_of_measurement(point),
     }
-    self.__publish_entity('sensor', sensor_config, point, device_id,
-                          sensor_id, device_name, device_name_suffix, has_command=False)
+    self.__publish_entity('sensor', sensor_config, point, device_id, sensor_id, device_name, device_name_suffix,
+                          round_digits=round_digits, moving_average=moving_average, negate=negate, has_command=False)
 
   def __define_number(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None, min: float = 1, max: float = 100):
     sensor_config = {
@@ -158,7 +201,9 @@ class PwrCellHA():
     self.__publish_entity('select', sensor_config, point, device_id,
                           sensor_id, device_name, device_name_suffix, has_command=True)
 
-  def __publish_entity(self, entity_type: str, entity_config: dict[str, str], point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None, has_command: bool = False):
+  def __publish_entity(self, entity_type: str, entity_config: dict[str, str], point: ss2_client.SunSpecModbusClientPoint,
+                       device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None,
+                       has_command: bool = False, round_digits: int = -1, moving_average: bool = False, negate: bool = False):
     device = point.model.device
     device_name = device_name or device.common[0].Md.value
     if device_name_suffix is not None:
@@ -191,8 +236,9 @@ class PwrCellHA():
           command_topic, lambda client, userdata, msg: self.__handle_command(point, command_topic, client, userdata, msg))
 
     # Register watch/callback with pwrcell for point
+    tma = TimeMovingAvg() if moving_average else None
     self.__pwrcell.watch_point(
-        point, (lambda p: self.__update_state(p, state_topic)))
+        point, (lambda p: self.__update_state(p, state_topic, round_digits=round_digits, tma=tma, negate=negate)))
 
     # Publish Discovery
     logging.info("Binding %s to %s %s", config_topic,

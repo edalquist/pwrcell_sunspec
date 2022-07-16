@@ -1,6 +1,6 @@
 ---
 testing: true # If true MQTT topics prefixed with TEST/
-poll_rate: 60 # Rate (time in seconds) at which to poll for data
+poll_rate: 12 # Rate (time in seconds) at which to poll for data
 pwrcell:
   host: 192.168.0.2
   port: 5020
