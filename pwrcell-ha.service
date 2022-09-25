@@ -1,0 +1,16 @@
+[Unit]
+Description=Publish PwrCell data to Home Assistant
+After=syslog.target network.target secure-tunnel@pwrcell.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/pwrcell_sunspec
+ExecStart=/opt/pwrcell_sunspec/venv/bin/python /opt/pwrcell_sunspec/main.py
+
+# Restart every >2 seconds to avoid StartLimitInterval failure
+RestartSec=5
+Restart=always
+
+
+[Install]
+WantedBy=multi-user.target
