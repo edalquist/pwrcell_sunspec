@@ -1,14 +1,14 @@
-import yaml
+import homeassistant
 import logging
 import os
 import paho.mqtt.client as mqtt
 import pwrcell
-import homeassistant
+import sunspec2.modbus.client as ss2_client
 import sys
 import tempfile
 import time
+import yaml
 import zipfile
-import sunspec2.modbus.client as ss2_client
 
 
 def on_connect(client, userdata, flags, rc):
@@ -58,8 +58,8 @@ def main():
         inverter=8,
         battery=9,
         pv_links=[3, 4, 5, 6, 7],
-        # pv_links=[3],
     )
+
     gpc = pwrcell.GeneracPwrCell(
         device_config, ipaddr=config['pwrcell']['host'], ipport=config['pwrcell']['port'], timeout=60,
         extra_model_defs=[os.path.join(tempdir, "sunspec-models")])
@@ -87,15 +87,3 @@ def main():
 
 if __name__ == '__main__':
   sys.exit(main())
-
-# DEVICES = {
-#     'REbus Beacon': [1, 10],
-#     'ICM': [2],
-#     'PV Link 000100034AC7': [3, 30],
-#     'PV Link 000100034E68': [4, 31],
-#     'PV Link 000100034FAC': [5, 32],
-#     'PV Link 0001000361C7': [6, 33],
-#     'PV Link 0001000361F4': [7, 34],
-#     'PWRcell X7602 Inverter': [8, 70],
-#     'PWRcell Battery': [9, 80]
-# }
