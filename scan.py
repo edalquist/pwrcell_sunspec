@@ -3,7 +3,9 @@
 from absl import app
 from absl import flags
 from operator import invert
+from pathlib import Path
 import datetime
+import json
 import logging
 import os
 import sunspec2
@@ -14,8 +16,6 @@ import tempfile
 import time
 import yaml
 import zipfile
-from pathlib import Path
-import json
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string("model_dir", None, "directory")

@@ -1,3 +1,5 @@
+from absl import app
+from absl import flags
 import homeassistant
 import logging
 import os
@@ -30,13 +32,19 @@ def on_read(point: ss2_client.SunSpecModbusClientPoint):
                 point.model.device.name, point.model.gname, point.pdef['name'], point.value)
 
 
-def main():
+def main(argv):
+  del argv  # Unused.
+
   FORMAT = '%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s'
   logging.basicConfig(format=FORMAT, level=logging.INFO)
 
   config = {}
   with open(os.path.join(sys.path[0], "config.yaml")) as config_file:
     config = yaml.safe_load(config_file)
+
+  log_level = logging.getLevelName(config['log_level']) or logging.INFO
+  logging.info("Setting Log Level to %s", logging.getLevelName(log_level))
+  logging.basicConfig(format=FORMAT, level=log_level)
 
   mqtt_client = mqtt.Client(
       client_id=config['mqtt']['client_name'] + ('_test' if config.get('testing', False) else ''))
@@ -86,4 +94,4 @@ def main():
 
 
 if __name__ == '__main__':
-  sys.exit(main())
+  app.run(main)
