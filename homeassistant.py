@@ -268,8 +268,10 @@ class PwrCellHA():
   def __state_class(self, point: ss2_client.SunSpecModbusClientPoint):
     if pwrcell.is_acc(point):
       return 'total_increasing'
-    elif pwrcell.is_int(point) or pwrcell.is_uint(point) or pwrcell.is_enum(point):
+    elif pwrcell.is_int(point) or pwrcell.is_uint(point):
       return 'measurement'
+    elif pwrcell.is_enum(point):
+      return None
     else:
       raise ValueError("DC UNKNOWN Type(%s)\n\t%s" %
                        (point.pdef[mdef.TYPE], point.pdef))
