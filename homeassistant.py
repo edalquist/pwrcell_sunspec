@@ -79,7 +79,7 @@ class PwrCellHA():
         round_digits=1,
         moving_average=True)
     self.__define_sensor(
-        self.__pwrcell.inverter.inverter[0].St,
+        self.__pwrcell.inverter.REbus_status[0].St,
         device_id='pwrcell_inverter',
         sensor_id='inverter_state')
 
