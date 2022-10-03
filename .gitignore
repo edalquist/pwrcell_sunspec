@@ -2,6 +2,8 @@
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,venv,visualstudiocode
 
 config.yaml
+model_dump/
+sunspec-models/
 
 ### Python ###
 # Byte-compiled / optimized / DLL files

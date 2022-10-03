@@ -62,10 +62,10 @@ def main(argv):
     zf.extractall(tempdir)
 
     device_config = pwrcell.Config(
-        rebus_beacon=1,
-        inverter=8,
-        battery=9,
-        pv_links=[3, 4, 5, 6, 7],
+        rebus_beacon=config['pwrcell']['device_ids']['rebus_beacon'],
+        inverter=config['pwrcell']['device_ids']['inverter'],
+        battery=config['pwrcell']['device_ids']['battery'],
+        pv_links=config['pwrcell']['device_ids']['pv_links'],
     )
 
     gpc = pwrcell.GeneracPwrCell(

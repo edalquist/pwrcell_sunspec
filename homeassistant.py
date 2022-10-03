@@ -78,6 +78,10 @@ class PwrCellHA():
         sensor_id='inverter_watts',
         round_digits=1,
         moving_average=True)
+    self.__define_sensor(
+        self.__pwrcell.inverter.inverter[0].St,
+        device_id='pwrcell_inverter',
+        sensor_id='inverter_state')
 
     self.__define_sensor(
         self.__pwrcell.battery.battery[0].W,
@@ -117,6 +121,10 @@ class PwrCellHA():
         device_id='battery',
         sensor_id='out_watt_hours',
         state_class='total_increasing')
+    self.__define_sensor(
+        self.__pwrcell.battery.REbus_status[0].St,
+        device_id='battery',
+        sensor_id='battery_state')
 
     for pv_link_id, pv_link in self.__pwrcell.pv_links.items():
       device_id = 'pv_link_{}'.format(pv_link_id)
@@ -132,6 +140,10 @@ class PwrCellHA():
           device_id=device_id,
           sensor_id='watt_hours',
           device_name_suffix=" {}".format(pv_link_id))
+      self.__define_sensor(
+          pv_link.REbus_status[0].St,
+          device_id=device_id,
+          sensor_id='pvlink_state')
 
   def __point_to_ha(self, point: ss2_client.SunSpecModbusClientPoint):
     # For enum types find the name for the value
@@ -182,7 +194,7 @@ class PwrCellHA():
         "unit_of_measurement": self.__unit_of_measurement(point),
     }
     self.__publish_entity('sensor', sensor_config, point, device_id, sensor_id, device_name, device_name_suffix,
-                          round_digits=round_digits, moving_average=moving_average, negate=negate, has_command=False)
+                          round_digits=round_digits, moving_average=moving_average, negate=negate)
 
   def __define_number(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None, min: float = 1, max: float = 100):
     sensor_config = {
@@ -191,7 +203,7 @@ class PwrCellHA():
         "max": max,
     }
     self.__publish_entity('number', sensor_config, point, device_id,
-                          sensor_id, device_name, device_name_suffix, has_command=True)
+                          sensor_id, device_name, device_name_suffix)
 
   def __define_select(self, point: ss2_client.SunSpecModbusClientPoint, device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None):
     sensor_config = {
@@ -199,11 +211,11 @@ class PwrCellHA():
         "entity_category": 'config',
     }
     self.__publish_entity('select', sensor_config, point, device_id,
-                          sensor_id, device_name, device_name_suffix, has_command=True)
+                          sensor_id, device_name, device_name_suffix)
 
   def __publish_entity(self, entity_type: str, entity_config: dict[str, str], point: ss2_client.SunSpecModbusClientPoint,
                        device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None,
-                       has_command: bool = False, round_digits: int = -1, moving_average: bool = False, negate: bool = False):
+                       round_digits: int = -1, moving_average: bool = False, negate: bool = False):
     device = point.model.device
     device_name = device_name or device.common[0].Md.value
     if device_name_suffix is not None:
@@ -213,7 +225,7 @@ class PwrCellHA():
         self.__ha_topic, entity_type, device_id, sensor_id)
     state_topic = "{}/{}/{}/{}/state".format(
         self.__ha_topic, entity_type, device_id, sensor_id)
-    entity_config = entity_config | {
+    entity_config = {k: v for k, v in entity_config.items() if v is not None} | {
         "device": self.__create_device(device, device_name),
         # TODO what is label is missing?
         "name": "{}: {}".format(device_name, point.pdef[mdef.LABEL]),
@@ -222,11 +234,7 @@ class PwrCellHA():
         "expires_after": 14400,
     }
 
-    if has_command:
-      if point.pdef.get(mdef.ACCESS) != mdef.ACCESS_RW:
-        raise ValueError(
-            "Point must have '{}' set to '{}' to be mutable: {}".format(mdef.ACCESS, mdef.ACCESS_RW, point.pdef))
-
+    if point.pdef.get(mdef.ACCESS) == mdef.ACCESS_RW:
       command_topic = "{}/{}/{}/{}/command".format(
           self.__ha_topic, entity_type, device_id, sensor_id)
       entity_config['command_topic'] = command_topic
@@ -260,13 +268,15 @@ class PwrCellHA():
   def __state_class(self, point: ss2_client.SunSpecModbusClientPoint):
     if pwrcell.is_acc(point):
       return 'total_increasing'
-    elif pwrcell.is_int(point) or pwrcell.is_uint(point):
+    elif pwrcell.is_int(point) or pwrcell.is_uint(point) or pwrcell.is_enum(point):
       return 'measurement'
     else:
       raise ValueError("DC UNKNOWN Type(%s)\n\t%s" %
                        (point.pdef[mdef.TYPE], point.pdef))
 
   def __device_class(self, point: ss2_client.SunSpecModbusClientPoint):
+    if pwrcell.is_enum(point):
+        return None
     if pwrcell.is_int(point) or pwrcell.is_uint(point) or pwrcell.is_acc(point):
       p_units = point.pdef.get(mdef.UNITS)
       if p_units in ['W']:
