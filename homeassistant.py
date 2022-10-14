@@ -79,6 +79,18 @@ class PwrCellHA():
         round_digits=1,
         moving_average=True)
     self.__define_sensor(
+        self.__pwrcell.inverter.inverter[0].PhVphA,
+        device_id='pwrcell_inverter',
+        sensor_id='inverter_phase1_volts',
+        round_digits=1,
+        moving_average=True)
+    self.__define_sensor(
+        self.__pwrcell.inverter.inverter[0].PhVphB,
+        device_id='pwrcell_inverter',
+        sensor_id='inverter_phase2_volts',
+        round_digits=1,
+        moving_average=True)    
+    self.__define_sensor(
         self.__pwrcell.inverter.REbus_status[0].St,
         device_id='pwrcell_inverter',
         sensor_id='inverter_state')
@@ -283,6 +295,8 @@ class PwrCellHA():
       p_units = point.pdef.get(mdef.UNITS)
       if p_units in ['W']:
         return 'power'
+      if p_units in ['V']:
+        return 'voltage'      
       if p_units in ['Wh']:
         return 'energy'
       if p_units in ['%WHRtg']:
