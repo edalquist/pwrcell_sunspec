@@ -5,7 +5,6 @@ import pwrcell
 import sunspec2.mdef as mdef
 import sunspec2.modbus.client as ss2_client
 import time
-import pdb
 
 
 class TimeMovingAvg():
