@@ -230,6 +230,7 @@ class PwrCellHA():
                        round_digits: int = -1, moving_average: bool = False, negate: bool = False):
     device = point.model.device
     device_name = device_name or device.common[0].Md.value
+    device_id = device.common[0].SN.value
     if device_name_suffix is not None:
       device_name += device_name_suffix
 
