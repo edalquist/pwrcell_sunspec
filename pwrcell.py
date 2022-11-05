@@ -135,8 +135,13 @@ class GeneracPwrCell():
     for string_combiner in device.models.get(404, []):
       # DCW has a scale factor point of DCW_SF but that is set to zero in the system. Clear the sf point
       # reference and manually set the sf_value to -1
-      string_combiner.DCW.sf = None
-      string_combiner.DCW.sf_value = -1
+      if device.common[0].Vr.value == "634_13700":
+        string_combiner.DCW.sf = None
+        string_combiner.DCW.sf_value = None
+      else:
+        logging.info("Found older pvlink firmware, adjusting scale factor.")
+        string_combiner.DCW.sf = None
+        string_combiner.DCW.sf_value = -1
 
   def init(self):
     # Kick off scans of all devices
