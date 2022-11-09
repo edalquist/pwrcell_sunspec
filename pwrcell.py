@@ -115,7 +115,7 @@ class GeneracPwrCell():
     for t in range(tries):
       try:
         # Don't read all model data (it is slow)
-        device.scan(connect=False, full_model_read=False)
+        device.scan(connect=False, full_model_read=True)
         device.common[0].read()
         logging.info("Scanned %s as %s %s - %s",
                      device.name,
