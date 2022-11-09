@@ -154,6 +154,16 @@ class PwrCellHA():
           sensor_id='watt_hours',
           device_name_suffix=" {}".format(pv_link_id))
       self.__define_sensor(
+          pv_link.pvlink_status[0].Vin,
+          device_id=device_id,
+          sensor_id='input_voltage',
+          device_name_suffix=" {}".format(pv_link_id))
+      self.__define_sensor(
+          pv_link.pvlink_status[0].Iin,
+          device_id=device_id,
+          sensor_id='input_current',
+          device_name_suffix=" {}".format(pv_link_id))
+      self.__define_sensor(
           pv_link.REbus_status[0].St,
           device_id=device_id,
           sensor_id='pvlink_state')
@@ -302,6 +312,12 @@ class PwrCellHA():
         return 'energy'
       if p_units in ['%WHRtg']:
         return 'battery'
+      if p_units is None:
+          p_name = point.pdef.get(mdef.NAME)
+          if p_name in ['Vin']:
+              return 'voltage'
+          if p_name in ['Iin']:
+              return 'current'
       else:
         raise ValueError("SC UNKNOWN Units(%s) for Type(%s)\n\t%s" %
                          (p_units, point.pdef[mdef.TYPE], point.pdef))
@@ -313,6 +329,12 @@ class PwrCellHA():
     p_units = point.pdef.get(mdef.UNITS)
     if p_units in ['%WHRtg']:
       return '%'
+    if p_units is None:
+        p_name = point.pdef.get(mdef.NAME)
+        if p_name in ['Vin']:
+            return 'V'
+        if p_name in ['Iin']:
+            return 'A'
     else:
       return p_units
 
