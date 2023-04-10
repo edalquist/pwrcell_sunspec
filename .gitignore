@@ -4,6 +4,9 @@
 config.yaml
 model_dump/
 sunspec-models/
+.vscode/
+model_dump_2/
+scan.json
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
