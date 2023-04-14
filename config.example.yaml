@@ -1,10 +1,12 @@
 ---
 testing: true # If true MQTT topics prefixed with TEST/
 poll_rate: 12 # Rate (time in seconds) at which to poll for data
-log_level: INFO
+log_level: DEBUG
 pwrcell:
-  host: 127.0.0.1
-  port: 5020
+  ssh_tunnel:
+    host: 127.0.0.1
+    port: 5022
+    identity_file: /Users/example/.ssh/pwrcell
   device_ids: # Get these IDs by running `python scan.py`
     rebus_beacon: 1
     inverter: 8
@@ -15,4 +17,4 @@ mqtt:
   host: homeassistant
   port: 1883
   username: mqtt-pwrcell
-  password: XXXXXXXX
+  password: hunter2
