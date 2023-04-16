@@ -50,13 +50,15 @@ from config import PwrcellDeviceIds
 
 
 class GeneracPwrCell():
-  def __init__(self, device_config: PwrcellDeviceIds, ipaddr='127.0.0.1', ipport=502, timeout=None, extra_model_defs: list[str] = []):
+  def __init__(self, device_config: PwrcellDeviceIds, ipaddr='127.0.0.1', ipport=502, timeout=None, extra_model_defs: list[str] = None):
     # Configure additional model def locations
-    device.set_model_defs_path(extra_model_defs + device.get_model_defs_path())
+    if extra_model_defs:
+      device.set_model_defs_path(extra_model_defs + device.get_model_defs_path())
     logging.info("Model Defs: %s", str(device.get_model_defs_path()))
 
+    self.__devices = {}
+
     # self.__watched_points_by_device = {}
-    # self.__devices = {}
     # self.__ipaddr = ipaddr
     # self.__ipport = ipport
     # self.__iptimeout = timeout
@@ -78,20 +80,30 @@ class GeneracPwrCell():
 
     # self.__executor = concurrent.futures.ThreadPoolExecutor(
     #     thread_name_prefix='ModBusPool', max_workers=(len(self.__devices) * 2))
+  
+  def __enter__(self):
+    logging.info("ENTER")
+    self.init()
+    return self
 
-  # def __init_device(self, name: str, device_id: int):
-  #   if name in self.__devices:
-  #     raise ValueError("Device {} is already configured".format(name))
-  #   if device_id is None or device_id <= 0:
-  #     raise ValueError("{} id must be set to a positive int".format(name))
+  def __exit__(self, *exc):
+    logging.info("EXIT")
+    self.close()
+    return False
 
-  #   device = ss2_client.SunSpecModbusClientDeviceTCP(
-  #       slave_id=device_id, ipaddr=self.__ipaddr, ipport=self.__ipport, timeout=self.__iptimeout)
-  #   device.name = name
-  #   logging.info("Configured %s at %s:%s on id %s", name,
-  #                self.__ipaddr, self.__ipport, device_id)
-  #   self.__devices[name] = device
-  #   return device
+  def __init_device(self, name: str, device_id: int):
+    if name in self.__devices:
+      raise ValueError("Device {} is already configured".format(name))
+    if device_id is None or device_id <= 0:
+      raise ValueError("{} id must be set to a positive int".format(name))
+
+    device = ss2_client.SunSpecModbusClientDeviceTCP(
+        slave_id=device_id, ipaddr=self.__ipaddr, ipport=self.__ipport, timeout=self.__iptimeout)
+    device.name = name
+    logging.info("Configured %s at %s:%s on id %s", name,
+                 self.__ipaddr, self.__ipport, device_id)
+    self.__devices[name] = device
+    return device
 
   # def __connect_device(self, device: ss2_client.SunSpecModbusClientDeviceTCP, tries=3, reconnect=False):
   #   if not reconnect and device.is_connected():

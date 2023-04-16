@@ -5,7 +5,6 @@ log_level: DEBUG
 pwrcell:
   ssh_tunnel:
     host: 127.0.0.1
-    port: 5022
     identity_file: /Users/example/.ssh/pwrcell
   device_ids: # Get these IDs by running `python scan.py`
     rebus_beacon: 1
