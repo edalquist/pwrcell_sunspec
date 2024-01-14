@@ -67,16 +67,19 @@ def main(argv):
           ipaddr=server.local_bind_address[0],
           ipport=server.local_bind_port, timeout=60,
           extra_model_defs=[temp_models]) as gpc:
-    try:
-      while True:
-        start = time.time()
-        gpc.read()
-        # pwrcell_ha.loop()
-        sleep_time = max(0, CONFIG.poll_rate - (time.time() - start))
-        logging.debug("Sleep for {}s".format(sleep_time))
-        time.sleep(sleep_time)
-    except KeyboardInterrupt as e:
-      logging.info("Closing: %s", e)
+    if FLAGS.mode == "scan":
+      gpc.scan()
+    else:
+      try:
+        while True:
+          start = time.time()
+          gpc.read()
+          # pwrcell_ha.loop()
+          sleep_time = max(0, CONFIG.poll_rate - (time.time() - start))
+          logging.debug("Sleep for {}s".format(sleep_time))
+          time.sleep(sleep_time)
+      except KeyboardInterrupt as e:
+        logging.info("Closing: %s", e)
 
 
 if __name__ == '__main__':

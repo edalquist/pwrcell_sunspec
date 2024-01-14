@@ -53,15 +53,17 @@ class GeneracPwrCell():
   def __init__(self, device_config: PwrcellDeviceIds, ipaddr='127.0.0.1', ipport=502, timeout=None, extra_model_defs: list[str] = None):
     # Configure additional model def locations
     if extra_model_defs:
-      device.set_model_defs_path(extra_model_defs + device.get_model_defs_path())
+      device.set_model_defs_path(
+          extra_model_defs + device.get_model_defs_path())
     logging.info("Model Defs: %s", str(device.get_model_defs_path()))
+
+    self.__ipaddr = ipaddr
+    self.__ipport = ipport
+    self.__iptimeout = timeout
 
     self.__devices = {}
 
     # self.__watched_points_by_device = {}
-    # self.__ipaddr = ipaddr
-    # self.__ipport = ipport
-    # self.__iptimeout = timeout
 
     # self.rebus_beacon = self.__init_device(
     #     'rebus_beacon', device_config.rebus_beacon)
@@ -80,7 +82,7 @@ class GeneracPwrCell():
 
     # self.__executor = concurrent.futures.ThreadPoolExecutor(
     #     thread_name_prefix='ModBusPool', max_workers=(len(self.__devices) * 2))
-  
+
   def __enter__(self):
     logging.info("ENTER")
     self.init()
@@ -90,6 +92,18 @@ class GeneracPwrCell():
     logging.info("EXIT")
     self.close()
     return False
+  
+  def scan(self, start: int = 1, end: int = 100):
+    logging.info("Scanning %s:%s from ID %s to %s",
+                 self.__ipaddr, self.__ipport, start, end)
+
+    for slid in range(start, end):
+      d = ss2_client.SunSpecModbusClientDeviceTCP(
+          slave_id=slid, ipaddr=self.__ipaddr, ipport=self.__ipport, timeout=self.__iptimeout)
+      try:
+        pass
+      finally:
+        d.close()
 
   def __init_device(self, name: str, device_id: int):
     if name in self.__devices:
