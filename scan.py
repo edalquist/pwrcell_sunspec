@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 from contextlib import contextmanager
+import copy
+import re
 from absl import app
 from absl import flags
 from operator import invert
@@ -22,7 +24,7 @@ from sshtunnel import open_tunnel
 FLAGS = flags.FLAGS
 flags.DEFINE_string("model_dir", None, "directory")
 
-from config import RootConfig
+from config import PwrcellDeviceIds, RootConfig
 
 CONFIG: RootConfig = RootConfig()
 
@@ -71,12 +73,7 @@ def main(argv):
     device.set_model_defs_path([temp_models] + device.get_model_defs_path())
 
     found_devices = {}
-
-  #   model_dir_path = None
-  #   if FLAGS.model_dir is not None:
-  #     model_dir_path = Path(FLAGS.model_dir).expanduser().resolve()
-  #     model_dir_path.mkdir(parents=True, exist_ok=True)
-  #     logging.info("Saving Models to %s", model_dir_path)
+    config_fragment: PwrcellDeviceIds = PwrcellDeviceIds()
 
   #   # Does a deep scan to find devices
     for slid in range(1, 100):
@@ -86,10 +83,17 @@ def main(argv):
           ipport=server.local_bind_port,
           timeout=60)
       # Try up to 3 times
-      for t in range(3):
+      scan_count = 0
+      success = False
+      while not success and scan_count < 3:
         try:
+          scan_count += 1
           d.scan()
+          success = True
+        except Exception:
+          pass
 
+        if success:
           # Track IDs by Serial > Version > Model > Make > ID tree to detect duplicate devices
           ids = found_devices.setdefault(d.common[0].SN.value,
             {}).setdefault(d.common[0].Vr.value,
@@ -99,36 +103,35 @@ def main(argv):
           ids.append(slid)
 
           if len(ids) > 1:
-            logging.info('Duplicate ID %s is %s %s (%s / %s)',
-              ids,
-              d.common[0].Mn.value,
-              d.common[0].Md.value,
-              d.common[0].Vr.value,
-              d.common[0].SN.value
-            )
+            logging.info('Duplicate Device ID %s / %s', slid, ids)
           else:
-            logging.info('Found ID %s is %s %s (%s / %s)',
+            logging.info('Found ID %s is %s: %s (v: %s / sn: %s)',
               slid,
+              # d.common[0].DA.value, # this is always None
               d.common[0].Mn.value,
               d.common[0].Md.value,
               d.common[0].Vr.value,
               d.common[0].SN.value
             )
 
-            # if model_dir_path:
-            #   model_file = model_dir_path / ('%s.json' % slid)
-            #   with model_file.open('w') as f:
-            #     f.write(json.dumps(json.loads(d.get_json()), indent=2))
-
-          break
-        except Exception as e:
-          pass
+            if "REbus Beacon" == d.common[0].Md.value:
+              config_fragment.rebus_beacon = slid
+            elif re.match(r"PWRcell .* Inverter", d.common[0].Md.value):
+              config_fragment.inverter.append(slid)
+            elif "PV Link" == d.common[0].Md.value:
+              config_fragment.pv_links.append(slid)
+            elif "PWRcell Battery" == d.common[0].Md.value:
+              config_fragment.battery.append(slid)
+            elif "ICM" == d.common[0].Md.value:
+              config_fragment.icm = slid
 
       d.close()
 
-      # TODO update config.yaml?
-
-    print(found_devices)
+    updated_config = copy.deepcopy(CONFIG)
+    updated_config.pwrcell.device_ids = config_fragment
+    print("********** updated config.yaml **********")
+    yaml.dump(updated_config, sys.stdout, default_flow_style=False)
+    print("*****************************************")
 
 
 if __name__ == '__main__':

@@ -1,5 +1,6 @@
 import dataclasses
-from typing import Optional
+from dataclasses import field
+from typing import Optional, Set
 
 from yamldataclassconfig.config import YamlDataClassConfig
 
@@ -15,9 +16,10 @@ class SshTunnel(YamlDataClassConfig):
 @dataclasses.dataclass
 class PwrcellDeviceIds(YamlDataClassConfig):
   rebus_beacon: int | None = None
-  inverter: int | None = None
-  pv_links: list[int] | None = None
-  battery: int | None = None
+  inverter: list[int] = field(default_factory=list)
+  pv_links: list[int] = field(default_factory=list)
+  battery: list[int] = field(default_factory=list)
+  icm: int | None = None
 
 
 @dataclasses.dataclass
