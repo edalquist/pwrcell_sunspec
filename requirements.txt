@@ -1,10 +1,10 @@
-absl-py==1.4.0
-autopep8==2.0.2
+absl-py==2.0.0
+autopep8==2.0.4
 paho-mqtt==1.6.1
-pycodestyle==2.10.0
+pycodestyle==2.11.1
 pyserial==3.5
-pysunspec2==1.0.8
-PyYAML==6.0
+pysunspec2==1.0.9
+PyYAML==6.0.1
 sshtunnel==0.4.0
 toml==0.10.2
 yamldataclassconfig==1.5.0
