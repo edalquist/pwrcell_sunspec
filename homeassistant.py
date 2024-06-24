@@ -230,7 +230,9 @@ class PwrCellHA():
                        device_id: str, sensor_id: str, device_name: str = None, device_name_suffix: str = None,
                        round_digits: int = -1, moving_average: bool = False, negate: bool = False):
     device = point.model.device
-    device_name = device_name or device.common[0].Md.value
+    device_name_select = device_name or device.common[0].Md.value
+    device_id = device.common[0].SN.value
+    device_name = "{}:{}".format(device_name_select, device_id)
     if device_name_suffix is not None:
       device_name += device_name_suffix
 
