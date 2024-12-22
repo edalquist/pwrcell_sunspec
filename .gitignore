@@ -1,12 +1,44 @@
-# Created by https://www.toptal.com/developers/gitignore/api/python,venv,visualstudiocode
-# Edit at https://www.toptal.com/developers/gitignore?templates=python,venv,visualstudiocode
-
 config.yaml
 model_dump/
 sunspec-models/
-.vscode/
 model_dump_2/
 scan.json
+
+# Created by https://www.toptal.com/developers/gitignore/api/venv,python,visualstudiocode,macos
+# Edit at https://www.toptal.com/developers/gitignore?templates=venv,python,visualstudiocode,macos
+
+### macOS ###
+# General
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Icon must end with two \r
+Icon
+
+
+# Thumbnails
+._*
+
+# Files that might appear in the root of a volume
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+### macOS Patch ###
+# iCloud generated files
+*.icloud
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
@@ -170,6 +202,16 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+### Python Patch ###
+# Poetry local configuration file - https://python-poetry.org/docs/configuration/#local-configuration
+poetry.toml
+
+# ruff
+.ruff_cache/
+
+# LSP config files
+pyrightconfig.json
+
 ### venv ###
 # Virtualenv
 # http://iamzed.com/2009/05/07/a-primer-on-virtualenv/
@@ -201,10 +243,4 @@ pip-selfcheck.json
 .history
 .ionide
 
-# Support for Project snippet scope
-.vscode/*.code-snippets
-
-# Ignore code-workspaces
-*.code-workspace
-
-# End of https://www.toptal.com/developers/gitignore/api/python,venv,visualstudiocode
+# End of https://www.toptal.com/developers/gitignore/api/venv,python,visualstudiocode,macos
