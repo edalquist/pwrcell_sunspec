@@ -43,6 +43,49 @@ class PwrCellHA():
         device_id='rebus_beacon',
         sensor_id='system_mode')
 
+    self.__define_number(
+            self.__pwrcell.inverter.reconnect[0].ReConn_Tms,
+            device_id='pwrcell_inverter',
+            sensor_id='reconnect_time_sec',
+            min=1,
+            max=3000)
+    self.__define_number(
+            self.__pwrcell.inverter.reconnect[0].ReConnMinV,
+            device_id='pwrcell_inverter',
+            sensor_id='reconnect_min_v',
+            min=90,
+            max=240)
+    self.__define_number(
+            self.__pwrcell.inverter.reconnect[0].ReConnMaxV,
+            device_id='pwrcell_inverter',
+            sensor_id='reconnect_max_v',
+            min=90,
+            max=240)
+    self.__define_number(
+            self.__pwrcell.inverter.reconnect[0].ReConnMinHz,
+            device_id='pwrcell_inverter',
+            sensor_id='reconnect_min_hz',
+            min=50,
+            max=70)
+    self.__define_number(
+            self.__pwrcell.inverter.reconnect[0].ReConnMaxHz,
+            device_id='pwrcell_inverter',
+            sensor_id='reconnect_max_hz',
+            min=50,
+            max=70)
+    self.__define_number(
+            self.__pwrcell.inverter.reconnect[0].VWLatchTms,
+            device_id='pwrcell_inverter',
+            sensor_id='reconnect_volt_latch_time',
+            min=1,
+            max=3000)
+    self.__define_number(
+            self.__pwrcell.inverter.reconnect[0].FWLatchTms,
+            device_id='pwrcell_inverter',
+            sensor_id='reconnect_freq_latch_time',
+            min=1,
+            max=3000)
+
     self.__define_sensor(
         self.__pwrcell.inverter.REbus_exp[0].Px1,
         device_id='pwrcell_inverter',
@@ -89,7 +132,14 @@ class PwrCellHA():
         device_id='pwrcell_inverter',
         sensor_id='inverter_phase2_volts',
         round_digits=1,
-        moving_average=True)    
+        moving_average=True)
+    self.__define_sensor(
+        self.__pwrcell.inverter.inverter[0].Hz,
+        device_id='pwrcell_inverter',
+        sensor_id='inverter_line_frequency',
+        round_digits=1,
+        moving_average=True)
+
     self.__define_sensor(
         self.__pwrcell.inverter.REbus_status[0].St,
         device_id='pwrcell_inverter',
@@ -138,6 +188,18 @@ class PwrCellHA():
             self.__pwrcell.battery.REbus_status[0].St,
             device_id='battery',
             sensor_id='battery_state')
+        self.__define_number(
+            self.__pwrcell.battery.battery[0].AChaMax,
+            device_id='battery',
+            sensor_id='max_charge_current',
+            min=1,
+            max=35)
+        self.__define_number(
+            self.__pwrcell.battery.battery[0].ADisChaMax,
+            device_id='battery',
+            sensor_id='max_discharge_current',
+            min=1,
+            max=35)
 
     for pv_link_id, pv_link in self.__pwrcell.pv_links.items():
       device_id = 'pv_link_{}'.format(pv_link_id)
@@ -297,9 +359,11 @@ class PwrCellHA():
       if p_units in ['W']:
         return 'power'
       if p_units in ['V']:
-        return 'voltage'      
+        return 'voltage'
       if p_units in ['Wh']:
         return 'energy'
+      if p_units in ['Hz']:
+        return 'frequency'
       if p_units in ['%WHRtg']:
         return 'battery'
       else:

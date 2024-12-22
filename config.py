@@ -45,3 +45,4 @@ class RootConfig(YamlDataClassConfig):
   log_level: str = "INFO"
   pwrcell: PwrcellConfig | None = None
   mqtt: MqttConfig | None = None
+  sunspec_cache_dir: str | None = None

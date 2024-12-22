@@ -13,15 +13,19 @@ from absl import app
 from absl import flags
 from sshtunnel import open_tunnel
 
-# import homeassistant
 import pwrcell
 from config import RootConfig
+from paramiko import SSHClient
+from scp import SCPClient
+from pathlib import Path
+import filecmp
+
 
 FLAGS = flags.FLAGS
 flags.DEFINE_enum("mode", "watch", ["watch", "scan", "ha"], "Mode to run CLI")
 
-CONFIG: RootConfig = RootConfig()\
-
+CONFIG: RootConfig = RootConfig()
+APP_PATH = Path(os.path.realpath(__file__)).parent
 
 
 @contextmanager
@@ -32,22 +36,50 @@ def _open_tunnel():
       (CONFIG.pwrcell.ssh_tunnel.host, CONFIG.pwrcell.ssh_tunnel.port),
       ssh_username=CONFIG.pwrcell.ssh_tunnel.username,
       ssh_pkey=CONFIG.pwrcell.ssh_tunnel.identity_file,
-      local_bind_address=('127.0.0.1', ),
-      remote_bind_address=('127.0.0.1', 502),
+      local_bind_addresses=[
+          ('127.0.0.1', ),
+          ('127.0.0.1', ),
+      ],
+      remote_bind_addresses=[
+          ('127.0.0.1', 502),   # ModBus
+          ('127.0.0.1', 1883),  # MQTT
+      ],
       set_keepalive=4.0,
   ) as server:
-    logging.info("pwrcell tunnel listening on %s:%s",
-                 server.local_bind_address[0], server.local_bind_port)
+    logging.info("pwrcell tunnel listening. ModBus=%s, MQTT=%s",
+                 server.local_bind_ports[0], server.local_bind_ports[1])
     yield server
 
 
 @contextmanager
 def _sunspec_models():
-  with tempfile.TemporaryDirectory() as tempdir:
-    logging.info("Extracting sunspec models to %s", tempdir)
-    zf = zipfile.ZipFile(os.path.join(sys.path[0], "sunspec-models.zip"))
-    zf.extractall(tempdir)
-    yield os.path.join(tempdir, "sunspec-models")
+  sunspec_cache_dir = Path(CONFIG.sunspec_cache_dir) if CONFIG.sunspec_cache_dir else APP_PATH
+  with SSHClient() as ssh:
+    ssh.load_system_host_keys()
+
+    ssh.connect(CONFIG.pwrcell.ssh_tunnel.host,
+                port=CONFIG.pwrcell.ssh_tunnel.port,
+                username=CONFIG.pwrcell.ssh_tunnel.username,
+                key_filename=CONFIG.pwrcell.ssh_tunnel.identity_file)
+    logging.info("Checking for new sunspec models on %s", CONFIG.pwrcell.ssh_tunnel.host)
+
+    with SCPClient(ssh.get_transport()) as scp:
+      remote_version_file = sunspec_cache_dir / 'version.chk'
+      scp.get('/opt/pika/sunspec-models/version',
+              remote_version_file,
+              preserve_times=True)
+      cached_version_file = sunspec_cache_dir / 'sunspec-models' / 'version'
+      if cached_version_file.exists() and filecmp.cmp(cached_version_file, remote_version_file):
+        logging.info('Cached sunspec-models are up to date.')
+      else:
+        logging.info('New sunspec-models found, downloading...')
+        logging.info('Cached Version: %s', cached_version_file.read_text() if cached_version_file.exists() else 'n/a')
+        logging.info('Remote Version: %s', remote_version_file.read_text())
+
+        # Recursively download all sunspec model files
+        scp.get('/opt/pika/sunspec-models', sunspec_cache_dir, recursive=True, preserve_times=True)
+
+  yield sunspec_cache_dir
 
 
 def main(argv):
@@ -60,12 +92,17 @@ def main(argv):
   logging.basicConfig(format=FORMAT, level=log_level)
   logging.info("Setting Log Level to %s", log_level)
 
+  with _sunspec_models() as temp_models:
+    logging.info('Model Download: %s', temp_models)
+
+  exit()
+
   with _open_tunnel() as server, \
       _sunspec_models() as temp_models, \
       pwrcell.GeneracPwrCell(
           CONFIG.pwrcell.device_ids,
-          ipaddr=server.local_bind_address[0],
-          ipport=server.local_bind_port, timeout=60,
+          ipaddr=server.local_bind_addresses[0],
+          ipport=server.local_bind_ports[0], timeout=60,
           extra_model_defs=[temp_models]) as gpc:
     if FLAGS.mode == "scan":
       gpc.scan()

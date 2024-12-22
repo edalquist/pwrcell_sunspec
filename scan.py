@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 
-from contextlib import contextmanager
-import copy
-import re
 from absl import app
 from absl import flags
+from contextlib import contextmanager
+from dataclasses import asdict
 from operator import invert
 from pathlib import Path
+from sshtunnel import open_tunnel
+import copy
 import datetime
 import json
 import logging
 import os
+import re
 import sunspec2
 import sunspec2.device as device
 import sunspec2.modbus.client as client
@@ -19,7 +21,6 @@ import tempfile
 import time
 import yaml
 import zipfile
-from sshtunnel import open_tunnel
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string("model_dir", None, "directory")
@@ -130,7 +131,7 @@ def main(argv):
     updated_config = copy.deepcopy(CONFIG)
     updated_config.pwrcell.device_ids = config_fragment
     print("********** updated config.yaml **********")
-    yaml.dump(updated_config, sys.stdout, default_flow_style=False)
+    yaml.dump(asdict(updated_config), sys.stdout, default_flow_style=False)
     print("*****************************************")
 
 
