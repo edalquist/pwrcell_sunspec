@@ -92,17 +92,62 @@ class GeneracPwrCell():
     logging.info("EXIT")
     self.close()
     return False
-  
-  def scan(self, start: int = 1, end: int = 100):
+
+  def scan(self, start: int = 1, end: int = 100, stop_at_first_duplicate = True):
     logging.info("Scanning %s:%s from ID %s to %s",
                  self.__ipaddr, self.__ipport, start, end)
+    found_devices = {}
 
     for slid in range(start, end):
       d = ss2_client.SunSpecModbusClientDeviceTCP(
           slave_id=slid, ipaddr=self.__ipaddr, ipport=self.__ipport, timeout=self.__iptimeout)
       try:
-        pass
+        for t in range(3):
+          try:
+            logging.debug('ID %s - Scanning', slid)
+            d.scan()
+            break
+          except Exception as e:
+            if 'Modbus exception 11:' in str(e):
+              logging.info('Retrying %s', slid)
+              continue
+            elif "Error scanning SunSpec base addresses." in str(e):
+              logging.debug('ID %s - No Device', slid)
+              break
+            raise e
+
+        if 'common' not in d.models:
+          logging.debug('ID %s - No Device', slid)
+          continue
+
+        ids = found_devices.setdefault(d.common[0].SN.value,
+            {}).setdefault(d.common[0].Vr.value,
+            {}).setdefault(d.common[0].Md.value,
+            {}).setdefault(d.common[0].Mn.value,
+            [])
+        ids.append(slid)
+
+        if len(ids) > 1:
+          if stop_at_first_duplicate:
+            return
+
+          logging.info('Duplicate ID %s is %s %s (%s / %s)',
+            ids,
+            d.common[0].Mn.value,
+            d.common[0].Md.value,
+            d.common[0].Vr.value,
+            d.common[0].SN.value
+          )
+        else:
+          logging.info('Found ID %s is %s %s (%s / %s)',
+            slid,
+            d.common[0].Mn.value,
+            d.common[0].Md.value,
+            d.common[0].Vr.value,
+            d.common[0].SN.value
+          )
       finally:
+        # TODO add withcontext wrappers for sunspec code?
         d.close()
 
   def __init_device(self, name: str, device_id: int):

@@ -64,13 +64,14 @@ def _sunspec_models():
     logging.info("Checking for new sunspec models on %s", CONFIG.pwrcell.ssh_tunnel.host)
 
     with SCPClient(ssh.get_transport()) as scp:
-      remote_version_file = sunspec_cache_dir / 'version.chk'
+      remote_version_file = sunspec_cache_dir / 'sunspec-models' / 'version.chk'
       scp.get('/opt/pika/sunspec-models/version',
               remote_version_file,
               preserve_times=True)
       cached_version_file = sunspec_cache_dir / 'sunspec-models' / 'version'
       if cached_version_file.exists() and filecmp.cmp(cached_version_file, remote_version_file):
         logging.info('Cached sunspec-models are up to date.')
+        logging.info('Version: %s', cached_version_file.read_text())
       else:
         logging.info('New sunspec-models found, downloading...')
         logging.info('Cached Version: %s', cached_version_file.read_text() if cached_version_file.exists() else 'n/a')
@@ -92,18 +93,14 @@ def main(argv):
   logging.basicConfig(format=FORMAT, level=log_level)
   logging.info("Setting Log Level to %s", log_level)
 
-  with _sunspec_models() as temp_models:
-    logging.info('Model Download: %s', temp_models)
-
-  exit()
-
-  with _open_tunnel() as server, \
+  with \
       _sunspec_models() as temp_models, \
+      _open_tunnel() as server, \
       pwrcell.GeneracPwrCell(
           CONFIG.pwrcell.device_ids,
-          ipaddr=server.local_bind_addresses[0],
+          ipaddr=server.local_bind_addresses[0][0],
           ipport=server.local_bind_ports[0], timeout=60,
-          extra_model_defs=[temp_models]) as gpc:
+          extra_model_defs=[str(temp_models)]) as gpc:
     if FLAGS.mode == "scan":
       gpc.scan()
     else:
