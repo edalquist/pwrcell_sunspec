@@ -1,0 +1,130 @@
+syntax = "proto3";
+
+package file_store;
+
+message FileStoreRequest {
+  string requestID = 1;
+  Timestamp requestTimestamp = 2;
+  FileUploadRequest fileUploadRequest = 3;
+  FileDownloadRequest fileDownloadRequest = 4;
+}
+message Timestamp {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}
+message FileUploadRequest {
+  Timestamp fileTimestamp = 3;
+  FileType fileType = 4;
+  string fileName = 5;
+  string base64EncodedSHA256Checksum = 6;
+  repeated FileMetadata metadata = 7;
+  DeviceIdentifiers blueMarlinDeviceIdentifiers = 8;
+  DeviceIdentifiers essDeviceIdentifiers = 9;
+  MtestIdentifier mtestIdentifier = 10;
+}
+message FileMetadata {
+  string label = 1;
+  string value = 2;
+}
+message DeviceIdentifiers {
+  string deviceId = 1;
+  string gatewayId = 2;
+  DeviceType deviceType = 3;
+}
+enum DeviceType {
+  UNKNOWN_DEVICE = 0;
+  INVERTER = 1;
+  BEACON = 2;
+  BATTERY = 3;
+  PVLINK = 4;
+  ICM = 5;
+  RGM = 6;
+  GENERATOR = 7;
+  MICRO_INVERTER = 8;
+  GATEWAY = 9;
+  LOAD_CONTROLLER = 11;
+  LEANCORE = 12;
+  MANTA = 13;
+  PENGUIN = 14;
+}
+message DeviceIdentifiers {
+  string deviceId = 1;
+  string beaconRcpn = 2;
+  string hostRcpn = 3;
+  DeviceType deviceType = 4;
+}
+enum DeviceType {
+  UNKNOWN = 1;
+  INVERTER = 2;
+  BEACON = 3;
+  BATTERY = 4;
+  PVLINK = 5;
+  ICM = 6;
+  RGM = 7;
+  GENERATOR = 8;
+}
+message MtestIdentifier {
+  string station_id = 1;
+  string factory_id = 2;
+  string test_id = 3;
+  string test_name = 4;
+  DeviceIdentifiers blue_marlin_device = 5;
+}
+enum FileType {
+  UNKNOWN_FILE = 0;
+  TRACE_FILE = 1;
+  CONFIG_FILE = 2;
+  LOG_FILE = 3;
+  TREND_FILE = 4;
+  CRASH_LOG = 5;
+}
+message FileDownloadRequest {
+  string url = 1;
+  Duration expirationDuration = 2;
+  RequesterIdentifier requesterIdentifier = 3;
+}
+message Duration {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}
+message RequesterIdentifier {
+  DeviceIdentifiers blueMarlinDeviceIdentifiers = 1;
+  DeviceIdentifiers essDeviceIdentifiers = 2;
+}
+message DeviceIdentifiers {
+  string deviceId = 1;
+  string gatewayId = 2;
+  DeviceType deviceType = 3;
+}
+enum DeviceType {
+  UNKNOWN_DEVICE = 0;
+  INVERTER = 1;
+  BEACON = 2;
+  BATTERY = 3;
+  PVLINK = 4;
+  ICM = 5;
+  RGM = 6;
+  GENERATOR = 7;
+  MICRO_INVERTER = 8;
+  GATEWAY = 9;
+  LOAD_CONTROLLER = 11;
+  LEANCORE = 12;
+  MANTA = 13;
+  PENGUIN = 14;
+}
+message DeviceIdentifiers {
+  string deviceId = 1;
+  string beaconRcpn = 2;
+  string hostRcpn = 3;
+  DeviceType deviceType = 4;
+}
+enum DeviceType {
+  UNKNOWN = 1;
+  INVERTER = 2;
+  BEACON = 3;
+  BATTERY = 4;
+  PVLINK = 5;
+  ICM = 6;
+  RGM = 7;
+  GENERATOR = 8;
+}

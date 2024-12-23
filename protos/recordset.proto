@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package dataplatform;
+
+message RecordSet {
+  string sensorId = 1;
+  repeated Record record = 2;
+}
+message Record {
+  double timestamp = 1;
+  repeated ChannelSample channel = 2;
+  double systemTime = 5;
+  SysModeType sysMode = 3;
+  InverterStateType inverterState = 4;
+}
+message ChannelSample {
+  uint32 channel = 1;
+  ChannelType channelType = 2;
+  uint64 exportedEnergy_Ws = 3;
+  uint64 importedEnergy_Ws = 4;
+  float voltage_V = 5;
+  sint32 reactivePower_VAR = 6;
+  sint32 realPower_W = 7;
+  uint32 widebandReactivePower_VAR = 8;
+  string deviceId = 9;
+  DeviceType deviceType = 10;
+  AggregationLevel aggregateLevel = 11;
+  float SoC = 12;
+  bool isRevenueGrade = 13;
+  float reactivePower_VARf = 14;
+  float realPower_Wf = 15;
+  string label = 16;
+  float realPowerSourceMax_W = 17;
+  float realPowerSinkMax_W = 18;
+}
+enum ChannelType {
+  NET = 0;
+  GENERATION = 1;
+  CONSUMPTION = 2;
+  PHASE_A_CONSUMPTION = 3;
+  PHASE_B_CONSUMPTION = 4;
+  PHASE_C_CONSUMPTION = 5;
+  SUBMETER = 6;
+  INVERTER_OUTPUT = 7;
+}
+enum DeviceType {
+  BATTERY = 0;
+  SOLAR = 1;
+  INVERTER = 2;
+  GENERATOR = 3;
+  OCTOPUS = 4;
+  MICRO_INVERTER = 5;
+}
+enum AggregationLevel {
+  RAW = 0;
+  AGGREGATED = 1;
+}
+enum SysModeType {
+  SAFETY_SHUTDOWN = 0;
+  GRID_TIE = 1;
+  SELF_SUPPLY = 2;
+  CLEAN_BACKUP = 3;
+  PRIORITY_BACKUP = 4;
+  REMOTE_ARBITRAGE = 5;
+  SELL = 6;
+}
+enum InverterStateType {
+  UNKNOWN = 0;
+  DISABLED = 16;
+  ESTOP_ACTIVE = 32;
+  INITIALIZING = 256;
+  POWERING_UP = 272;
+  CONNECTING_BUS = 288;
+  DISCONNECTING_BUS = 304;
+  TESTING_BUS = 320;
+  LOW_BUS_VOLTAGE = 512;
+  STANDBY = 768;
+  WAITING = 784;
+  WAITING_NO_INPUT = 800;
+  WAITING_HEARTBEAT = 816;
+  CONNECTING_GRID = 2048;
+  DISCONNECTING_GRID = 2064;
+  GRID_CONNECTED = 2080;
+  ISLANDED = 2096;
+  CONNECTING_GENERATOR = 2112;
+  GENERATOR_PARALLEL = 2128;
+  DISCONNECTING_GENERATOR = 2144;
+  ISLAND_OVERLOAD = 2160;
+  ISLANDED_WITH_ACCPV = 2176;
+  ISLANDED_WITHOUT_ACCPV = 2192;
+  SCHEDULER_DISABLED = 4880;
+  GROUND_FAULT = 16384;
+  GROUND_FAULT_LOCKOUT = 16416;
+  BUS_OVER_VOLTAGE = 16896;
+  ERROR_GENERIC = 28672;
+  ERROR_REBUS_FAULT = 29968;
+  ERROR_INTERNAL_BUS_FAULT = 29984;
+  CONFIGURATION_ERROR = 30464;
+  BAD_RESET_ERROR = 30480;
+  WIRING_ERROR = 30496;
+  ERROR_FUSE_BLOWN = 30512;
+}

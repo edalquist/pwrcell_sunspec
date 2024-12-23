@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package beacon.logger;
+
+message LogEvent {
+  Timestamp timestamp = 1;
+  string message = 2;
+  LogLevel log_level = 3;
+  string beacon_rcpn = 4;
+  string service_name = 5;
+}
+message Timestamp {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}
+enum LogLevel {
+  LOGLEVEL_DEBUG = 0;
+  LOGLEVEL_INFO = 1;
+  LOGLEVEL_WARNING = 2;
+  LOGLEVEL_ERROR = 3;
+}

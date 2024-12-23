@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package energy_record_set;
+
+message EnergyRecordSet {
+  repeated EnergyRecord energyRecord = 4;
+  bool isHighFrequency = 5;
+  string inverterId = 6;
+  GatewayInfo gatewayInfo = 8;
+  SystemFamily systemFamily = 9;
+}
+message EnergyRecord {
+  double currentTimestamp = 1;
+  double previousTimestamp = 2;
+  repeated ChannelSample channel = 3;
+  SystemMode sysMode = 4;
+  uint32 inverterState = 5;
+  int64 acConversionChecksum = 6;
+}
+message ChannelSample {
+  uint32 channel = 1;
+  ChannelType channelType = 2;
+  uint64 exportedEnergy_Ws = 3;
+  uint64 importedEnergy_Ws = 4;
+  uint64 deltaExportedEnergy_Ws = 5;
+  uint64 deltaImportedEnergy_Ws = 6;
+  sint32 realPower_W = 7;
+  string deviceId = 8;
+  EnergyDeviceType deviceType = 9;
+  float soc = 10;
+  bool isRevenueGrade = 11;
+  float realPower_Wf = 12;
+  float soh = 13;
+  repeated AnomalyCode anomalyCodeList = 14;
+  float voltage_V = 15;
+  sint32 reactivePower_VAR = 16;
+  float realPowerSourceMax_W = 17;
+  float realPowerSinkMax_W = 18;
+}
+enum ChannelType {
+  UNKNOWN_CHANNEL = 0;
+  NET = 1;
+  GENERATION = 2;
+  CONSUMPTION = 3;
+  STORAGE = 4;
+  INVERTER_OUTPUT = 5;
+  GENERATION_AC = 6;
+  STORAGE_AC = 7;
+}
+enum EnergyDeviceType {
+  UNKNOWN_TYPE = 0;
+  BATTERY = 1;
+  SOLAR = 2;
+  INVERTER = 3;
+  GENERATOR = 4;
+  LOAD_CONTROLLER = 5;
+}
+enum AnomalyCode {
+  UNKNOWN_ANOMALY_CODE = 0;
+  IMPORT_ENERGY_REGISTER_ROLLBACK = 1;
+  EXPORT_ENERGY_REGISTER_ROLLBACK = 2;
+  IMPORT_ENERGY_EXCEEDED = 3;
+  EXPORT_ENERGY_EXCEEDED = 4;
+  NON_ZERO_OR_NON_NULL_IMPORT_ENERGY = 5;
+  NON_ZERO_OR_NON_NULL_EXPORT_ENERGY = 6;
+}
+enum SystemMode {
+  UNKNOWN_SYSTEM_MODE = 0;
+  GRID_TIE = 1;
+  SELF_SUPPLY = 2;
+  CLEAN_BACKUP = 3;
+  PRIORITY_BACKUP = 4;
+  REMOTE_ARBITRAGE = 5;
+  SELL = 6;
+  SAFETY_SHUTDOWN = 16;
+}
+message GatewayInfo {
+  string gateway_id = 1;
+  GatewayType gateway_type = 2;
+}
+enum GatewayType {
+  GATEWAY_TYPE_UNSPECIFIED = 0;
+  GATEWAY_TYPE_BEACON = 1;
+  GATEWAY_TYPE_PENGUIN = 2;
+}
+enum SystemFamily {
+  SYSTEM_FAMILY_UNSPECIFIED = 0;
+  SYSTEM_FAMILY_PWRCELL_R1 = 1;
+  SYSTEM_FAMILY_PWRCELL_R2 = 2;
+}

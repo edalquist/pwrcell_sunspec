@@ -8,11 +8,14 @@ from collections.abc import Callable
 from email.policy import default
 from typing import overload
 
+import paho.mqtt.client as mqtt
 import sunspec2.device as device
 import sunspec2.mdef as mdef
 import sunspec2.modbus.client as ss2_client
 import sunspec2.modbus.modbus as mb
 from config import PwrcellDeviceIds
+import protos.energy_record_set_pb2 as energy_record_set_pb2
+import google.protobuf.text_format as text_format
 
 
 # def point_id(point: ss2_client.SunSpecModbusClientPoint):
@@ -50,7 +53,13 @@ from config import PwrcellDeviceIds
 
 
 class GeneracPwrCell():
-  def __init__(self, device_config: PwrcellDeviceIds, ipaddr='127.0.0.1', ipport=502, timeout=None, extra_model_defs: list[str] = None):
+  def __init__(self,
+               device_config: PwrcellDeviceIds,
+               ipaddr='127.0.0.1',
+               modbus_port=502,
+               mqtt_port=1883,
+               timeout=None,
+               extra_model_defs: list[str] = None):
     # Configure additional model def locations
     if extra_model_defs:
       device.set_model_defs_path(
@@ -58,7 +67,8 @@ class GeneracPwrCell():
     logging.info("Model Defs: %s", str(device.get_model_defs_path()))
 
     self.__ipaddr = ipaddr
-    self.__ipport = ipport
+    self.__modbus_port = modbus_port
+    self.__mqtt_port = mqtt_port
     self.__iptimeout = timeout
 
     self.__devices = {}
@@ -95,12 +105,12 @@ class GeneracPwrCell():
 
   def scan(self, start: int = 1, end: int = 100, stop_at_first_duplicate = True):
     logging.info("Scanning %s:%s from ID %s to %s",
-                 self.__ipaddr, self.__ipport, start, end)
+                 self.__ipaddr, self.__modbus_port, start, end)
     found_devices = {}
 
     for slid in range(start, end):
       d = ss2_client.SunSpecModbusClientDeviceTCP(
-          slave_id=slid, ipaddr=self.__ipaddr, ipport=self.__ipport, timeout=self.__iptimeout)
+          slave_id=slid, ipaddr=self.__ipaddr, ipport=self.__modbus_port, timeout=self.__iptimeout)
       try:
         for t in range(3):
           try:
@@ -157,10 +167,10 @@ class GeneracPwrCell():
       raise ValueError("{} id must be set to a positive int".format(name))
 
     device = ss2_client.SunSpecModbusClientDeviceTCP(
-        slave_id=device_id, ipaddr=self.__ipaddr, ipport=self.__ipport, timeout=self.__iptimeout)
+        slave_id=device_id, ipaddr=self.__ipaddr, ipport=self.__modbus_port, timeout=self.__iptimeout)
     device.name = name
     logging.info("Configured %s at %s:%s on id %s", name,
-                 self.__ipaddr, self.__ipport, device_id)
+                 self.__ipaddr, self.__modbus_port, device_id)
     self.__devices[name] = device
     return device
 
@@ -209,8 +219,31 @@ class GeneracPwrCell():
   #       string_combiner.DCW.sf = None
   #       string_combiner.DCW.sf_value = -1
 
+  # The callback for when the client receives a CONNACK response from the server.
+  def __mqtt_on_connect(self, client, userdata, flags, reason_code, properties):
+      logging.info("MQTT Connected with result code %s", reason_code)
+      # Subscribing in on_connect() means that if we lose the connection and
+      # reconnect then subscriptions will be renewed.
+      client.subscribe("#")
+
+  # The callback for when a PUBLISH message is received from the server.
+  def __mqtt_on_message(self, client, userdata, msg):
+      logging.info("mqtt: %s", msg.topic)
+      erl = energy_record_set_pb2.EnergyRecordSet()
+      erl.ParseFromString(msg.payload)
+      text = text_format.MessageToString(erl, print_unknown_fields=True)
+      print(text)
+
   def init(self):
     logging.info("init")
+
+    self.__mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    self.__mqttc.on_connect = self.__mqtt_on_connect
+    self.__mqttc.on_message = self.__mqtt_on_message
+
+    self.__mqttc.loop_start()
+    self.__mqttc.connect(self.__ipaddr, self.__mqtt_port, self.__iptimeout)
+
     # Kick off scans of all devices
     futures_to_devices = {}
   #   for device in self.__devices.values():
@@ -292,6 +325,8 @@ class GeneracPwrCell():
 
   def close(self):
     logging.info("Closing all devices")
+    self.__mqttc.loop_stop()
+
     # for name, device in self.__devices.items():
     #   device.close()
     #   logging.debug('Closed %s', name)

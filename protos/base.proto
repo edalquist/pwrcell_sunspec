@@ -1,0 +1,822 @@
+syntax = "proto3";
+
+package system_control;
+
+message BaseRequest {
+  string id = 1;
+  string actorID = 2;
+  ActorRequest actor_request = 3;
+  CancelRequest cancel_request = 4;
+  ControlRequest control_request = 5;
+  ListRequest list_request = 6;
+  UpdateRequest update_request = 7;
+  Timestamp request_timestamp = 8;
+}
+message ActorRequest {
+  repeated Actor actors = 1;
+  bool update = 2;
+}
+message Actor {
+  string actor_id = 1;
+  uint32 priority = 2;
+  repeated ActorError errors = 3;
+}
+message ActorError {
+  ActorErrorCode error_code = 1;
+  string actor_id = 2;
+  string message = 3;
+}
+enum ActorErrorCode {
+  UNKOWN_ACTOR_ERROR = 0;
+}
+message CancelRequest {
+  repeated string control_message_ids = 1;
+}
+message ControlRequest {
+  repeated ControlMessageRequest control_messages = 1;
+}
+message ControlMessageRequest {
+  string control_message_id = 1;
+  Timestamp start_time = 2;
+  Duration duration = 3;
+  RealPowerControl real_power = 4;
+  SystemModeControl sysmode = 5;
+  BatterySettingControl battery = 7;
+  InverterSettingControl inverter = 8;
+  PVLinkSettingControl pv_link = 10;
+  bool cancel_if_overshadowed = 6;
+  bool instant_control = 9;
+}
+message Duration {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}
+message RealPowerControl {
+  RealPowerSetting setting = 1;
+  RealPowerReversionSetting reversion_setting = 2;
+}
+message RealPowerSetting {
+  int32 power_w = 1;
+  bool cancel_on_external_change = 2;
+}
+message RealPowerReversionSetting {
+  bool tou_enabled = 1;
+  SystemMode system_mode = 2;
+}
+enum SystemMode {
+  UNKNOWN_SYSTEM_MODE = 0;
+  GRID_TIE = 1;
+  SELF_SUPPLY = 2;
+  CLEAN_BACKUP = 3;
+  PRIORITY_BACKUP = 4;
+  REMOTE_ARBITRAGE = 5;
+  SELL = 6;
+  SAFETY_SHUTDOWN = 16;
+}
+message SystemModeControl {
+  SystemModeSetting setting = 1;
+  SystemModeReversionSetting reversion_setting = 2;
+}
+message SystemModeSetting {
+  bool tou_enabled = 1;
+  SystemMode system_mode = 2;
+  bool cancel_on_external_change = 3;
+}
+enum SystemMode {
+  UNKNOWN_SYSTEM_MODE = 0;
+  GRID_TIE = 1;
+  SELF_SUPPLY = 2;
+  CLEAN_BACKUP = 3;
+  PRIORITY_BACKUP = 4;
+  REMOTE_ARBITRAGE = 5;
+  SELL = 6;
+  SAFETY_SHUTDOWN = 16;
+}
+message SystemModeReversionSetting {
+  bool tou_enabled = 1;
+  SystemMode system_mode = 2;
+}
+enum SystemMode {
+  UNKNOWN_SYSTEM_MODE = 0;
+  GRID_TIE = 1;
+  SELF_SUPPLY = 2;
+  CLEAN_BACKUP = 3;
+  PRIORITY_BACKUP = 4;
+  REMOTE_ARBITRAGE = 5;
+  SELL = 6;
+  SAFETY_SHUTDOWN = 16;
+}
+message BatterySettingControl {
+  repeated BatterySetting setting = 4;
+  repeated BatterySetting reversion_setting = 5;
+}
+message BatterySetting {
+  double soc_max = 1;
+  double soc_min = 2;
+  double soc_rsv_max = 3;
+  double soc_rsv_min = 4;
+  double a_cha_max = 5;
+  double a_dis_cha_max = 6;
+  string rcpn = 7;
+  bool cancel_on_external_change = 8;
+  BatteryState state = 9;
+}
+enum BatteryState {
+  STATE_UNSPECIFIED = 0;
+  STATE_DISABLED = 1;
+  STATE_ENABLED = 2;
+}
+message InverterSettingControl {
+  InverterSetting setting = 1;
+  InverterSetting reversion_setting = 2;
+}
+message InverterSetting {
+  repeated SystemMode active_system_modes = 1;
+  State state = 2;
+  Islanding islanding = 3;
+  ExportOverride export_override = 4;
+  NumberOfTransferSwitches number_of_transfer_switches = 5;
+  LoadShedding load_shedding = 6;
+}
+enum SystemMode {
+  UNKNOWN_SYSTEM_MODE = 0;
+  GRID_TIE = 1;
+  SELF_SUPPLY = 2;
+  CLEAN_BACKUP = 3;
+  PRIORITY_BACKUP = 4;
+  REMOTE_ARBITRAGE = 5;
+  SELL = 6;
+  SAFETY_SHUTDOWN = 16;
+}
+enum State {
+  STATE_UNSPECIFIED = 0;
+  STATE_DISABLED = 1;
+  STATE_ENABLED = 2;
+}
+enum Islanding {
+  ISLANDING_UNSPECIFIED = 0;
+  ISLANDING_DISABLED = 1;
+  ISLANDING_ENABLED = 2;
+}
+enum ExportOverride {
+  EXPORT_OVERRIDE_UNSPECIFIED = 0;
+  EXPORT_OVERRIDE_DISABLED = 1;
+  EXPORT_OVERRIDE_ENABLED = 2;
+}
+enum NumberOfTransferSwitches {
+  NUMBER_OF_TRANSFER_SWITCHES_UNSPECIFIED = 0;
+  NUMBER_OF_TRANSFER_SWITCHES_ZERO = 1;
+  NUMBER_OF_TRANSFER_SWITCHES_ONE = 2;
+  NUMBER_OF_TRANSFER_SWITCHES_TWO = 3;
+}
+enum LoadShedding {
+  LOAD_SHEDDING_UNSPECIFIED = 0;
+  LOAD_SHEDDING_DISABLED = 1;
+  LOAD_SHEDDING_SMM_ONLY = 2;
+  LOAD_SHEDDING_ATS_AND_SMM = 3;
+}
+message PVLinkSettingControl {
+  repeated PVLinkSetting setting = 1;
+  repeated PVLinkSetting reversion_setting = 2;
+}
+message PVLinkSetting {
+  State state = 1;
+  PVRSSState pvrss_state = 2;
+  double minimum_input_voltage = 3;
+  NumberOfSubstrings number_of_substrings = 4;
+  string rcpn = 5;
+}
+enum State {
+  STATE_UNSPECIFIED = 0;
+  STATE_DISABLED = 1;
+  STATE_ENABLED = 2;
+}
+enum PVRSSState {
+  PVRSS_STATE_UNSPECIFIED = 0;
+  PVRSS_STATE_OFF = 1;
+  PVRSS_STATE_ON = 2;
+}
+enum NumberOfSubstrings {
+  NUMBER_OF_SUBSTRINGS_UNSPECIFIED = 0;
+  NUMBER_OF_SUBSTRINGS_ONE = 1;
+  NUMBER_OF_SUBSTRINGS_TWO = 2;
+}
+message ListRequest {
+  ListActorsRequest list_actors_request = 1;
+  ListEventsRequest list_events_request = 2;
+}
+message ListActorsRequest {
+}
+message ListEventsRequest {
+  Timestamp start_timestamp = 2;
+  Timestamp end_timestamp = 3;
+  repeated string filter_actor_ids = 4;
+  SubControlType sub_control = 5;
+  bool include_details = 6;
+}
+enum SubControlType {
+  UNKNOWN_SUB_CONTROL = 0;
+  SYSTEM_MODE = 1;
+  REAL_POWER = 2;
+  BATTERY = 3;
+  INVERTER = 4;
+  PV_LINK = 5;
+}
+message UpdateRequest {
+  repeated ControlMessageRequest control_messages = 1;
+}
+message ControlMessageRequest {
+  string control_message_id = 1;
+  Timestamp start_time = 2;
+  Duration duration = 3;
+  RealPowerControl real_power = 4;
+  SystemModeControl sysmode = 5;
+  BatterySettingControl battery = 7;
+  InverterSettingControl inverter = 8;
+  PVLinkSettingControl pv_link = 10;
+  bool cancel_if_overshadowed = 6;
+  bool instant_control = 9;
+}
+message Duration {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}
+message RealPowerControl {
+  RealPowerSetting setting = 1;
+  RealPowerReversionSetting reversion_setting = 2;
+}
+message RealPowerSetting {
+  int32 power_w = 1;
+  bool cancel_on_external_change = 2;
+}
+message RealPowerReversionSetting {
+  bool tou_enabled = 1;
+  SystemMode system_mode = 2;
+}
+enum SystemMode {
+  UNKNOWN_SYSTEM_MODE = 0;
+  GRID_TIE = 1;
+  SELF_SUPPLY = 2;
+  CLEAN_BACKUP = 3;
+  PRIORITY_BACKUP = 4;
+  REMOTE_ARBITRAGE = 5;
+  SELL = 6;
+  SAFETY_SHUTDOWN = 16;
+}
+message SystemModeControl {
+  SystemModeSetting setting = 1;
+  SystemModeReversionSetting reversion_setting = 2;
+}
+message SystemModeSetting {
+  bool tou_enabled = 1;
+  SystemMode system_mode = 2;
+  bool cancel_on_external_change = 3;
+}
+enum SystemMode {
+  UNKNOWN_SYSTEM_MODE = 0;
+  GRID_TIE = 1;
+  SELF_SUPPLY = 2;
+  CLEAN_BACKUP = 3;
+  PRIORITY_BACKUP = 4;
+  REMOTE_ARBITRAGE = 5;
+  SELL = 6;
+  SAFETY_SHUTDOWN = 16;
+}
+message SystemModeReversionSetting {
+  bool tou_enabled = 1;
+  SystemMode system_mode = 2;
+}
+enum SystemMode {
+  UNKNOWN_SYSTEM_MODE = 0;
+  GRID_TIE = 1;
+  SELF_SUPPLY = 2;
+  CLEAN_BACKUP = 3;
+  PRIORITY_BACKUP = 4;
+  REMOTE_ARBITRAGE = 5;
+  SELL = 6;
+  SAFETY_SHUTDOWN = 16;
+}
+message BatterySettingControl {
+  repeated BatterySetting setting = 4;
+  repeated BatterySetting reversion_setting = 5;
+}
+message BatterySetting {
+  double soc_max = 1;
+  double soc_min = 2;
+  double soc_rsv_max = 3;
+  double soc_rsv_min = 4;
+  double a_cha_max = 5;
+  double a_dis_cha_max = 6;
+  string rcpn = 7;
+  bool cancel_on_external_change = 8;
+  BatteryState state = 9;
+}
+enum BatteryState {
+  STATE_UNSPECIFIED = 0;
+  STATE_DISABLED = 1;
+  STATE_ENABLED = 2;
+}
+message InverterSettingControl {
+  InverterSetting setting = 1;
+  InverterSetting reversion_setting = 2;
+}
+message InverterSetting {
+  repeated SystemMode active_system_modes = 1;
+  State state = 2;
+  Islanding islanding = 3;
+  ExportOverride export_override = 4;
+  NumberOfTransferSwitches number_of_transfer_switches = 5;
+  LoadShedding load_shedding = 6;
+}
+enum SystemMode {
+  UNKNOWN_SYSTEM_MODE = 0;
+  GRID_TIE = 1;
+  SELF_SUPPLY = 2;
+  CLEAN_BACKUP = 3;
+  PRIORITY_BACKUP = 4;
+  REMOTE_ARBITRAGE = 5;
+  SELL = 6;
+  SAFETY_SHUTDOWN = 16;
+}
+enum State {
+  STATE_UNSPECIFIED = 0;
+  STATE_DISABLED = 1;
+  STATE_ENABLED = 2;
+}
+enum Islanding {
+  ISLANDING_UNSPECIFIED = 0;
+  ISLANDING_DISABLED = 1;
+  ISLANDING_ENABLED = 2;
+}
+enum ExportOverride {
+  EXPORT_OVERRIDE_UNSPECIFIED = 0;
+  EXPORT_OVERRIDE_DISABLED = 1;
+  EXPORT_OVERRIDE_ENABLED = 2;
+}
+enum NumberOfTransferSwitches {
+  NUMBER_OF_TRANSFER_SWITCHES_UNSPECIFIED = 0;
+  NUMBER_OF_TRANSFER_SWITCHES_ZERO = 1;
+  NUMBER_OF_TRANSFER_SWITCHES_ONE = 2;
+  NUMBER_OF_TRANSFER_SWITCHES_TWO = 3;
+}
+enum LoadShedding {
+  LOAD_SHEDDING_UNSPECIFIED = 0;
+  LOAD_SHEDDING_DISABLED = 1;
+  LOAD_SHEDDING_SMM_ONLY = 2;
+  LOAD_SHEDDING_ATS_AND_SMM = 3;
+}
+message PVLinkSettingControl {
+  repeated PVLinkSetting setting = 1;
+  repeated PVLinkSetting reversion_setting = 2;
+}
+message PVLinkSetting {
+  State state = 1;
+  PVRSSState pvrss_state = 2;
+  double minimum_input_voltage = 3;
+  NumberOfSubstrings number_of_substrings = 4;
+  string rcpn = 5;
+}
+enum State {
+  STATE_UNSPECIFIED = 0;
+  STATE_DISABLED = 1;
+  STATE_ENABLED = 2;
+}
+enum PVRSSState {
+  PVRSS_STATE_UNSPECIFIED = 0;
+  PVRSS_STATE_OFF = 1;
+  PVRSS_STATE_ON = 2;
+}
+enum NumberOfSubstrings {
+  NUMBER_OF_SUBSTRINGS_UNSPECIFIED = 0;
+  NUMBER_OF_SUBSTRINGS_ONE = 1;
+  NUMBER_OF_SUBSTRINGS_TWO = 2;
+}
+message Timestamp {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}
+
+system_control.base_pb2
+
+message BaseResponse {
+  string id = 1;
+  string actorID = 2;
+  ActorResponse actor_response = 3;
+  CancelResponse cancel_response = 4;
+  ControlResponse control_response = 5;
+  ListResponse list_response = 6;
+  UpdateResponse update_response = 7;
+  repeated Error errors = 8;
+  Timestamp request_timestamp = 9;
+  Timestamp response_timestamp = 10;
+  string beacon_rcpn = 11;
+  string host_rcpn = 12;
+}
+message ActorResponse {
+  repeated Actor actors = 1;
+}
+message Actor {
+  string actor_id = 1;
+  uint32 priority = 2;
+  repeated ActorError errors = 3;
+}
+message ActorError {
+  ActorErrorCode error_code = 1;
+  string actor_id = 2;
+  string message = 3;
+}
+enum ActorErrorCode {
+  UNKOWN_ACTOR_ERROR = 0;
+}
+message CancelResponse {
+  repeated CancelMessageResponse cancel_messages = 1;
+}
+message CancelMessageResponse {
+  string control_message_id = 1;
+  repeated ControlError errors = 2;
+}
+message ControlError {
+  ControlErrorCode error_code = 1;
+  string message = 2;
+}
+enum ControlErrorCode {
+  UNKNOWN_CONTROL_ERROR = 0;
+  BAD_TIME_WINDOW = 1;
+  DUPLICATE_MESSAGE_ID = 2;
+  INVALID_REQUEST = 3;
+  CANCEL_ERROR = 4;
+  MESSAGE_NOT_FOUND = 5;
+  ACTOR_NOT_FOUND = 6;
+  UNAUTHORIZED_ACTOR = 7;
+}
+message ControlResponse {
+  repeated ControlMessageResponse control_messages = 1;
+}
+message ControlMessageResponse {
+  string control_message_id = 1;
+  bool accepted = 2;
+  repeated ControlError errors = 3;
+  uint32 actor_priority = 4;
+}
+message ControlError {
+  ControlErrorCode error_code = 1;
+  string message = 2;
+}
+enum ControlErrorCode {
+  UNKNOWN_CONTROL_ERROR = 0;
+  BAD_TIME_WINDOW = 1;
+  DUPLICATE_MESSAGE_ID = 2;
+  INVALID_REQUEST = 3;
+  CANCEL_ERROR = 4;
+  MESSAGE_NOT_FOUND = 5;
+  ACTOR_NOT_FOUND = 6;
+  UNAUTHORIZED_ACTOR = 7;
+}
+message ListResponse {
+  ListActors actors = 1;
+  ListEvents events = 2;
+}
+message ListActors {
+  repeated Actor actors = 1;
+}
+message Actor {
+  string actor_id = 1;
+  uint32 priority = 2;
+  repeated ActorError errors = 3;
+}
+message ActorError {
+  ActorErrorCode error_code = 1;
+  string actor_id = 2;
+  string message = 3;
+}
+enum ActorErrorCode {
+  UNKOWN_ACTOR_ERROR = 0;
+}
+message ListEvents {
+  repeated ListActorEvents actorEvents = 1;
+}
+message ListActorEvents {
+  Actor actor = 1;
+  repeated Event events = 2;
+}
+message Actor {
+  string actor_id = 1;
+  uint32 priority = 2;
+  repeated ActorError errors = 3;
+}
+message ActorError {
+  ActorErrorCode error_code = 1;
+  string actor_id = 2;
+  string message = 3;
+}
+enum ActorErrorCode {
+  UNKOWN_ACTOR_ERROR = 0;
+}
+message Event {
+  string message_id = 1;
+  Timestamp request_timestamp = 3;
+  SystemModeControl sysmode = 4;
+  BatterySettingControl battery = 9;
+  EventStatus status = 5;
+  CancelationType cancelation_type = 6;
+  EventSchedule event_schedule = 7;
+  EventActual event_actual = 8;
+}
+message SystemModeControl {
+  SystemModeSetting setting = 1;
+  SystemModeReversionSetting reversion_setting = 2;
+}
+message SystemModeSetting {
+  bool tou_enabled = 1;
+  SystemMode system_mode = 2;
+  bool cancel_on_external_change = 3;
+}
+enum SystemMode {
+  UNKNOWN_SYSTEM_MODE = 0;
+  GRID_TIE = 1;
+  SELF_SUPPLY = 2;
+  CLEAN_BACKUP = 3;
+  PRIORITY_BACKUP = 4;
+  REMOTE_ARBITRAGE = 5;
+  SELL = 6;
+  SAFETY_SHUTDOWN = 16;
+}
+message SystemModeReversionSetting {
+  bool tou_enabled = 1;
+  SystemMode system_mode = 2;
+}
+enum SystemMode {
+  UNKNOWN_SYSTEM_MODE = 0;
+  GRID_TIE = 1;
+  SELF_SUPPLY = 2;
+  CLEAN_BACKUP = 3;
+  PRIORITY_BACKUP = 4;
+  REMOTE_ARBITRAGE = 5;
+  SELL = 6;
+  SAFETY_SHUTDOWN = 16;
+}
+message BatterySettingControl {
+  repeated BatterySetting setting = 4;
+  repeated BatterySetting reversion_setting = 5;
+}
+message BatterySetting {
+  double soc_max = 1;
+  double soc_min = 2;
+  double soc_rsv_max = 3;
+  double soc_rsv_min = 4;
+  double a_cha_max = 5;
+  double a_dis_cha_max = 6;
+  string rcpn = 7;
+  bool cancel_on_external_change = 8;
+  BatteryState state = 9;
+}
+enum BatteryState {
+  STATE_UNSPECIFIED = 0;
+  STATE_DISABLED = 1;
+  STATE_ENABLED = 2;
+}
+message EventSchedule {
+  Timestamp schedule_start_time = 1;
+  Timestamp schedule_end_time = 2;
+}
+message EventActual {
+  Timestamp start_time = 1;
+  Timestamp end_time = 2;
+}
+enum EventStatus {
+  UNKNOWN_STATE = 0;
+  SCHEDULED = 1;
+  RUNNING = 2;
+  SHADOWED = 3;
+  COMPLETE = 4;
+  CANCELLED = 5;
+}
+enum CancelationType {
+  UNKNOWN_CANCEL_TYPE = 0;
+  ROOT_ACTOR = 1;
+  SHADOW_CANCELATION = 2;
+  SAME_ACTOR_SHADOW = 3;
+  EXTERNAL = 4;
+  SAME_ACTOR_CANCELATION = 5;
+  HIGHER_PRECEDENCE_ACTOR = 6;
+}
+message UpdateResponse {
+  repeated ControlMessageResponse control_messages = 1;
+}
+message ControlMessageResponse {
+  string control_message_id = 1;
+  bool accepted = 2;
+  repeated ControlError errors = 3;
+  uint32 actor_priority = 4;
+}
+message ControlError {
+  ControlErrorCode error_code = 1;
+  string message = 2;
+}
+enum ControlErrorCode {
+  UNKNOWN_CONTROL_ERROR = 0;
+  BAD_TIME_WINDOW = 1;
+  DUPLICATE_MESSAGE_ID = 2;
+  INVALID_REQUEST = 3;
+  CANCEL_ERROR = 4;
+  MESSAGE_NOT_FOUND = 5;
+  ACTOR_NOT_FOUND = 6;
+  UNAUTHORIZED_ACTOR = 7;
+}
+message Error {
+  ErrorCode error_code = 1;
+  string message = 2;
+}
+enum ErrorCode {
+  UNKNOWN_ERROR = 0;
+  UNRECOGNIZED_REQUEST_TYPE = 1;
+  CONTROL_ERROR = 2;
+  INCOMPATIBLE_DEVICE = 3;
+  DEVICE_NOT_FOUND = 4;
+}
+message Timestamp {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}
+
+system_control.notification_pb2
+
+message Notification {
+  string control_message_id = 1;
+  string actor_id = 2;
+  EventStarted event_started = 3;
+  EventEnded event_ended = 4;
+  EventShadowed event_shadowed = 5;
+  EventShadowCleared event_shadow_cleared = 6;
+  EventCanceled event_canceled = 7;
+  EventShadowPredicted event_shadow_predicted = 8;
+  EventPredictedShadowCleared event_predicted_shadow_cleared = 9;
+  EventSettingsChanged event_settings_changed = 13;
+  EventError event_error = 14;
+  Timestamp notification_timestamp = 10;
+  string beacon_rcpn = 11;
+  string host_rcpn = 12;
+}
+message EventStarted {
+  Timestamp event_started_time = 1;
+  Timestamp event_end_time = 2;
+}
+message EventEnded {
+  Timestamp event_ended_time = 1;
+}
+message EventShadowed {
+  Timestamp shadow_start_time = 1;
+  Timestamp shadow_end_time = 2;
+  repeated string shadowing_control_message_ids = 3;
+}
+message EventShadowCleared {
+  Timestamp event_restarted_time = 1;
+  repeated string shadowing_control_message_ids = 2;
+}
+message EventCanceled {
+  Timestamp event_canceled_time = 1;
+  CancelationType cancelation_type = 2;
+}
+enum CancelationType {
+  UNKNOWN_CANCEL_TYPE = 0;
+  ROOT_ACTOR = 1;
+  SHADOW_CANCELATION = 2;
+  SAME_ACTOR_SHADOW = 3;
+  EXTERNAL = 4;
+  SAME_ACTOR_CANCELATION = 5;
+  HIGHER_PRECEDENCE_ACTOR = 6;
+}
+message EventShadowPredicted {
+  Timestamp shadow_predicted_start = 1;
+  Timestamp shadow_predicted_end = 2;
+  repeated string shadowing_control_message_ids = 3;
+}
+message EventPredictedShadowCleared {
+}
+message EventSettingsChanged {
+  Timestamp event_settings_changed_time = 1;
+  SystemModeSetting system_mode = 2;
+  BatterySettingControl battery = 3;
+  InverterSetting inverter = 4;
+  RealPowerSetting real_power = 5;
+  PVLinkSetting pv_link = 6;
+}
+message SystemModeSetting {
+  bool tou_enabled = 1;
+  SystemMode system_mode = 2;
+  bool cancel_on_external_change = 3;
+}
+enum SystemMode {
+  UNKNOWN_SYSTEM_MODE = 0;
+  GRID_TIE = 1;
+  SELF_SUPPLY = 2;
+  CLEAN_BACKUP = 3;
+  PRIORITY_BACKUP = 4;
+  REMOTE_ARBITRAGE = 5;
+  SELL = 6;
+  SAFETY_SHUTDOWN = 16;
+}
+message BatterySettingControl {
+  repeated BatterySetting setting = 4;
+  repeated BatterySetting reversion_setting = 5;
+}
+message BatterySetting {
+  double soc_max = 1;
+  double soc_min = 2;
+  double soc_rsv_max = 3;
+  double soc_rsv_min = 4;
+  double a_cha_max = 5;
+  double a_dis_cha_max = 6;
+  string rcpn = 7;
+  bool cancel_on_external_change = 8;
+  BatteryState state = 9;
+}
+enum BatteryState {
+  STATE_UNSPECIFIED = 0;
+  STATE_DISABLED = 1;
+  STATE_ENABLED = 2;
+}
+message InverterSetting {
+  repeated SystemMode active_system_modes = 1;
+  State state = 2;
+  Islanding islanding = 3;
+  ExportOverride export_override = 4;
+  NumberOfTransferSwitches number_of_transfer_switches = 5;
+  LoadShedding load_shedding = 6;
+}
+enum SystemMode {
+  UNKNOWN_SYSTEM_MODE = 0;
+  GRID_TIE = 1;
+  SELF_SUPPLY = 2;
+  CLEAN_BACKUP = 3;
+  PRIORITY_BACKUP = 4;
+  REMOTE_ARBITRAGE = 5;
+  SELL = 6;
+  SAFETY_SHUTDOWN = 16;
+}
+enum State {
+  STATE_UNSPECIFIED = 0;
+  STATE_DISABLED = 1;
+  STATE_ENABLED = 2;
+}
+enum Islanding {
+  ISLANDING_UNSPECIFIED = 0;
+  ISLANDING_DISABLED = 1;
+  ISLANDING_ENABLED = 2;
+}
+enum ExportOverride {
+  EXPORT_OVERRIDE_UNSPECIFIED = 0;
+  EXPORT_OVERRIDE_DISABLED = 1;
+  EXPORT_OVERRIDE_ENABLED = 2;
+}
+enum NumberOfTransferSwitches {
+  NUMBER_OF_TRANSFER_SWITCHES_UNSPECIFIED = 0;
+  NUMBER_OF_TRANSFER_SWITCHES_ZERO = 1;
+  NUMBER_OF_TRANSFER_SWITCHES_ONE = 2;
+  NUMBER_OF_TRANSFER_SWITCHES_TWO = 3;
+}
+enum LoadShedding {
+  LOAD_SHEDDING_UNSPECIFIED = 0;
+  LOAD_SHEDDING_DISABLED = 1;
+  LOAD_SHEDDING_SMM_ONLY = 2;
+  LOAD_SHEDDING_ATS_AND_SMM = 3;
+}
+message RealPowerSetting {
+  int32 power_w = 1;
+  bool cancel_on_external_change = 2;
+}
+message PVLinkSetting {
+  State state = 1;
+  PVRSSState pvrss_state = 2;
+  double minimum_input_voltage = 3;
+  NumberOfSubstrings number_of_substrings = 4;
+  string rcpn = 5;
+}
+enum State {
+  STATE_UNSPECIFIED = 0;
+  STATE_DISABLED = 1;
+  STATE_ENABLED = 2;
+}
+enum PVRSSState {
+  PVRSS_STATE_UNSPECIFIED = 0;
+  PVRSS_STATE_OFF = 1;
+  PVRSS_STATE_ON = 2;
+}
+enum NumberOfSubstrings {
+  NUMBER_OF_SUBSTRINGS_UNSPECIFIED = 0;
+  NUMBER_OF_SUBSTRINGS_ONE = 1;
+  NUMBER_OF_SUBSTRINGS_TWO = 2;
+}
+message EventError {
+  EventErrorCode event_error_type = 1;
+  string device_rcpn = 2;
+  string event_error_message = 3;
+}
+enum EventErrorCode {
+  UNKNOWN_EVENT_ERROR = 0;
+  SETTINGS_NOT_APPLIED = 1;
+}
+message Timestamp {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}

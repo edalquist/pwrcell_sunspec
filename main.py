@@ -19,10 +19,12 @@ from paramiko import SSHClient
 from scp import SCPClient
 from pathlib import Path
 import filecmp
+import paho.mqtt.client as mqtt
+
 
 
 FLAGS = flags.FLAGS
-flags.DEFINE_enum("mode", "watch", ["watch", "scan", "ha"], "Mode to run CLI")
+flags.DEFINE_enum("mode", "watch", ["watch", "scan", "mqtt", "ha"], "Mode to run CLI")
 
 CONFIG: RootConfig = RootConfig()
 APP_PATH = Path(os.path.realpath(__file__)).parent
@@ -99,7 +101,9 @@ def main(argv):
       pwrcell.GeneracPwrCell(
           CONFIG.pwrcell.device_ids,
           ipaddr=server.local_bind_addresses[0][0],
-          ipport=server.local_bind_ports[0], timeout=60,
+          modbus_port=server.local_bind_ports[0],
+          mqtt_port=server.local_bind_ports[1],
+          timeout=60,
           extra_model_defs=[str(temp_models)]) as gpc:
     if FLAGS.mode == "scan":
       gpc.scan()

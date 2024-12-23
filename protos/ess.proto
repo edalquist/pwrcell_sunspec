@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package load_controller;
+
+message EssConfig {
+  string loadControllerRcpn = 1;
+  string hostname = 2;
+  string wifiIpAddress = 3;
+  string ethernetIpAddress = 4;
+  string webAuthString = 5;
+}

@@ -1,6 +1,8 @@
 absl-py
+paho-mqtt
 paramiko
 pip
+protobuf
 pyserial
 pysunspec2
 sshtunnel
