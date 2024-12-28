@@ -7,7 +7,7 @@ from scp import SCPClient
 from pathlib import Path
 from typing import Generator
 
-from pwrcell.config import RootConfig
+from .config import RootConfig
 
 @contextmanager
 def sunspec_models(config: RootConfig) -> Generator[Path, None, None]:

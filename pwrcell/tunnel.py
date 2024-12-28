@@ -1,13 +1,13 @@
 import dataclasses
 import logging
-import filecmp
-
 from contextlib import contextmanager
-from sshtunnel import open_tunnel, SSHTunnelForwarder
 from pathlib import Path
 from typing import Generator
 
-from pwrcell.config import RootConfig
+from sshtunnel import open_tunnel
+
+from .config import RootConfig
+
 
 @dataclasses.dataclass
 class TunnelConfig():

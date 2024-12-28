@@ -1,6 +1,5 @@
 import dataclasses
 from dataclasses import field
-from typing import Optional, Set
 
 from yamldataclassconfig.config import YamlDataClassConfig
 

@@ -1,18 +1,15 @@
 import logging
-import filecmp
+from typing import Any
 
-from contextlib import contextmanager
-from typing import Generator, Any
 import paho.mqtt.client as mqtt
-from paho.mqtt.reasoncodes import ReasonCode
-from paho.mqtt.properties import Properties
-
 from google.protobuf import text_format
 from google.protobuf.unknown_fields import UnknownFieldSet
+from paho.mqtt.properties import Properties
+from paho.mqtt.reasoncodes import ReasonCode
 
 from .protos import energy_record_set_pb2
-from .config import RootConfig
 from .tunnel import TunnelConfig
+
 
 class MqttClient():
   def __init__(self, tunnel_config: TunnelConfig):
