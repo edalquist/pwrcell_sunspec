@@ -39,8 +39,8 @@ def main(argv):
 
   with \
       sunspec_models(CONFIG) as temp_models, \
-      pwrcell_tunnel(CONFIG) as server, \
-      PwrCellMqttClient(server.local_bind_addresses[0][0], server.local_bind_ports[1]) as pwrcell_mqtt:
+      pwrcell_tunnel(CONFIG) as tunnel_config, \
+      PwrCellMqttClient(tunnel_config) as pwrcell_mqtt:
     try:
       while True:
         start = time.time()

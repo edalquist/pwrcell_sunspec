@@ -7,16 +7,17 @@ import paho.mqtt.client as mqtt
 from paho.mqtt.reasoncodes import ReasonCode
 from paho.mqtt.properties import Properties
 
-from pwrcell.protos import energy_record_set_pb2
 from google.protobuf import text_format
 from google.protobuf.unknown_fields import UnknownFieldSet
 
-from pwrcell.config import RootConfig
+from .protos import energy_record_set_pb2
+from .config import RootConfig
+from .tunnel import TunnelConfig
 
 class MqttClient():
-  def __init__(self, tunnel_ip: str, tunnel_port: int):
-    self.__tunnel_ip = tunnel_ip
-    self.__tunnel_port = tunnel_port
+  def __init__(self, tunnel_config: TunnelConfig):
+    self.__tunnel_ip = tunnel_config.host
+    self.__tunnel_port = tunnel_config.mqtt_port
 
   def __enter__(self):
     self.__mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)

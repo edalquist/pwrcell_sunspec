@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import filecmp
 
@@ -8,8 +9,14 @@ from typing import Generator
 
 from pwrcell.config import RootConfig
 
+@dataclasses.dataclass
+class TunnelConfig():
+  host: str | None = None
+  mqtt_port: int | None = None
+  modbus_port: int | None = None
+
 @contextmanager
-def pwrcell_tunnel(config: RootConfig) -> Generator[SSHTunnelForwarder, None, None]:
+def pwrcell_tunnel(config: RootConfig) -> Generator[TunnelConfig, None, None]:
   logging.info("opening pwrcell tunnel to %s:%s",
                config.pwrcell.ssh_tunnel.host, config.pwrcell.ssh_tunnel.port)
   with open_tunnel(
@@ -26,6 +33,11 @@ def pwrcell_tunnel(config: RootConfig) -> Generator[SSHTunnelForwarder, None, No
       ],
       set_keepalive=4.0,
   ) as server:
-    logging.info("pwrcell tunnel listening. ModBus=%s, MQTT=%s",
-                 server.local_bind_ports[0], server.local_bind_ports[1])
-    yield server
+    config = TunnelConfig(
+      host=server.local_bind_hosts[0],
+      mqtt_port=server.local_bind_ports[1],
+      modbus_port=server.local_bind_ports[0],
+    )
+    logging.info("pwrcell tunnel listening: %s",
+                 config)
+    yield config
