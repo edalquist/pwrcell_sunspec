@@ -104,6 +104,7 @@ class GeneracPwrCell():
     return False
 
   def scan(self, start: int = 1, end: int = 100, stop_at_first_duplicate = True):
+    # TODO this should record all discovered devices to config.yaml, on start verify slId=(Vr, Mf, Mn) for each
     logging.info("Scanning %s:%s from ID %s to %s",
                  self.__ipaddr, self.__modbus_port, start, end)
     found_devices = {}
@@ -130,18 +131,24 @@ class GeneracPwrCell():
           logging.debug('ID %s - No Device', slid)
           continue
 
-        ids = found_devices.setdefault(d.common[0].SN.value,
-            {}).setdefault(d.common[0].Vr.value,
-            {}).setdefault(d.common[0].Md.value,
-            {}).setdefault(d.common[0].Mn.value,
-            [])
+        # REbus Beacon
+        # ICM
+        # PV Link
+        # PWRcell X7602 Inverter
+        # PWRcell Battery
+
+        # SN: Serial Number
+        # Vr: Version
+        # Md: Model
+        # Mn: Manufacturer
+        ids = found_devices.setdefault(d.common[0].SN.value, [])
         ids.append(slid)
 
         if len(ids) > 1:
           if stop_at_first_duplicate:
             return
 
-          logging.info('Duplicate ID %s is %s %s (%s / %s)',
+          logging.info('Duplicate @ ID %s is "%s" "%s" (v: %s / sn: %s)',
             ids,
             d.common[0].Mn.value,
             d.common[0].Md.value,
@@ -149,7 +156,7 @@ class GeneracPwrCell():
             d.common[0].SN.value
           )
         else:
-          logging.info('Found ID %s is %s %s (%s / %s)',
+          logging.info('Found @ ID %s is "%s" "%s" (v: %s / sn: %s)',
             slid,
             d.common[0].Mn.value,
             d.common[0].Md.value,
