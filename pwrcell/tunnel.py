@@ -8,6 +8,7 @@ from sshtunnel import open_tunnel
 
 from .config import RootConfig
 
+logger = logging.getLogger(__name__)
 
 @dataclasses.dataclass
 class TunnelConfig():
@@ -17,7 +18,7 @@ class TunnelConfig():
 
 @contextmanager
 def pwrcell_tunnel(config: RootConfig) -> Generator[TunnelConfig, None, None]:
-  logging.info("opening pwrcell tunnel to %s:%s",
+  logger.info("opening pwrcell tunnel to %s:%s",
                config.pwrcell.ssh_tunnel.host, config.pwrcell.ssh_tunnel.port)
   with open_tunnel(
       (config.pwrcell.ssh_tunnel.host, config.pwrcell.ssh_tunnel.port),
@@ -38,6 +39,6 @@ def pwrcell_tunnel(config: RootConfig) -> Generator[TunnelConfig, None, None]:
       mqtt_port=server.local_bind_ports[1],
       modbus_port=server.local_bind_ports[0],
     )
-    logging.info("pwrcell tunnel listening: %s",
+    logger.info("pwrcell tunnel listening: %s",
                  config)
     yield config

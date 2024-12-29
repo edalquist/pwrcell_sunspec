@@ -2,21 +2,17 @@ import logging
 import os
 import sys
 import time
-
-import yaml
-from absl import app
-from absl import flags
-
-import pwrcell
-from pwrcell.config import RootConfig
 from pathlib import Path
 
+import yaml
+from absl import app, flags
+
+import pwrcell
 import pwrcell.models
-from pwrcell.models import sunspec_models
-from pwrcell.tunnel import pwrcell_tunnel
+from pwrcell.config import RootConfig
 from pwrcell.mqtt import MqttClient as PwrCellMqttClient
-
-
+from pwrcell.sunspec import SunspecClient as PwrCellSunspecClient
+from pwrcell.tunnel import pwrcell_tunnel
 
 FLAGS = flags.FLAGS
 flags.DEFINE_enum("mode", "watch", ["watch", "scan", "mqtt", "ha"], "Mode to run CLI")
@@ -35,12 +31,13 @@ def main(argv):
 
   log_level = logging.getLevelName(CONFIG.log_level) or logging.INFO
   logging.basicConfig(format=FORMAT, level=log_level)
+  logging.getLogger("pwrcell").setLevel(log_level)
   logging.info("Setting Log Level to %s", log_level)
 
+      # PwrCellMqttClient(tunnel_config) as pwrcell_mqtt, \
   with \
-      sunspec_models(CONFIG) as temp_models, \
       pwrcell_tunnel(CONFIG) as tunnel_config, \
-      PwrCellMqttClient(tunnel_config) as pwrcell_mqtt:
+      PwrCellSunspecClient(CONFIG, tunnel_config) as pwrcell_sunspec:
     try:
       while True:
         start = time.time()

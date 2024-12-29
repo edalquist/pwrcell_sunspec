@@ -10,8 +10,11 @@ from paho.mqtt.reasoncodes import ReasonCode
 from .protos import energy_record_set_pb2
 from .tunnel import TunnelConfig
 
+logger = logging.getLogger(__name__)
 
 class MqttClient():
+  __energy_recordset_live: energy_record_set_pb2.EnergyRecordSet
+
   def __init__(self, tunnel_config: TunnelConfig):
     self.__tunnel_ip = tunnel_config.host
     self.__tunnel_port = tunnel_config.mqtt_port
@@ -33,18 +36,18 @@ class MqttClient():
     return False
 
   def __mqtt_on_connect(self, client: mqtt.Client, userdata: Any, flags: mqtt.ConnectFlags, reason_code: ReasonCode, properties: Properties):
-      logging.info("MQTT Connected with result code %s", reason_code)
+      logger.info("MQTT Connected with result code %s", reason_code)
       # Subscribe to ALL topics
       client.subscribe("#")
 
   def __mqtt_disconnect(self, client: mqtt.Client, userdata: Any, flags: mqtt.DisconnectFlags, reason_code: ReasonCode, properties: Properties):
-      logging.info("MQTT Disconnected with result code %s", reason_code)
+      logger.info("MQTT Disconnected with result code %s", reason_code)
       # Subscribe to ALL topics
       client.subscribe("#")
 
   # The callback for when a PUBLISH message is received from the server.
   def __mqtt_on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
-      logging.debug("mqtt: %s", msg.topic)
+      logger.debug("mqtt: %s", msg.topic)
 
       if msg.topic.endswith("/energy_recordset_live"):
         erl = energy_record_set_pb2.EnergyRecordSet()
@@ -52,9 +55,14 @@ class MqttClient():
 
         unknown_field_set = UnknownFieldSet(erl)
         if unknown_field_set:
-           logging.warning("Found unknown fields: %s", unknown_field_set)
+           logger.warning("Found unknown fields: %s", unknown_field_set)
 
-        text = text_format.MessageToString(erl, print_unknown_fields=True)
-        logging.info("%s\n%s", msg.topic, text)
+        self.__energy_recordset_live = erl
+
+        text = text_format.MessageToString(self.__energy_recordset_live, print_unknown_fields=True)
+        logger.info("%s\n%s", msg.topic, text)
       else:
-         logging.warning("Unknown Topic: %s", msg.topic)
+         logger.warning("Unknown Topic: %s", msg.topic)
+
+  # TODO add APIs to access data cached from MQTT
+  # TODO add callback registration APIs

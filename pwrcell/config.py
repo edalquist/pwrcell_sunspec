@@ -1,8 +1,10 @@
 import dataclasses
+import logging
 from dataclasses import field
 
 from yamldataclassconfig.config import YamlDataClassConfig
 
+logger = logging.getLogger(__name__)
 
 @dataclasses.dataclass
 class SshTunnel(YamlDataClassConfig):
