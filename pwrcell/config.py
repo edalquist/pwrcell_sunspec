@@ -1,7 +1,10 @@
 import dataclasses
 import logging
+import sys
 from dataclasses import field
+from pathlib import Path
 
+import yaml
 from yamldataclassconfig.config import YamlDataClassConfig
 
 logger = logging.getLogger(__name__)
@@ -16,11 +19,11 @@ class SshTunnel(YamlDataClassConfig):
 
 @dataclasses.dataclass
 class PwrcellDeviceIds(YamlDataClassConfig):
-  rebus_beacon: int | None = None
-  inverter: list[int] = field(default_factory=list)
-  pv_links: list[int] = field(default_factory=list)
-  battery: list[int] = field(default_factory=list)
-  icm: int | None = None
+  rebus_beacon: dict[str: int] = field(default_factory=dict)
+  inverter: dict[str: int] = field(default_factory=dict)
+  pv_link: dict[str: int] = field(default_factory=dict)
+  battery: dict[str: int] = field(default_factory=dict)
+  icm: dict[str: int] = field(default_factory=dict)
 
 
 @dataclasses.dataclass
@@ -47,3 +50,16 @@ class RootConfig(YamlDataClassConfig):
   pwrcell: PwrcellConfig | None = None
   mqtt: MqttConfig | None = None
   sunspec_cache_dir: str | None = None
+
+
+def _getConfigPath() -> Path:
+  return Path(sys.path[0]) / "config.yaml"
+
+def loadConfig() -> RootConfig:
+  config: RootConfig = RootConfig()
+  config.load(_getConfigPath())
+  return config
+
+def saveConfig(config: RootConfig):
+  with open(str(_getConfigPath()) + ".tmp", "w") as f:
+    yaml.dump(config, f)

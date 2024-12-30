@@ -9,7 +9,7 @@ from absl import app, flags
 
 import pwrcell
 import pwrcell.models
-from pwrcell.config import RootConfig
+from pwrcell.config import RootConfig, loadConfig
 from pwrcell.mqtt import MqttClient as PwrCellMqttClient
 from pwrcell.sunspec import SunspecClient as PwrCellSunspecClient
 from pwrcell.tunnel import pwrcell_tunnel
@@ -17,7 +17,7 @@ from pwrcell.tunnel import pwrcell_tunnel
 FLAGS = flags.FLAGS
 flags.DEFINE_enum("mode", "watch", ["watch", "scan", "mqtt", "ha"], "Mode to run CLI")
 
-CONFIG: RootConfig = RootConfig()
+CONFIG: RootConfig = loadConfig()
 APP_PATH = Path(os.path.realpath(__file__)).parent
 
 
@@ -25,7 +25,6 @@ def main(argv):
   del argv  # Unused.
 
   FORMAT = '%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s'
-  CONFIG.load(Path(sys.path[0]) / "config.yaml")
   if not CONFIG.sunspec_cache_dir:
     CONFIG.sunspec_cache_dir = APP_PATH
 

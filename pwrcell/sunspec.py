@@ -1,13 +1,11 @@
 import logging
-import time
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Generator, TypeVar
 
 import sunspec2.device as ss2_device
 import sunspec2.modbus.client as ss2_client
 
-from .config import RootConfig
+from .config import PwrcellDeviceIds, RootConfig, saveConfig
 from .logging import time_fn
 from .models import load_models_dir
 from .tunnel import TunnelConfig
@@ -19,12 +17,10 @@ logger = logging.getLogger(__name__)
 @contextmanager
 def _client_device(client_device: CDT) -> Generator[CDT, None, None]:
   try:
-    with time_fn(logger, "ID %s connect took %sms", client_device.slave_id):
-      client_device.connect()
+    client_device.connect()
     yield client_device
   finally:
-    with time_fn(logger, "ID %s disconn took %sms", client_device.slave_id):
-      client_device.disconnect()
+    client_device.disconnect()
 
 
 class SunspecClient():
@@ -41,7 +37,8 @@ class SunspecClient():
 
     if not self.__config.pwrcell.device_ids:
       self.__config.devices = self.scan()
-      # TODO save config?
+      logger.info("Save config post-scan")
+      saveConfig(self.__config)
 
     # TODO can we maintain multiple TCP connections concurrently?
 
@@ -51,10 +48,11 @@ class SunspecClient():
     return False
 
 
-  def scan(self, start: int = 1, end: int = 100, stop_at_first_duplicate = True):
+  def scan(self, start: int = 1, end: int = 100, stop_at_first_duplicate = True) -> PwrcellDeviceIds:
     logger.info("Scanning %s:%s from ID %s to %s",
                  self.__tunnel_ip, self.__tunnel_port, start, end)
-    found_devices = {}
+    devices: PwrcellDeviceIds = PwrcellDeviceIds()
+    found_devices: dict[str, int] = {}
 
     for slid in range(start, end):
       d = ss2_client.SunSpecModbusClientDeviceTCP(
@@ -62,9 +60,8 @@ class SunspecClient():
       for _ in range(3):
         with _client_device(d) as d:
           try:
-            with time_fn(logger, "ID %s scan    took %sms", d.slave_id):
-              d.scan()
-            break
+            d.scan()
+            break # successful scan, break out of retry loop
           except Exception as e:
             if 'Modbus exception 11:' in str(e):
               logger.info('Retrying %s', slid)
@@ -74,39 +71,59 @@ class SunspecClient():
               break
             raise e
 
-        if 'common' not in d.models:
-          logger.debug('ID %s - No Device', slid)
-          continue
+      if 'common' not in d.models:
+        logger.debug('ID %s - No Device', slid)
+        continue
 
-        # REbus Beacon
-        # ICM
-        # PV Link
-        # PWRcell X7602 Inverter
-        # PWRcell Battery
+      # SN: Serial Number
+      serial_number = d.common[0].SN.value
+      # Vr: Version
+      version = d.common[0].Vr.value
+      # Md: Model
+      model = d.common[0].Md.value
+      # Mn: Manufacturer
+      manufacturer = d.common[0].Mn.value
 
-        # SN: Serial Number
-        # Vr: Version
-        # Md: Model
-        # Mn: Manufacturer
-        ids = found_devices.setdefault(d.common[0].SN.value, [])
-        ids.append(slid)
+      ids = found_devices.setdefault(serial_number, [])
+      ids.append(slid)
 
-        if len(ids) > 1:
-          if stop_at_first_duplicate:
-            return
+      if len(ids) > 1:
+        logger.info('Duplicate @ ID %s is "%s" "%s" (v: %s / sn: %s)',
+          ids,
+          manufacturer,
+          model,
+          version,
+          serial_number
+        )
 
-          logger.info('Duplicate @ ID %s is "%s" "%s" (v: %s / sn: %s)',
-            ids,
-            d.common[0].Mn.value,
-            d.common[0].Md.value,
-            d.common[0].Vr.value,
-            d.common[0].SN.value
-          )
+        if stop_at_first_duplicate:
+          return devices
+      else:
+        logger.info('Found @ ID %s is "%s" "%s" (v: %s / sn: %s)',
+          slid,
+          manufacturer,
+          model,
+          version,
+          serial_number
+        )
+
+        if model == "REbus Beacon":
+          devices.rebus_beacon[serial_number] = slid
+        elif model == "ICM":
+          devices.icm[serial_number] = slid
+        elif model == "PV Link":
+          devices.pv_link[serial_number] = slid
+        elif "Inverter" in model:
+          devices.inverter[serial_number] = slid
+        elif "Battery" in model:
+          devices.battery[serial_number] = slid
         else:
-          logger.info('Found @ ID %s is "%s" "%s" (v: %s / sn: %s)',
+          logger.warning('Unknown device discovered @ ID %s is "%s" "%s" (v: %s / sn: %s)',
             slid,
-            d.common[0].Mn.value,
-            d.common[0].Md.value,
-            d.common[0].Vr.value,
-            d.common[0].SN.value
+            manufacturer,
+            model,
+            version,
+            serial_number
           )
+
+    return devices
