@@ -244,4 +244,16 @@ class SunspecClient():
 
       dest[serial_number] = d
 
+      model = d.common[0].Md.value
+      version = d.common[0].Vr.value
+      manufacturer = d.common[0].Mn.value
+
+      logger.info('Loaded @ ID %s is "%s" "%s" (v: %s / sn: %s)',
+          id,
+          manufacturer,
+          model,
+          version,
+          serial_number
+        )
+
     return True
