@@ -48,6 +48,20 @@ class SunspecClient():
   def __exit__(self, *exc):
     return False
 
+  def _scan_with_retries(self, device: ss2_client.SunSpecModbusClientDeviceTCP, tries = 3) -> bool:
+    for _ in range(3):
+      with _client_device(device) as d:
+        try:
+          d.scan()
+          return True
+        except Exception as e:
+          if 'Modbus exception 11:' in str(e):
+            logger.info('Retrying %s', d.slave_id)
+            continue
+          elif "Error scanning SunSpec base addresses." in str(e):
+            logger.debug('ID %s - No Device', d.slave_id)
+            return False
+          raise e
 
   def scan(self, start: int = 1, end: int = 100, stop_at_first_duplicate = True) -> DeviceConfig:
     logger.info("Scanning %s:%s from ID %s to %s",
@@ -58,19 +72,7 @@ class SunspecClient():
     for slid in range(start, end):
       d = ss2_client.SunSpecModbusClientDeviceTCP(
           slave_id=slid, ipaddr=self.__tunnel_ip, ipport=self.__tunnel_port, timeout=60)
-      for _ in range(3):
-        with _client_device(d) as d:
-          try:
-            d.scan()
-            break # successful scan, break out of retry loop
-          except Exception as e:
-            if 'Modbus exception 11:' in str(e):
-              logger.info('Retrying %s', slid)
-              continue
-            elif "Error scanning SunSpec base addresses." in str(e):
-              logger.debug('ID %s - No Device', slid)
-              break
-            raise e
+      self._scan_with_retries(d)
 
       if 'common' not in d.models:
         logger.debug('ID %s - No Device', slid)
@@ -89,16 +91,17 @@ class SunspecClient():
       ids.append(slid)
 
       if len(ids) > 1:
-        logger.info('Duplicate @ ID %s is "%s" "%s" (v: %s / sn: %s)',
+        if stop_at_first_duplicate:
+          logging.info('Found duplicate devices %s, stopping scan.', ids)
+          return devices
+
+        logger.info('Duplicate IDs %s is "%s" "%s" (v: %s / sn: %s)',
           ids,
           manufacturer,
           model,
           version,
           serial_number
         )
-
-        if stop_at_first_duplicate:
-          return devices
       else:
         logger.info('Found @ ID %s is "%s" "%s" (v: %s / sn: %s)',
           slid,
