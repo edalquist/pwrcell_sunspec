@@ -1,5 +1,6 @@
 import filecmp
 import logging
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
@@ -7,16 +8,16 @@ from typing import Generator
 from paramiko import SSHClient
 from scp import SCPClient
 
-from .config import RootConfig
+from .config import AppConfig
 
 logger = logging.getLogger(__name__)
 
-def load_models_dir(config: RootConfig) -> Path:
+def load_models_dir(config: AppConfig) -> Path:
   """Makes the PWRCell Sunspec models available.
 
   @Return The directory that contains the sunspec files
   """
-  sunspec_cache_dir = Path(config.sunspec_cache_dir)
+  sunspec_cache_dir = Path(config.sunspec_cache_dir) if config.sunspec_cache_dir else Path(sys.path[0])
   with SSHClient() as ssh:
     ssh.load_system_host_keys()
 

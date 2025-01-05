@@ -6,7 +6,7 @@ from typing import Generator
 
 from sshtunnel import open_tunnel
 
-from .config import RootConfig
+from .config import AppConfig
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ class TunnelConfig():
   modbus_port: int | None = None
 
 @contextmanager
-def pwrcell_tunnel(config: RootConfig) -> Generator[TunnelConfig, None, None]:
+def pwrcell_tunnel(config: AppConfig) -> Generator[TunnelConfig, None, None]:
   logger.info("opening pwrcell tunnel to %s:%s",
                config.pwrcell.ssh_tunnel.host, config.pwrcell.ssh_tunnel.port)
   with open_tunnel(

@@ -8,15 +8,14 @@ from collections.abc import Callable
 from email.policy import default
 from typing import overload
 
+import google.protobuf.text_format as text_format
 import paho.mqtt.client as mqtt
+import protos.energy_record_set_pb2 as energy_record_set_pb2
 import sunspec2.device as device
 import sunspec2.mdef as mdef
 import sunspec2.modbus.client as ss2_client
 import sunspec2.modbus.modbus as mb
-from config import PwrcellDeviceIds
-import protos.energy_record_set_pb2 as energy_record_set_pb2
-import google.protobuf.text_format as text_format
-
+from config import DeviceConfig
 
 # def point_id(point: ss2_client.SunSpecModbusClientPoint):
 #   device = point.model.device
@@ -54,7 +53,7 @@ import google.protobuf.text_format as text_format
 
 class GeneracPwrCell():
   def __init__(self,
-               device_config: PwrcellDeviceIds,
+               device_config: DeviceConfig,
                ipaddr='127.0.0.1',
                modbus_port=502,
                mqtt_port=1883,

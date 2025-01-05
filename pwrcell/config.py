@@ -9,6 +9,13 @@ from yamldataclassconfig.config import YamlDataClassConfig
 
 logger = logging.getLogger(__name__)
 
+_CONFIG_FILE = "config.yaml"
+_DEVICE_FILE = "devices.yaml"
+
+def _getConfigPath(file: str) -> Path:
+  return Path(sys.path[0]) / file
+
+
 @dataclasses.dataclass
 class SshTunnel(YamlDataClassConfig):
   host: str | None = None
@@ -18,18 +25,9 @@ class SshTunnel(YamlDataClassConfig):
 
 
 @dataclasses.dataclass
-class PwrcellDeviceIds(YamlDataClassConfig):
-  rebus_beacon: dict[str: int] = field(default_factory=dict)
-  inverter: dict[str: int] = field(default_factory=dict)
-  pv_link: dict[str: int] = field(default_factory=dict)
-  battery: dict[str: int] = field(default_factory=dict)
-  icm: dict[str: int] = field(default_factory=dict)
-
-
-@dataclasses.dataclass
 class PwrcellConfig(YamlDataClassConfig):
   ssh_tunnel: SshTunnel | None = None
-  device_ids: PwrcellDeviceIds | None = None
+  # device_ids: PwrcellDeviceIds | None = None
 
 
 @dataclasses.dataclass
@@ -42,7 +40,7 @@ class MqttConfig(YamlDataClassConfig):
 
 
 @dataclasses.dataclass
-class RootConfig(YamlDataClassConfig):
+class AppConfig(YamlDataClassConfig):
   """Root config for App"""
   testing: bool = True
   poll_rate: int = 12  # TODO poll_rate_sec
@@ -51,15 +49,36 @@ class RootConfig(YamlDataClassConfig):
   mqtt: MqttConfig | None = None
   sunspec_cache_dir: str | None = None
 
+  @classmethod
+  def read(cls) -> 'AppConfig':
+    config = cls()
+    config.load(_getConfigPath(_CONFIG_FILE))
+    return config
 
-def _getConfigPath() -> Path:
-  return Path(sys.path[0]) / "config.yaml"
+  def write(self):
+    with open(str(_getConfigPath(_CONFIG_FILE)), "w") as f:
+      yaml.dump(self, f)
 
-def loadConfig() -> RootConfig:
-  config: RootConfig = RootConfig()
-  config.load(_getConfigPath())
-  return config
 
-def saveConfig(config: RootConfig):
-  with open(str(_getConfigPath()) + ".tmp", "w") as f:
-    yaml.dump(config, f)
+
+@dataclasses.dataclass
+class DeviceConfig(YamlDataClassConfig):
+  rebus_beacon: dict[str: int] = field(default_factory=dict)
+  inverter: dict[str: int] = field(default_factory=dict)
+  pv_link: dict[str: int] = field(default_factory=dict)
+  battery: dict[str: int] = field(default_factory=dict)
+  icm: dict[str: int] = field(default_factory=dict)
+
+  @classmethod
+  def read(cls) -> 'DeviceConfig|None':
+    config = cls()
+    try:
+      config.load(_getConfigPath(_DEVICE_FILE))
+    except FileNotFoundError as e:
+      return None
+    return config
+
+  def write(self):
+    with open(str(_getConfigPath(_DEVICE_FILE)), "w") as f:
+      yaml.dump(self, f)
+

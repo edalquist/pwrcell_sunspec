@@ -5,7 +5,7 @@ from typing import Any, Generator, TypeVar
 import sunspec2.device as ss2_device
 import sunspec2.modbus.client as ss2_client
 
-from .config import PwrcellDeviceIds, RootConfig, saveConfig
+from .config import AppConfig, DeviceConfig
 from .logging import time_fn
 from .models import load_models_dir
 from .tunnel import TunnelConfig
@@ -25,8 +25,9 @@ def _client_device(client_device: CDT) -> Generator[CDT, None, None]:
 
 class SunspecClient():
   # __energy_recordset_live: energy_record_set_pb2.EnergyRecordSet
+  __device_config: DeviceConfig
 
-  def __init__(self, config: RootConfig, tunnel_config: TunnelConfig):
+  def __init__(self, config: AppConfig, tunnel_config: TunnelConfig):
     self.__config = config
     self.__tunnel_ip = tunnel_config.host
     self.__tunnel_port = tunnel_config.modbus_port
@@ -35,12 +36,12 @@ class SunspecClient():
     sunspec_models_dir = load_models_dir(self.__config)
     ss2_device.set_model_defs_path([str(sunspec_models_dir)] + ss2_device.get_model_defs_path())
 
-    if not self.__config.pwrcell.device_ids:
-      self.__config.devices = self.scan()
-      logger.info("Save config post-scan")
-      saveConfig(self.__config)
+    self.__device_config = DeviceConfig.read()
 
-    # TODO can we maintain multiple TCP connections concurrently?
+    if not self.__device_config or self.__device_config == DeviceConfig():
+      self.__device_config = self.scan()
+      logger.info("Save config post-scan")
+      self.__device_config.write()
 
     return self
 
@@ -48,10 +49,10 @@ class SunspecClient():
     return False
 
 
-  def scan(self, start: int = 1, end: int = 100, stop_at_first_duplicate = True) -> PwrcellDeviceIds:
+  def scan(self, start: int = 1, end: int = 100, stop_at_first_duplicate = True) -> DeviceConfig:
     logger.info("Scanning %s:%s from ID %s to %s",
                  self.__tunnel_ip, self.__tunnel_port, start, end)
-    devices: PwrcellDeviceIds = PwrcellDeviceIds()
+    devices: DeviceConfig = DeviceConfig()
     found_devices: dict[str, int] = {}
 
     for slid in range(start, end):

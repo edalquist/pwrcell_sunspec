@@ -1,4 +1,5 @@
 config.yaml
+devices.yaml
 model_dump/
 sunspec-models/
 model_dump_2/
