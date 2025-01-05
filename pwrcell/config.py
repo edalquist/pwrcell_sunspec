@@ -1,7 +1,7 @@
 import dataclasses
 import logging
 import sys
-from dataclasses import field
+from dataclasses import asdict, field
 from pathlib import Path
 
 import yaml
@@ -57,7 +57,7 @@ class AppConfig(YamlDataClassConfig):
 
   def write(self):
     with open(str(_getConfigPath(_CONFIG_FILE)), "w") as f:
-      yaml.dump(self, f)
+      yaml.safe_dump(asdict(self), f)
 
 
 
@@ -71,14 +71,18 @@ class DeviceConfig(YamlDataClassConfig):
 
   @classmethod
   def read(cls) -> 'DeviceConfig|None':
+    path = _getConfigPath(_DEVICE_FILE)
     config = cls()
     try:
-      config.load(_getConfigPath(_DEVICE_FILE))
+      config.load(path)
     except FileNotFoundError as e:
+      return None
+    except Exception as e:
+      logger.warning('Failed to load device config from %s: %s', path, e)
       return None
     return config
 
   def write(self):
     with open(str(_getConfigPath(_DEVICE_FILE)), "w") as f:
-      yaml.dump(self, f)
+      yaml.dump(self.to_dict(), f)
 
