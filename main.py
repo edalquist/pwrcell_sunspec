@@ -30,9 +30,9 @@ def main(argv):
   logging.getLogger("pwrcell").setLevel(log_level)
   logging.info("Setting Log Level to %s", log_level)
 
-      # PwrCellMqttClient(tunnel_config) as pwrcell_mqtt, \
   with \
       pwrcell_tunnel(CONFIG) as tunnel_config, \
+      PwrCellMqttClient(tunnel_config) as pwrcell_mqtt, \
       PwrCellSunspecClient(CONFIG, tunnel_config) as pwrcell_sunspec:
     try:
       while True:

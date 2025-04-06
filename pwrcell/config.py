@@ -1,13 +1,11 @@
 import dataclasses
 import logging
 import sys
-from dataclasses import asdict, field
+from dataclasses import field
 from pathlib import Path
-from typing import Dict, List, Text, Tuple, Union
+from typing import Dict
 
 import dataconf
-import yaml
-from yamldataclassconfig.config import YamlDataClassConfig
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +55,6 @@ class AppConfig:
 
   def write(self):
     dataconf.dump(_getConfigPath(_CONFIG_FILE), self, out='yaml')
-
 
 
 @dataclasses.dataclass

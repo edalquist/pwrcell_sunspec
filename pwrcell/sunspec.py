@@ -25,6 +25,7 @@ def _client_device(client_device: CDT) -> Generator[CDT, None, None]:
   finally:
     client_device.disconnect()
 class DeviceType(Enum):
+  """The types of PwrCell devices supported."""
   REBUS_BECON = 1
   INVERTER = 2
   PV_LINK = 3
@@ -33,6 +34,7 @@ class DeviceType(Enum):
 
   @staticmethod
   def resolveType(model: str) -> 'DeviceType|None':
+    """Given a device model string, return the matching type."""
     if not model:
       return None
     if model == "REbus Beacon":
@@ -50,6 +52,7 @@ class DeviceType(Enum):
 
 @dataclasses.dataclass
 class Devices:
+  """Set of discovered devices."""
   rebus_beacon: dict[str: ss2_client.SunSpecModbusClientDeviceTCP] = field(default_factory=dict)
   inverter: dict[str: ss2_client.SunSpecModbusClientDeviceTCP] = field(default_factory=dict)
   pv_link: dict[str: ss2_client.SunSpecModbusClientDeviceTCP] = field(default_factory=dict)
@@ -57,6 +60,7 @@ class Devices:
   icm: dict[str: ss2_client.SunSpecModbusClientDeviceTCP] = field(default_factory=dict)
 
   def get_config(self) -> DeviceConfig:
+    """Export the set of devices in config format."""
     config = DeviceConfig()
     config.rebus_beacon = {sn: d.slave_id for sn, d in self.rebus_beacon.items()}
     config.inverter = {sn: d.slave_id for sn, d in self.inverter.items()}
@@ -83,7 +87,6 @@ class SunspecClient():
       device_config = self.scan()
       logger.info("Saving config post-scan")
       device_config.write()
-
 
     return self
 
@@ -113,6 +116,11 @@ class SunspecClient():
     return None
 
   def scan(self, start: int = 1, end: int = 100, stop_at_first_duplicate = True) -> DeviceConfig:
+    """
+    Scan for devices and initialize the client.
+
+    Returns a DeviceConfig with the discovered deices.
+    """
     logger.info("Scanning %s:%s from ID %s to %s",
                  self.__tunnel_ip, self.__tunnel_port, start, end)
     devices = Devices()
@@ -201,8 +209,8 @@ class SunspecClient():
     return devices.get_config()
 
   def _load_devices(self) -> bool:
+    """Load devices from config and init the client."""
     device_config = DeviceConfig.read()
-
     if not device_config or device_config == DeviceConfig():
       return False
 
@@ -226,6 +234,11 @@ class SunspecClient():
     return True
 
   def _load_devices_into_dict(self, expected_type: DeviceType, ids: dict[str, id], dest: dict[str, ss2_client.SunSpecModbusClientDeviceTCP]) -> bool:
+    """
+    Load a dict of sn:id pairs as live devices.
+
+    Validates the loaded device is the right model with a matching serial number.
+    """
     for serial_number, id in  ids.items():
       d = self._create_device(id, full_model_read=False)
       if not d:
