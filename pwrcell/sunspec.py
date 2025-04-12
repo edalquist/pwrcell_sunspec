@@ -79,12 +79,18 @@ class SunspecClient():
     self.__tunnel_ip = tunnel_config.host
     self.__tunnel_port = tunnel_config.modbus_port
 
+  def get_devices(self) -> Devices:
+    return self.__devices
+
   def __enter__(self):
     sunspec_models_dir = load_models_dir(self.__config)
-    ss2_device.set_model_defs_path([str(sunspec_models_dir)] + ss2_device.get_model_defs_path())
+    model_paths = [str(sunspec_models_dir)] + ss2_device.get_model_defs_path()
+    logger.info("Setting sunspec model paths to: %s", model_paths)
+    ss2_device.set_model_defs_path(model_paths)
 
     if not self._load_devices():
-      device_config = self.scan()
+      # Failed to load pre-configured devices, fall back to full scan
+      device_config = self.scan_for_new_devices()
       logger.info("Saving config post-scan")
       device_config.write()
 
@@ -115,7 +121,7 @@ class SunspecClient():
       return d
     return None
 
-  def scan(self, start: int = 1, end: int = 100, stop_at_first_duplicate = True) -> DeviceConfig:
+  def scan_for_new_devices(self, start: int = 1, end: int = 100, stop_at_first_duplicate = True) -> DeviceConfig:
     """
     Scan for devices and initialize the client.
 
