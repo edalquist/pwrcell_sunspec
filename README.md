@@ -100,8 +100,18 @@ systemctl status pwrcell-ha.service
 
 # Plans
 
-* https://sshtunnel.readthedocs.io/en/latest/
-* https://pypi.org/project/paho-mqtt/
-* https://gitlab.com/ttblt-hass/mqtt-hass-base
+* Correlate MQTT and ModBus data
 
-Have this run and pull data from PwrCell and push into Home Assistant MQTT sensors
+* API for Home Assistant
+  * Push data based on MQTT
+  * Poll data
+    * Different polling rates depending on data?
+* Core set of data exposed in HA
+  * All MQTT
+  * Predefined "useful" data
+* Data Browser?
+  * HTTP server embedded
+  * Read-only browsing of data
+* Safety
+  * Double-toggle to change dangerous values
+    * toggle switch that only stays on for X seconds or after change
