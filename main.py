@@ -9,6 +9,7 @@ from absl import app, flags
 
 import pwrcell
 import pwrcell.models
+from pwrcell.client import create_client
 from pwrcell.config import AppConfig
 from pwrcell.mqtt import MqttClient as PwrCellMqttClient
 from pwrcell.protos import energy_record_set_pb2
@@ -30,6 +31,9 @@ def __on_mqtt_update(pwrcell_sunspec: PwrCellSunspecClient, erl: energy_record_s
     #     logging.info("%s: %s", name, model.get_json())
 
     inverter.inverter_status[0].read()
+    inverter.REbus_exp[0].read()
+    inverter.inverter[0].read()
+
     # channelType=NET && deviceType=INVERTER
     # realPower_W
     logging.info("inverter_status.CTPow: %s", inverter.inverter_status[0].CTPow.cvalue * -1)
@@ -39,7 +43,6 @@ def __on_mqtt_update(pwrcell_sunspec: PwrCellSunspecClient, erl: energy_record_s
     # importedEnergy_Ws
     logging.info("inverter_status.WhIn: %s", inverter.inverter_status[0].WhIn.cvalue * 60 * 60)
 
-    inverter.inverter[0].read()
     # channelType=INVERTER_OUTPUT && deviceType=INVERTER
     # realPower_W
     logging.info("inverter.W: %s", inverter.inverter[0].W.cvalue)
@@ -69,13 +72,9 @@ def main(argv):
   logging.getLogger("pwrcell").setLevel(log_level)
   logging.info("Setting Log Level to %s", log_level)
 
-  with \
-      pwrcell_tunnel(CONFIG) as tunnel_config, \
-      PwrCellSunspecClient(CONFIG, tunnel_config) as pwrcell_sunspec, \
-      PwrCellMqttClient(tunnel_config) as pwrcell_mqtt:
-      # PwrCellSunspecClient(CONFIG, tunnel_config) as pwrcell_sunspec:
+  with create_client(CONFIG) as client:
     try:
-      pwrcell_mqtt.register_callback(lambda erl: __on_mqtt_update(pwrcell_sunspec, erl))
+      client.mqtt.register_callback(lambda erl: __on_mqtt_update(client.sunspec, erl))
 
       while True:
         start = time.time()
