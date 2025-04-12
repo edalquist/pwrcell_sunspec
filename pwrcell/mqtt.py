@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, Callable
 
 import paho.mqtt.client as mqtt
 from google.protobuf import text_format
@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 class MqttClient():
   __energy_recordset_live: energy_record_set_pb2.EnergyRecordSet
+  __callbacks: list[Callable] = []
 
   def __init__(self, tunnel_config: TunnelConfig):
     self.__tunnel_ip = tunnel_config.host
@@ -34,6 +35,9 @@ class MqttClient():
     self.__mqttc.loop_stop()
     self.__mqttc.disconnect()
     return False
+
+  def register_callback(self, callback: Callable):
+     self.__callbacks.append(callback)
 
   def __mqtt_on_connect(self, client: mqtt.Client, userdata: Any, flags: mqtt.ConnectFlags, reason_code: ReasonCode, properties: Properties):
       logger.info("MQTT Connected with result code %s", reason_code)
@@ -61,6 +65,9 @@ class MqttClient():
 
         text = text_format.MessageToString(self.__energy_recordset_live, print_unknown_fields=True)
         logger.info("%s\n%s", msg.topic, text)
+        for callback in self.__callbacks:
+           callback(erl)
+
       else:
          logger.warning("Unknown Topic: %s", msg.topic)
 
