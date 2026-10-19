@@ -1,0 +1,639 @@
+"""SunSpec Model Catalog and Metamodel Engine for Generac PWRcell.
+
+This module parses SunSpec model definitions (including Generac custom 64xxx and 8xx models)
+from JSON definitions or the bundled zip file, providing metadata (labels, descriptions,
+units, types, enum symbols, and Home Assistant mapping hints) for any register.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+import zipfile
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SunspecSymbol:
+    """Represents a single symbol/option in an enum or bitfield."""
+    name: str
+    value: int
+    label: Optional[str] = None
+    desc: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "value": self.value,
+            "label": self.label,
+            "desc": self.desc,
+        }
+
+
+@dataclass
+class HomeAssistantHint:
+    """Recommended Home Assistant entity configuration derived from SunSpec metadata."""
+    platform: str  # 'sensor', 'binary_sensor', 'select', 'number', 'switch'
+    device_class: Optional[str] = None  # 'power', 'energy', 'voltage', 'current', 'battery', etc.
+    state_class: Optional[str] = None  # 'measurement', 'total_increasing', 'total', None
+    unit_of_measurement: Optional[str] = None
+    entity_category: Optional[str] = None  # 'config', 'diagnostic', None
+    icon: Optional[str] = None
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    step: Optional[float] = None
+    options: Optional[List[str]] = None
+
+
+@dataclass
+class SunspecPointDef:
+    """Metamodel definition of a single register point in a SunSpec model."""
+    name: str
+    label: str
+    desc: str
+    type: str  # 'uint16', 'int16', 'enum16', 'bitfield16', 'sunssf', 'acc32', etc.
+    size: int = 1
+    units: Optional[str] = None
+    sf: Optional[str] = None  # Name of scale-factor point in same model
+    access: str = "R"  # "R" or "RW"
+    mandatory: bool = False
+    static: bool = False
+    symbols: List[SunspecSymbol] = field(default_factory=list)
+    symbols_by_value: Dict[int, SunspecSymbol] = field(default_factory=dict)
+    symbols_by_name: Dict[str, SunspecSymbol] = field(default_factory=dict)
+
+    @property
+    def is_scale_factor(self) -> bool:
+        return self.type == "sunssf" or self.name.endswith("_sf") or self.name.endswith("_SF")
+
+    @property
+    def is_pad(self) -> bool:
+        return self.type == "pad" or self.name.startswith("Pad")
+
+    @property
+    def is_writable(self) -> bool:
+        return self.access == "RW"
+
+    @property
+    def is_enum(self) -> bool:
+        return self.type in ("enum16", "enum32")
+
+    @property
+    def is_bitfield(self) -> bool:
+        return self.type in ("bitfield16", "bitfield32")
+
+    @property
+    def symbols_by_bit(self) -> Dict[int, SunspecSymbol]:
+        """For bitfield points, mapping of bit index to SunspecSymbol."""
+        return self.symbols_by_value
+
+    def decode_bitfield(self, raw_val: Any) -> List[str]:
+        """Decode an integer bitmask into a list of active symbol names."""
+        if not isinstance(raw_val, int):
+            if isinstance(raw_val, str) and (raw_val.isdigit() or (raw_val.startswith("-") and raw_val[1:].isdigit())):
+                raw_val = int(raw_val)
+            else:
+                return []
+        active: List[str] = []
+        for sym in sorted(self.symbols, key=lambda s: s.value):
+            if (raw_val & (1 << sym.value)) != 0:
+                active.append(sym.name)
+        return active
+
+    def decode_bitfield_symbols(self, raw_val: Any) -> List[SunspecSymbol]:
+        """Decode an integer bitmask into a list of active SunspecSymbol objects."""
+        if not isinstance(raw_val, int):
+            if isinstance(raw_val, str) and (raw_val.isdigit() or (raw_val.startswith("-") and raw_val[1:].isdigit())):
+                raw_val = int(raw_val)
+            else:
+                return []
+        active: List[SunspecSymbol] = []
+        for sym in sorted(self.symbols, key=lambda s: s.value):
+            if (raw_val & (1 << sym.value)) != 0:
+                active.append(sym)
+        return active
+
+    def decode_bitfield_dict(self, raw_val: Any) -> Dict[str, bool]:
+        """Decode an integer bitmask into a dictionary of {symbol_name: is_set}."""
+        if not isinstance(raw_val, int):
+            if isinstance(raw_val, str) and (raw_val.isdigit() or (raw_val.startswith("-") and raw_val[1:].isdigit())):
+                raw_val = int(raw_val)
+            else:
+                raw_val = 0
+        return {
+            sym.name: bool(raw_val & (1 << sym.value))
+            for sym in sorted(self.symbols, key=lambda s: s.value)
+        }
+
+    def encode_bitfield(self, input_val: Any) -> int:
+        """Encode bitfield input (int, symbol name string, list/set of symbol names/bit ints) into an integer bitmask."""
+        if isinstance(input_val, int):
+            return input_val
+        if isinstance(input_val, str):
+            input_val = input_val.strip()
+            if input_val.isdigit() or (input_val.startswith("-") and input_val[1:].isdigit()):
+                return int(input_val)
+            import re
+            parts = [p.strip() for p in re.split(r'[,|; \t\n]+', input_val) if p.strip()]
+            input_val = parts
+
+        if isinstance(input_val, (list, tuple, set)):
+            mask = 0
+            for item in input_val:
+                if isinstance(item, int):
+                    mask |= (1 << item)
+                elif isinstance(item, str):
+                    clean = item.strip()
+                    if clean.isdigit():
+                        mask |= (1 << int(clean))
+                        continue
+                    sym = self.symbols_by_name.get(clean.upper()) or self.symbols_by_name.get(clean)
+                    if not sym:
+                        valid_names = [s.name for s in self.symbols]
+                        raise ValueError(f"Unknown flag '{clean}' for bitfield '{self.name}'. Valid flags: {valid_names}")
+                    mask |= (1 << sym.value)
+                elif hasattr(item, "value"):
+                    mask |= (1 << int(item.value))
+                else:
+                    raise ValueError(f"Invalid flag item '{item}' for bitfield '{self.name}'")
+            return mask
+
+        raise ValueError(f"Cannot encode '{input_val}' to bitfield for point '{self.name}'")
+
+    @property
+    def is_accumulator(self) -> bool:
+        return self.type in ("acc16", "acc32", "acc64")
+
+    @property
+    def is_numeric(self) -> bool:
+        return self.type in (
+            "int16", "int32", "int64",
+            "uint16", "uint32", "uint64",
+            "float32", "float64",
+            "acc16", "acc32", "acc64",
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "label": self.label,
+            "desc": self.desc,
+            "type": self.type,
+            "size": self.size,
+            "units": self.units,
+            "sf": self.sf,
+            "access": self.access,
+            "mandatory": self.mandatory,
+            "static": self.static,
+            "is_writable": self.is_writable,
+            "is_enum": self.is_enum,
+            "is_bitfield": self.is_bitfield,
+            "is_numeric": self.is_numeric,
+            "symbols": [s.to_dict() for s in self.symbols],
+        }
+
+    def validate_and_convert(self, input_val: Any, ignore_access: bool = False) -> tuple[Any, Any]:
+        """Validate input value against point descriptor and return (raw_register_val, state_display_val).
+        
+        Raises PermissionError if point is not writable and ignore_access is False.
+        Raises ValueError if input value does not conform to the field descriptor.
+        """
+        if not self.is_writable and not ignore_access:
+            raise PermissionError(f"Field '{self.name}' is read-only (access: {self.access})")
+
+        if input_val is None:
+            raise ValueError(f"Value for '{self.name}' cannot be None")
+
+        # 1. Enum types (enum16, enum32)
+        if self.is_enum:
+            if not self.symbols:
+                try:
+                    int_val = int(input_val)
+                    return int_val, int_val
+                except (ValueError, TypeError):
+                    raise ValueError(f"Invalid integer value '{input_val}' for enum '{self.name}'")
+
+            # Check if input matches symbol name (case-insensitive)
+            if isinstance(input_val, str) and not (input_val.isdigit() or (input_val.startswith("-") and input_val[1:].isdigit())):
+                val_upper = input_val.strip().upper()
+                sym = self.symbols_by_name.get(val_upper)
+                if not sym:
+                    for s in self.symbols:
+                        if s.name.upper() == val_upper or (s.label and s.label.upper() == val_upper):
+                            sym = s
+                            break
+                if sym:
+                    return sym.value, sym.name
+                valid_opts = [s.name for s in self.symbols]
+                raise ValueError(
+                    f"Invalid enum symbol '{input_val}' for '{self.name}'. Valid options: {valid_opts}"
+                )
+
+            # Check if input is integer / numeric
+            try:
+                int_val = int(input_val)
+            except (ValueError, TypeError):
+                valid_opts = [f"{s.name} ({s.value})" for s in self.symbols]
+                raise ValueError(
+                    f"Invalid value '{input_val}' for '{self.name}'. Expected enum symbol or integer in: {valid_opts}"
+                )
+
+            sym = self.symbols_by_value.get(int_val)
+            if sym is not None:
+                return sym.value, sym.name
+
+            valid_opts = [f"{s.name} ({s.value})" for s in self.symbols]
+            raise ValueError(
+                f"Invalid enum value {int_val} for '{self.name}'. Valid values: {valid_opts}"
+            )
+
+        # 2. Bitfield types (bitfield16, bitfield32)
+        if self.is_bitfield:
+            mask = self.encode_bitfield(input_val)
+            max_mask = (1 << (self.size * 16)) - 1
+            if not (0 <= mask <= max_mask):
+                raise ValueError(
+                    f"Bitmask {mask} out of range for point '{self.name}' ({self.type}). Must be 0..{max_mask}"
+                )
+            decoded_flags = self.decode_bitfield(mask)
+            return (mask, decoded_flags)
+
+        # 3. Integer numeric types (uint16, int16, uint32, int32, etc.)
+        if self.type in ("uint16", "int16", "uint32", "int32", "uint64", "int64", "acc16", "acc32", "acc64"):
+            try:
+                num_val = float(input_val)
+                int_val = int(num_val)
+            except (ValueError, TypeError):
+                raise ValueError(f"Invalid integer value '{input_val}' for point '{self.name}' ({self.type})")
+
+            bounds = {
+                "uint16": (0, 65535),
+                "int16": (-32768, 32767),
+                "uint32": (0, 4294967295),
+                "int32": (-2147483648, 2147483647),
+                "acc16": (0, 65535),
+                "acc32": (0, 4294967295),
+            }
+            if self.type in bounds:
+                min_b, max_b = bounds[self.type]
+                if not (min_b <= int_val <= max_b):
+                    raise ValueError(
+                        f"Value {int_val} out of range for point '{self.name}' ({self.type}). Must be between {min_b} and {max_b}"
+                    )
+            return int_val, int_val
+
+        # 3. Float numeric types (float32, float64)
+        if self.type in ("float32", "float64"):
+            try:
+                flt_val = float(input_val)
+                return flt_val, flt_val
+            except (ValueError, TypeError):
+                raise ValueError(f"Invalid float value '{input_val}' for point '{self.name}' ({self.type})")
+
+        # 4. String types
+        if self.type == "string":
+            str_val = str(input_val)
+            max_len = self.size * 2
+            if len(str_val) > max_len:
+                str_val = str_val[:max_len]
+            return str_val, str_val
+
+        return input_val, input_val
+
+
+@dataclass
+class SunspecModelDef:
+    """Metamodel definition of a SunSpec model group."""
+    model_id: int
+    name: str
+    label: str
+    desc: str
+    points: Dict[str, SunspecPointDef] = field(default_factory=dict)
+
+
+class ModelCatalog:
+    """Catalog of all known SunSpec models loaded from local JSON or zip archives."""
+
+    def __init__(self, models_dir: Optional[Path | str] = None, zip_path: Optional[Path | str] = None):
+        self._models_by_id: Dict[int, SunspecModelDef] = {}
+        self._models_by_name: Dict[str, SunspecModelDef] = {}
+        self._load_catalog(models_dir, zip_path)
+
+    @property
+    def models(self) -> Dict[int, SunspecModelDef]:
+        return self._models_by_id
+
+    def get_model(self, model_id: int) -> Optional[SunspecModelDef]:
+        return self._models_by_id.get(model_id)
+
+    def get_model_by_name(self, name: str) -> Optional[SunspecModelDef]:
+        return self._models_by_name.get(name)
+
+    def get_point(self, model_id: int, point_name: str) -> Optional[SunspecPointDef]:
+        model = self.get_model(model_id)
+        if model:
+            return model.points.get(point_name)
+        return None
+
+    def get_point_for_field(self, field_key: str) -> Optional[SunspecPointDef]:
+        """Look up point definition by field key (e.g. 'rebus_beacon.REbus_dir.SysMd' or 'inverter.model_64208.SysMd')."""
+        parts = field_key.split(".")
+        if len(parts) >= 3:
+            group_name = parts[1]
+            point_name = parts[2]
+            model = self.get_model_by_name(group_name)
+            if not model and group_name.startswith("model_"):
+                try:
+                    model = self.get_model(int(group_name[6:]))
+                except ValueError:
+                    pass
+            if model:
+                pt = model.points.get(point_name)
+                if pt:
+                    return pt
+        elif len(parts) == 2:
+            point_name = parts[1]
+        else:
+            point_name = field_key
+
+        # Fallback: search across all models
+        for m in self._models_by_id.values():
+            if point_name in m.points:
+                return m.points[point_name]
+        return None
+
+    def _load_catalog(self, models_dir: Optional[Path | str], zip_path: Optional[Path | str]):
+        # Priority 1: Specified models_dir
+        # Priority 2: sunspec-models/json in repo
+        # Priority 3: sunspec-models.zip
+        repo_root = Path(__file__).resolve().parent.parent
+
+        target_dir = Path(models_dir) if models_dir else (repo_root / "sunspec-models" / "json")
+        if target_dir.exists() and target_dir.is_dir():
+            self._load_from_dir(target_dir)
+            if self._models_by_id:
+                logger.info("Loaded %d models from %s", len(self._models_by_id), target_dir)
+                return
+
+        target_zip = Path(zip_path) if zip_path else (repo_root / "sunspec-models.zip")
+        if target_zip.exists() and target_zip.is_file():
+            self._load_from_zip(target_zip)
+            logger.info("Loaded %d models from %s", len(self._models_by_id), target_zip)
+
+    def _load_from_dir(self, directory: Path):
+        for json_file in directory.glob("model_*.json"):
+            try:
+                with open(json_file, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                    self._parse_model_json(raw)
+            except Exception as e:
+                logger.debug("Failed to parse %s: %s", json_file.name, e)
+
+    def _load_from_zip(self, zip_path: Path):
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for item in zf.namelist():
+                if item.startswith("sunspec-models/json/model_") and item.endswith(".json"):
+                    try:
+                        with zf.open(item) as f:
+                            raw = json.load(f)
+                            self._parse_model_json(raw)
+                    except Exception as e:
+                        logger.debug("Failed to parse zip item %s: %s", item, e)
+
+    def _parse_model_json(self, raw: dict):
+        model_id = raw.get("id")
+        group = raw.get("group", {})
+        if model_id is None:
+            # Check ID point inside group
+            for pt in group.get("points", []):
+                if pt.get("name") == "ID" and "value" in pt:
+                    model_id = pt["value"]
+                    break
+
+        if model_id is None:
+            return
+
+        model_name = group.get("name", f"model_{model_id}")
+        model_label = group.get("label", model_name)
+        model_desc = group.get("desc", "")
+
+        model_def = SunspecModelDef(
+            model_id=int(model_id),
+            name=model_name,
+            label=model_label,
+            desc=model_desc,
+        )
+
+        COMMON_ABBREVIATIONS: Dict[str, str] = {
+            "CTPow": "Current Transformer Power",
+            "SysMd": "System Operating Mode",
+            "Px1": "Phase A (P1) Real Power",
+            "Px2": "Phase B (P2) Real Power",
+            "Px3": "Phase C (P3) Real Power",
+            "WhIn": "Total Energy In",
+            "WhOut": "Total Energy Out",
+            "AHRtg": "Amp-Hour Capacity Rating",
+            "WHRtg": "Watt-Hour Capacity Rating",
+            "WChaRteMax": "Max Battery Charge Rate",
+            "WDisChaRteMax": "Max Battery Discharge Rate",
+            "ReConn_Tms": "Reconnect Time",
+            "ReConnMinV": "Reconnect Min Voltage",
+            "ReConnMaxV": "Reconnect Max Voltage",
+            "ReConnMinHz": "Reconnect Min Frequency",
+            "ReConnMaxHz": "Reconnect Max Frequency",
+            "VWLatchTms": "Volt Latch Time",
+            "FWLatchTms": "Frequency Latch Time",
+            "Hz": "Line Frequency",
+            "VA": "AC Apparent Power",
+            "VAr": "AC Reactive Power",
+            "VAR": "AC Reactive Power",
+            "PF": "AC Power Factor",
+            "DCA": "DC Current",
+            "DCV": "DC Voltage",
+            "DCW": "DC Power",
+            "DCWh": "DC Accumulated Energy",
+            "DCAMax": "Max DC Current Rating",
+            "Tmp": "Temperature",
+            "Evt": "Operating Events",
+            "St": "Operating State",
+            "Conn": "Connection Status",
+            "A": "Total DC Current",
+            "V": "Total DC Voltage",
+            "W": "Total DC Power",
+        }
+
+        for p_raw in group.get("points", []):
+            pt_name = p_raw.get("name")
+            if not pt_name:
+                continue
+
+            symbols: List[SunspecSymbol] = []
+            symbols_val: Dict[int, SunspecSymbol] = {}
+            symbols_name: Dict[str, SunspecSymbol] = {}
+
+            for s_raw in p_raw.get("symbols", []):
+                sym = SunspecSymbol(
+                    name=s_raw.get("name", ""),
+                    value=int(s_raw.get("value", 0)),
+                    label=s_raw.get("label"),
+                    desc=s_raw.get("desc"),
+                )
+                symbols.append(sym)
+                symbols_val[sym.value] = sym
+                symbols_name[sym.name] = sym
+
+            raw_label = p_raw.get("label")
+            desc = p_raw.get("desc", "").strip()
+            pt_type = p_raw.get("type", "uint16")
+
+            # Infer human-friendly label if missing or equal to identifier
+            label = raw_label
+            if not label or label == pt_name or label.startswith("Model "):
+                if pt_name in COMMON_ABBREVIATIONS:
+                    label = COMMON_ABBREVIATIONS[pt_name]
+                elif desc and len(desc) < 45 and not desc.lower().startswith(("an ", "the ", "this ", "miscellaneous ")):
+                    clean_d = desc.rstrip(".")
+                    if clean_d.lower().startswith("scale factor for "):
+                        label = f"Scale Factor: {clean_d[17:].title()}"
+                    elif clean_d.lower().endswith(" scale factor"):
+                        label = f"Scale Factor: {clean_d[:-13].title()}"
+                    else:
+                        label = clean_d.title()
+                else:
+                    label = pt_name
+
+            pt_def = SunspecPointDef(
+                name=pt_name,
+                label=label,
+                desc=desc,
+                type=pt_type,
+                size=p_raw.get("size", 1),
+                units=p_raw.get("units"),
+                sf=p_raw.get("sf"),
+                access=p_raw.get("access", "R"),
+                mandatory=p_raw.get("mandatory") == "M",
+                static=p_raw.get("static") == "S",
+                symbols=symbols,
+                symbols_by_value=symbols_val,
+                symbols_by_name=symbols_name,
+            )
+            model_def.points[pt_name] = pt_def
+
+        # Second pass: link scale factor points to the exact points they scale
+        for pt_name, pt_def in model_def.points.items():
+            if pt_def.is_scale_factor:
+                scaled_targets = [
+                    p.label for p in model_def.points.values()
+                    if p.sf == pt_name and p.label and not p.label.startswith("Scale Factor")
+                ]
+                if scaled_targets:
+                    pt_def.label = f"Scale Factor: {scaled_targets[0]} ({pt_name})"
+                elif pt_def.label == pt_name:
+                    clean_sf = pt_name[:-3] if pt_name.endswith(("_SF", "_sf")) else pt_name
+                    pt_def.label = f"Scale Factor: {clean_sf}"
+
+        self._models_by_id[int(model_id)] = model_def
+        self._models_by_name[model_name] = model_def
+        self._models_by_name[f"model_{model_id}"] = model_def
+        self._models_by_name[str(model_id)] = model_def
+
+    def derive_ha_metadata(self, point: SunspecPointDef, model_id: Optional[int] = None) -> HomeAssistantHint:
+        """Derive Home Assistant entity platform, device_class, state_class, and units."""
+        raw_units = point.units or ""
+        canonical_units = raw_units
+
+        # Clean unit notations
+        if raw_units in ("%WHRtg", "%WH", "%Pct"):
+            canonical_units = "%"
+        elif raw_units == "Secs":
+            canonical_units = "s"
+
+        # 1. Writable select entities (RW enum)
+        if point.is_writable and point.is_enum:
+            options = [s.name for s in sorted(point.symbols, key=lambda x: x.value)]
+            return HomeAssistantHint(
+                platform="select",
+                entity_category="config",
+                options=options,
+            )
+
+        # 2. Writable numeric entities (RW number)
+        if point.is_writable and point.is_numeric and not point.is_scale_factor:
+            return HomeAssistantHint(
+                platform="number",
+                unit_of_measurement=canonical_units if canonical_units else None,
+                entity_category="config",
+                min_value=1.0 if "Sec" in raw_units else 0.0,
+                max_value=3600.0 if "Sec" in raw_units else (100.0 if canonical_units == "%" else 10000.0),
+                step=1.0,
+            )
+
+        # 3. Read-only Enum sensors
+        if point.is_enum:
+            return HomeAssistantHint(
+                platform="sensor",
+                device_class="enum",
+                entity_category="diagnostic" if "status" in point.name.lower() or "err" in point.name.lower() else None,
+                options=[s.name for s in sorted(point.symbols, key=lambda x: x.value)],
+            )
+
+        # 4. Bitfield diagnostic sensors
+        if point.is_bitfield:
+            return HomeAssistantHint(
+                platform="sensor",
+                entity_category="diagnostic",
+            )
+
+        # 5. Numeric measurement sensors
+        device_class = None
+        state_class = None
+        icon = None
+
+        if canonical_units in ("W", "kW"):
+            device_class = "power"
+            state_class = "measurement"
+        elif canonical_units in ("Wh", "kWh"):
+            device_class = "energy"
+            state_class = "total_increasing"
+        elif canonical_units in ("V",):
+            device_class = "voltage"
+            state_class = "measurement"
+        elif canonical_units in ("A",):
+            device_class = "current"
+            state_class = "measurement"
+        elif canonical_units in ("Hz",):
+            device_class = "frequency"
+            state_class = "measurement"
+        elif canonical_units == "%":
+            device_class = "battery" if "soc" in point.name.lower() or "soh" in point.name.lower() or "whrtg" in raw_units.lower() else None
+            state_class = "measurement"
+        elif canonical_units in ("C", "°C"):
+            device_class = "temperature"
+            state_class = "measurement"
+        elif point.is_accumulator:
+            state_class = "total_increasing"
+        elif point.is_numeric and not point.is_scale_factor:
+            state_class = "measurement"
+
+        return HomeAssistantHint(
+            platform="sensor",
+            device_class=device_class,
+            state_class=state_class,
+            unit_of_measurement=canonical_units if canonical_units else None,
+            icon=icon,
+        )
+
+
+# Global singleton instance for easy import
+_GLOBAL_CATALOG: Optional[ModelCatalog] = None
+
+def get_catalog() -> ModelCatalog:
+    global _GLOBAL_CATALOG
+    if _GLOBAL_CATALOG is None:
+        _GLOBAL_CATALOG = ModelCatalog()
+    return _GLOBAL_CATALOG

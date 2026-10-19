@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PWRcell Explorer (v3)</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Top Navigation Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-icon">⚡</div>
+        <div class="logo-text">
+          <h1>PWRcell Explorer</h1>
+          <span class="version-badge">v3.0</span>
+        </div>
+      </div>
+
+      <!-- Quick Telemetry Dashboard -->
+      <div class="quick-telemetry" id="quickTelemetry">
+        <div class="metric-chip solar">
+          <span class="chip-label">Solar</span>
+          <span class="chip-value" id="topSolar">-- W</span>
+        </div>
+        <div class="metric-chip load">
+          <span class="chip-label">Load</span>
+          <span class="chip-value" id="topLoad">-- W</span>
+        </div>
+        <div class="metric-chip grid">
+          <span class="chip-label">Grid</span>
+          <span class="chip-value" id="topGrid">-- W</span>
+        </div>
+        <div class="metric-chip battery">
+          <span class="chip-label">Battery</span>
+          <span class="chip-value" id="topBattery">--% (-- W)</span>
+        </div>
+        <div class="metric-chip mode">
+          <span class="chip-label">Mode</span>
+          <select id="modeSelect" class="mode-dropdown" title="Change System Operating Mode">
+            <option value="SELF_SUPPLY">Self Supply</option>
+            <option value="CLEAN_BACKUP">Clean Backup</option>
+            <option value="PRIORITY_BACKUP">Priority Backup</option>
+            <option value="GRID_CONNECT">Grid Connect (Grid Tie)</option>
+            <option value="SAFETY_SHUTDOWN">Safety Shutdown</option>
+            <option value="ARBITRAGE">Arbitrage</option>
+            <option value="FULL_EXPORT">Full Export (Sell)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="header-status">
+        <button class="btn btn-secondary btn-sm" id="btnOpenCompare" title="Compare live push telemetry with Modbus registers">⚡ Compare Telemetry</button>
+        <button class="btn btn-secondary btn-sm" id="btnSyncModbus" title="Trigger on-demand Modbus sync of keypad configs and setpoints">🔄 Sync Config</button>
+        <span class="status-indicator live" id="liveIndicator">
+          <span class="pulse-dot"></span>
+          <span id="connStatusText">Live Feed</span>
+        </span>
+        <span class="mode-tag" id="modeTag">Simulator</span>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <!-- Left Sidebar: Devices Tree -->
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <h2>Discovered Devices</h2>
+          <span class="counter" id="deviceCountBadge">0</span>
+        </div>
+        <div class="device-list" id="deviceList">
+          <div class="loading-spinner">Loading devices...</div>
+        </div>
+      </aside>
+
+      <!-- Main Content Area: Field Explorer -->
+      <main class="main-content">
+        <!-- Device Info Banner -->
+        <section class="device-banner" id="deviceBanner">
+          <div class="device-info">
+            <h2 id="activeDeviceName">Select a Device</h2>
+            <div class="device-meta">
+              <span class="meta-item"><strong id="activeDeviceSerial">--</strong></span>
+              <span class="meta-item">Slave ID: <strong id="activeDeviceSlaveId">--</strong></span>
+              <span class="meta-item">Firmware: <strong id="activeDeviceVersion">--</strong></span>
+              <span class="meta-item">Models: <strong id="activeDeviceModelCount">--</strong></span>
+              <span class="meta-item">Fields: <strong id="activeDeviceFieldCount">--</strong></span>
+            </div>
+          </div>
+          <div class="device-banner-actions">
+            <button class="btn btn-secondary" id="btnPollAllModels" title="Poll all SunSpec models supported by this device">🔄 Poll All Models</button>
+            <button class="btn btn-secondary" id="btnSelectRecommended">Select Recommended</button>
+            <button class="btn btn-secondary" id="btnDeselectAll">Deselect All</button>
+          </div>
+        </section>
+
+        <!-- Search & Filter Controls -->
+        <div class="toolbar">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="searchInput" placeholder="Search fields by name, label, unit..." />
+            <button id="searchClear" class="clear-btn">&times;</button>
+          </div>
+
+          <div class="model-select-box">
+            <label for="modelSelect" class="model-select-label">Model:</label>
+            <select id="modelSelect" class="model-dropdown" title="Filter fields by SunSpec Model">
+              <option value="all">All Models</option>
+            </select>
+          </div>
+
+          <div class="filter-pills" id="filterPills">
+            <button class="pill active" data-filter="all">All Fields (<span id="countAll">0</span>)</button>
+            <button class="pill" data-filter="compound">⚡ Merged View (<span id="countCompound">0</span>)</button>
+            <button class="pill" data-filter="selected">Selected for HA (<span id="countSelected">0</span>)</button>
+            <button class="pill" data-filter="sensor">Sensors (<span id="countSensors">0</span>)</button>
+            <button class="pill" data-filter="writable">Controls & Selects (<span id="countWritable">0</span>)</button>
+            <button class="pill" data-filter="push">MQTT Push (<span id="countPush">0</span>)</button>
+            <button class="pill" data-filter="modbus">Modbus (<span id="countModbus">0</span>)</button>
+            <button class="pill" data-filter="scalefactor">Scale Factors (<span id="countScaleFactor">0</span>)</button>
+          </div>
+
+          <div class="toolbar-options">
+            <label class="toggle-label" title="Group table rows by SunSpec Model">
+              <input type="checkbox" id="groupByModel" />
+              <span>Group by Model</span>
+            </label>
+            <label class="toggle-label" title="Hide raw scale factor registers from standard views">
+              <input type="checkbox" id="hideScaleFactors" checked />
+              <span>Hide Scale Factors</span>
+            </label>
+            <label class="toggle-label" title="Enable multi-column sorting without holding Shift">
+              <input type="checkbox" id="multiSortToggle" />
+              <span>Multi-Sort Mode</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Sort Status Bar -->
+        <div class="sort-bar" id="sortBar" style="display: none;">
+          <div class="sort-bar-left">
+            <span class="sort-bar-label">⚡ Ordered by:</span>
+            <div class="sort-pills" id="sortPills"></div>
+          </div>
+          <div class="sort-bar-right">
+            <span class="sort-hint">Tip: Shift-click any column header to multi-sort</span>
+            <button class="btn btn-secondary btn-xs" id="btnClearSort" title="Reset all sorting to natural order">Clear Sort</button>
+          </div>
+        </div>
+
+        <!-- Field Table -->
+        <div class="table-container">
+          <table class="field-table">
+            <thead>
+              <tr>
+                <th width="48" class="text-center sortable" data-sort="ha" title="Sort by Home Assistant export selection">
+                  <span class="th-content">HA<span class="sort-indicator"></span></span>
+                </th>
+                <th width="100" class="sortable" data-sort="model" title="Sort by SunSpec Model # (Shift-click to multi-sort)">
+                  <span class="th-content">Model<span class="sort-indicator"></span></span>
+                </th>
+                <th class="sortable" data-sort="name" title="Sort by Field Name &amp; Label (Shift-click to multi-sort)">
+                  <span class="th-content">Field Name &amp; Label<span class="sort-indicator"></span></span>
+                </th>
+                <th class="sortable" data-sort="value" title="Sort by Current Value (Shift-click to multi-sort)">
+                  <span class="th-content">Current Value<span class="sort-indicator"></span></span>
+                </th>
+                <th class="sortable" data-sort="unit" title="Sort by Unit (Shift-click to multi-sort)">
+                  <span class="th-content">Unit<span class="sort-indicator"></span></span>
+                </th>
+                <th class="sortable" data-sort="source" title="Sort by Telemetry Source (Shift-click to multi-sort)">
+                  <span class="th-content">Source<span class="sort-indicator"></span></span>
+                </th>
+                <th class="sortable" data-sort="type" title="Sort by Type / Platform (Shift-click to multi-sort)">
+                  <span class="th-content">Type / Platform<span class="sort-indicator"></span></span>
+                </th>
+                <th width="80" class="text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="fieldTableBody">
+              <tr>
+                <td colspan="8" class="empty-state">Select a device from the sidebar to view fields</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </main>
+    </div>
+
+    <!-- Bottom Bar: Home Assistant Export Drawer -->
+    <footer class="app-footer">
+      <div class="ha-status-bar">
+        <div class="ha-stats">
+          <span class="ha-icon">🏠</span>
+          <strong>Home Assistant Export:</strong>
+          <span id="haSelectedCount">0</span> entities selected
+        </div>
+        <div class="footer-actions">
+          <button class="btn btn-secondary" id="btnPreviewHA">Preview MQTT Discovery</button>
+          <button class="btn btn-primary" id="btnSaveHA">Save to ha_config.yaml</button>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Preview Modal -->
+  <div class="modal-backdrop" id="previewModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Home Assistant MQTT Discovery Preview</h3>
+        <button class="modal-close" id="btnCloseModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">These MQTT discovery topics and payloads will be automatically published to your Home Assistant broker for the selected entities:</p>
+        <pre class="code-preview" id="previewCode">Loading preview...</pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btnCopyPreview">Copy JSON</button>
+        <button class="btn btn-primary" id="btnClosePreview">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Write Value Modal -->
+  <div class="modal-backdrop" id="writeModal">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h3 id="writeModalTitle">Edit Field Value</h3>
+        <button class="modal-close" id="btnCancelWrite">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc" id="writeModalDesc">Enter a new value for this register:</p>
+        <div class="form-group" id="writeInputContainer">
+          <input type="text" id="writeInputValue" class="text-input" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btnCancelWriteModal">Cancel</button>
+        <button class="btn btn-primary" id="btnConfirmWrite">Write Value</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Telemetry Comparison Modal -->
+  <div class="modal-backdrop" id="compareModal">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3>⚡ Telemetry Comparison: MQTT Push vs Modbus Registers</h3>
+        <button class="modal-close" id="btnCloseCompare">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">Real-time side-by-side verification between Generac high-frequency push MQTT messages (/energy_recordset_live) and polled SunSpec Modbus registers.</p>
+        <div class="compare-table-container">
+          <table class="field-table compare-table">
+            <thead>
+              <tr>
+                <th>Metric / Concept</th>
+                <th>MQTT Push Value</th>
+                <th>Modbus Register</th>
+                <th>Modbus Value</th>
+                <th>Match</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="compareTableBody">
+              <tr><td colspan="6" class="empty-state">Loading live comparison telemetry...</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div id="unrecCompareSection" class="unrec-compare-section" style="display: none;">
+          <div class="unrec-header">
+            <h4><span class="warning-icon">⚠️</span> Unrecognized & Unmapped MQTT Protobuf Telemetry (<span id="unrecCount">0</span> items)</h4>
+            <span class="unrec-subtitle">Detected raw protobuf wire tags or unmapped channels on the MQTT bus</span>
+          </div>
+          <div class="unrec-table-container">
+            <table class="field-table unrec-table">
+              <thead>
+                <tr>
+                  <th>Category</th>
+                  <th>Location</th>
+                  <th>Field / Tag</th>
+                  <th>Observed Value</th>
+                  <th>Description</th>
+                </tr>
+              </thead>
+              <tbody id="unrecTableBody">
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <span class="compare-footer-note">⚡ Live sync updates every 2 seconds</span>
+        <button class="btn btn-primary" id="btnCloseCompareFooter">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div class="toast" id="toast"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

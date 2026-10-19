@@ -1,4 +1,5 @@
-config.yaml
+pwrcell.yaml
+local_config.yaml
 devices.yaml
 model_dump/
 sunspec-models/

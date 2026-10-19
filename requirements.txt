@@ -25,3 +25,6 @@ six==1.17.0
 sshtunnel==0.4.0
 typing-inspect==0.9.0
 typing_extensions==4.12.2
+Flask>=3.0.0
+Werkzeug>=3.0.0
+

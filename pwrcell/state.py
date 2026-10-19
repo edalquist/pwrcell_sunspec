@@ -1,0 +1,1260 @@
+"""Unified Device State Store for Generac PWRcell.
+
+Maintains a single coherent in-memory state tree merging real-time push telemetry
+from internal MQTT with SunSpec Modbus registers, providing field-level metadata,
+Home Assistant hints, and change subscription hooks.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional
+
+from .catalog import HomeAssistantHint, ModelCatalog, SunspecPointDef, get_catalog
+from .mapping import MappingRegistry, apply_transform
+from .mqtt import LiveTelemetrySnapshot
+
+logger = logging.getLogger(__name__)
+
+
+class FieldSource(str, Enum):
+    MQTT_PUSH = "MQTT_PUSH"
+    MODBUS_POLL = "MODBUS_POLL"
+    MODBUS_CONFIG = "MODBUS_CONFIG"
+    COMPUTED = "COMPUTED"
+
+
+def get_active_modbus_to_mqtt_mapping() -> Dict[str, str]:
+    """Dynamically build modbus to mqtt mapping from MappingRegistry."""
+    mapping: Dict[str, str] = {}
+    reg = MappingRegistry.get_instance()
+    for m in reg.get_all():
+        mapping[m.modbus_field] = m.mqtt_field
+        for alt in m.modbus_candidates:
+            mapping[alt] = m.mqtt_field
+    return mapping
+
+
+MODBUS_TO_MQTT_MAPPING: Dict[str, str] = get_active_modbus_to_mqtt_mapping()
+
+
+@dataclass
+class CompoundFieldView:
+    """A unified composite view over distinct MQTT push and Modbus poll telemetry fields.
+    
+    Preserves the two separate values and their timestamps while surfacing the latest value
+    to external clients and the Web UI.
+    """
+    key: str  # e.g. 'inverter.compound.grid_power'
+    mapping_id: str  # e.g. 'grid_power'
+    device_sn: str
+    device_type: str
+    name: str  # e.g. 'grid_power'
+    label: str  # e.g. 'Grid Net Power'
+    description: str
+    units: Optional[str] = None
+    access: str = "R"
+    is_writable: bool = False
+
+    # The 3 observable values for UI and clients:
+    latest_value: Any = None
+    latest_source: str = "NONE"  # 'MQTT_PUSH' or 'MODBUS_POLL'
+    latest_updated: float = 0.0
+
+    mqtt_value: Any = None
+    mqtt_raw_value: Any = None
+    mqtt_key: Optional[str] = None
+    mqtt_updated: Optional[float] = None
+
+    modbus_value: Any = None  # Transformed value (e.g. negated CT power)
+    modbus_raw_value: Any = None  # Untransformed Modbus point
+    modbus_key: Optional[str] = None
+    modbus_updated: Optional[float] = None
+
+    delta: Optional[float] = None
+    match_pct: Optional[float] = None
+
+    ha_platform: str = "sensor"
+    ha_device_class: Optional[str] = None
+    ha_state_class: Optional[str] = None
+    ha_unit: Optional[str] = None
+    ha_options: Optional[List[str]] = None
+    is_compound: bool = True
+    model_id: Optional[int] = None
+    model_name: str = "compound"
+    model_label: str = "Merged Telemetry"
+
+    def to_dict(self) -> dict:
+        return {
+            "key": self.key,
+            "mapping_id": self.mapping_id,
+            "device_sn": self.device_sn,
+            "device_type": self.device_type,
+            "name": self.name,
+            "label": self.label,
+            "description": self.description,
+            "units": self.units,
+            "access": self.access,
+            "is_writable": self.is_writable,
+            # The 3 values:
+            "latest_value": self.latest_value,
+            "latest_source": self.latest_source,
+            "latest_updated": self.latest_updated,
+            "value": self.latest_value,
+            "source": self.latest_source,
+            "mqtt_value": self.mqtt_value,
+            "mqtt_raw_value": self.mqtt_raw_value,
+            "mqtt_key": self.mqtt_key,
+            "mqtt_updated": self.mqtt_updated,
+            "modbus_value": self.modbus_value,
+            "modbus_raw_value": self.modbus_raw_value,
+            "modbus_key": self.modbus_key,
+            "modbus_updated": self.modbus_updated,
+            "delta": round(self.delta, 2) if self.delta is not None else None,
+            "match_pct": round(self.match_pct, 1) if self.match_pct is not None else None,
+            "ha_platform": self.ha_platform,
+            "ha_device_class": self.ha_device_class,
+            "ha_state_class": self.ha_state_class,
+            "ha_unit": self.ha_unit or self.units,
+            "ha_options": self.ha_options,
+            "is_compound": True,
+            "model_id": self.model_id,
+            "model_name": self.model_name,
+            "model_label": self.model_label,
+            "last_updated": self.latest_updated,
+        }
+
+
+
+@dataclass
+class StateField:
+    """A single observable metric or configuration point on a device."""
+    key: str  # e.g., 'inverter.live.solar_power_w' or 'inverter.inverter_status.SysMd'
+    device_sn: str
+    device_type: str  # 'inverter', 'battery', 'pv_link', 'rebus_beacon', 'icm'
+    name: str  # e.g., 'solar_power_w' or 'SysMd'
+    label: str  # Human readable label
+    description: str
+    value: Any  # Scaled/processed current value
+    raw_value: Any
+    units: Optional[str] = None
+    point_type: Optional[str] = None  # e.g., 'enum16', 'uint16', 'int16', etc.
+    is_enum: bool = False
+    is_bitfield: bool = False
+    bitmask_flags: Optional[List[str]] = None
+    source: FieldSource = FieldSource.MODBUS_POLL
+    access: str = "R"  # "R" or "RW"
+    symbols: Optional[List[Any]] = None  # Enum/bitfield symbol defs or names
+    is_scale_factor: bool = False
+    mqtt_equivalent: Optional[str] = None
+    ha_hint: Optional[HomeAssistantHint] = None
+    model_id: Optional[int] = None
+    model_name: Optional[str] = None
+    model_label: Optional[str] = None
+    last_updated: float = field(default_factory=time.time)
+
+    @property
+    def is_writable(self) -> bool:
+        return self.access == "RW"
+
+    @property
+    def active_flags(self) -> List[str]:
+        """List of active flag names if this field is a bitfield."""
+        if self.bitmask_flags is not None:
+            return self.bitmask_flags
+        if self.is_bitfield and isinstance(self.value, list):
+            return self.value
+        return []
+
+    def is_flag_set(self, flag_name: str) -> bool:
+        """Check whether a specific flag is active in this bitfield."""
+        if not self.is_bitfield:
+            return False
+        clean = flag_name.strip().upper()
+        for f in self.active_flags:
+            if f.upper() == clean:
+                return True
+        if isinstance(self.raw_value, int) and self.symbols:
+            for s in self.symbols:
+                s_name = s.get("name") if isinstance(s, dict) else getattr(s, "name", None)
+                s_val = s.get("value") if isinstance(s, dict) else getattr(s, "value", None)
+                if s_name and s_name.upper() == clean and s_val is not None:
+                    return bool(self.raw_value & (1 << int(s_val)))
+        return False
+
+    @property
+    def flags_dict(self) -> Optional[Dict[str, bool]]:
+        """Dictionary of {flag_name: bool} showing status of all known symbols for this bitfield."""
+        if not self.is_bitfield or not self.symbols:
+            return None
+        active_set = {f.upper() for f in self.active_flags}
+        res: Dict[str, bool] = {}
+        for s in self.symbols:
+            s_name = s.get("name") if isinstance(s, dict) else getattr(s, "name", None)
+            s_val = s.get("value") if isinstance(s, dict) else getattr(s, "value", None)
+            if s_name:
+                is_active = (s_name.upper() in active_set)
+                if not is_active and isinstance(self.raw_value, int) and s_val is not None:
+                    is_active = bool(self.raw_value & (1 << int(s_val)))
+                res[s_name] = is_active
+        return res
+
+    def to_dict(self) -> dict:
+        serialized_symbols = None
+        if self.symbols:
+            serialized_symbols = []
+            for s in self.symbols:
+                if isinstance(s, dict):
+                    serialized_symbols.append(s)
+                elif hasattr(s, "to_dict"):
+                    serialized_symbols.append(s.to_dict())
+                elif hasattr(s, "name") and hasattr(s, "value"):
+                    serialized_symbols.append({
+                        "name": s.name,
+                        "value": s.value,
+                        "label": getattr(s, "label", None),
+                        "desc": getattr(s, "desc", None),
+                    })
+                elif isinstance(s, str):
+                    serialized_symbols.append({"name": s, "value": None, "label": s})
+
+        return {
+            "key": self.key,
+            "device_sn": self.device_sn,
+            "device_type": self.device_type,
+            "name": self.name,
+            "label": self.label,
+            "description": self.description,
+            "value": self.value,
+            "raw_value": self.raw_value,
+            "units": self.units,
+            "point_type": self.point_type,
+            "is_enum": self.is_enum,
+            "is_bitfield": self.is_bitfield,
+            "bitmask_flags": self.bitmask_flags or (self.active_flags if self.is_bitfield else None),
+            "flags_dict": self.flags_dict if self.is_bitfield else None,
+            "source": self.source.value,
+            "access": self.access,
+            "is_writable": self.is_writable,
+            "is_scale_factor": self.is_scale_factor,
+            "mqtt_equivalent": self.mqtt_equivalent,
+            "symbols": serialized_symbols,
+            "ha_platform": self.ha_hint.platform if self.ha_hint else "sensor",
+            "ha_device_class": self.ha_hint.device_class if self.ha_hint else None,
+            "ha_state_class": self.ha_hint.state_class if self.ha_hint else None,
+            "ha_unit": self.ha_hint.unit_of_measurement if self.ha_hint else self.units,
+            "ha_category": self.ha_hint.entity_category if self.ha_hint else None,
+            "ha_options": self.ha_hint.options if self.ha_hint else None,
+            "model_id": self.model_id,
+            "model_name": self.model_name,
+            "model_label": self.model_label,
+            "last_updated": self.last_updated,
+        }
+
+
+@dataclass
+class UnifiedDevice:
+    """Unified representation of a PWRcell device."""
+    serial_number: str
+    slave_id: Optional[int]
+    device_type: str  # 'inverter', 'battery', 'pv_link', 'rebus_beacon', 'icm'
+    model_name: str
+    manufacturer: str
+    version: str
+    supported_models: List[int] = field(default_factory=list)
+    fields: Dict[str, StateField] = field(default_factory=dict)
+    online: bool = True
+    last_seen: float = field(default_factory=time.time)
+
+    def get_models_summary(self, catalog: Optional[ModelCatalog] = None) -> List[Dict[str, Any]]:
+        cat = catalog or get_catalog()
+        all_model_ids = set(self.supported_models)
+        for f in self.fields.values():
+            if f.model_id is not None:
+                all_model_ids.add(f.model_id)
+
+        result = []
+        for mid in sorted(all_model_ids):
+            m_def = cat.get_model(mid)
+            pts_count = sum(1 for f in self.fields.values() if f.model_id == mid)
+            result.append({
+                "model_id": mid,
+                "name": m_def.name if m_def else f"model_{mid}",
+                "label": m_def.label if m_def else f"Model {mid}",
+                "desc": m_def.desc if m_def else "",
+                "field_count": pts_count,
+                "total_points": len(m_def.points) if m_def else 0,
+            })
+        return result
+
+    def to_dict(self, catalog: Optional[ModelCatalog] = None) -> dict:
+        models_summary = self.get_models_summary(catalog)
+        return {
+            "serial_number": self.serial_number,
+            "slave_id": self.slave_id,
+            "device_type": self.device_type,
+            "model_name": self.model_name,
+            "manufacturer": self.manufacturer,
+            "version": self.version,
+            "online": self.online,
+            "last_seen": self.last_seen,
+            "field_count": len(self.fields),
+            "supported_models": self.supported_models,
+            "models": models_summary,
+            "model_count": len(models_summary),
+        }
+
+
+class StateStore:
+    """Central state store managing all devices and field streams."""
+
+    def __init__(self, catalog: Optional[ModelCatalog] = None):
+        self.catalog = catalog or get_catalog()
+        self.devices: Dict[str, UnifiedDevice] = {}  # serial_number -> UnifiedDevice
+        self.devices_by_slave_id: Dict[int, UnifiedDevice] = {}
+        self._listeners: List[Callable[[StateField], None]] = []
+        self._compound_listeners: List[Callable[[CompoundFieldView], None]] = []
+        self._lock = threading.Lock()
+
+    def register_device(
+        self,
+        serial_number: str,
+        slave_id: Optional[int],
+        device_type: str,
+        model_name: str,
+        manufacturer: str = "Generac",
+        version: str = "",
+        supported_models: Optional[List[int]] = None,
+    ) -> UnifiedDevice:
+        """Register or retrieve a unified device."""
+        with self._lock:
+            if serial_number in self.devices:
+                dev = self.devices[serial_number]
+                if slave_id is not None:
+                    dev.slave_id = slave_id
+                    self.devices_by_slave_id[slave_id] = dev
+                if supported_models:
+                    dev.supported_models = sorted(list(set(dev.supported_models + supported_models)))
+                return dev
+
+            dev = UnifiedDevice(
+                serial_number=serial_number,
+                slave_id=slave_id,
+                device_type=device_type,
+                model_name=model_name,
+                manufacturer=manufacturer,
+                version=version,
+                supported_models=sorted(list(set(supported_models or []))),
+            )
+            self.devices[serial_number] = dev
+            if slave_id is not None:
+                self.devices_by_slave_id[slave_id] = dev
+            return dev
+
+    def set_supported_models(self, serial_number: str, model_ids: List[int]):
+        """Update or add supported SunSpec models for a registered device."""
+        with self._lock:
+            dev = self.devices.get(serial_number)
+            if dev:
+                dev.supported_models = sorted(list(set(dev.supported_models + model_ids)))
+
+    def get_devices_by_type(self, device_type: str) -> List[UnifiedDevice]:
+        with self._lock:
+            return [d for d in self.devices.values() if d.device_type == device_type]
+
+    def get_inverter(self) -> Optional[UnifiedDevice]:
+        invs = self.get_devices_by_type("inverter")
+        return invs[0] if invs else None
+
+    def get_battery(self) -> Optional[UnifiedDevice]:
+        bats = self.get_devices_by_type("battery")
+        return bats[0] if bats else None
+
+    def get_beacon(self) -> Optional[UnifiedDevice]:
+        beacons = self.get_devices_by_type("rebus_beacon")
+        return beacons[0] if beacons else None
+
+    def find_fields(self, key: str) -> List[StateField]:
+        """Find all StateField instances across all devices matching exact key or point suffix."""
+        matched: List[StateField] = []
+        for dev in self.devices.values():
+            if key in dev.fields:
+                matched.append(dev.fields[key])
+
+        if matched:
+            return matched
+
+        # Suffix match e.g. inverter.inverter_status.CTPow matching inverter.model_64208.CTPow
+        parts = key.split(".")
+        if len(parts) >= 3:
+            target_dev_type = parts[0]
+            target_point = parts[-1]
+            for dev in self.devices.values():
+                if dev.device_type == target_dev_type:
+                    for f_key, f_obj in dev.fields.items():
+                        if f_key.endswith(f".{target_point}") and f_obj.source != FieldSource.MQTT_PUSH:
+                            matched.append(f_obj)
+                            break
+        return matched
+
+    def _find_field(self, key: str) -> Optional[StateField]:
+        """Find a StateField by exact key or by device_type + point_name suffix."""
+        fields = self.find_fields(key)
+        return fields[0] if fields else None
+
+    def get_compound_view(self, mapping_id: str) -> Optional[CompoundFieldView]:
+        """Compute compound view for a specific mapping id.
+        
+        Surfaces all 3 values (latest, mqtt, modbus) while preserving underlying state.
+        """
+        reg = MappingRegistry.get_instance()
+        m = reg.get_by_id(mapping_id)
+        if not m:
+            return None
+
+        # Determine target device
+        target_dev = None
+        if m.mqtt_field.startswith("inverter."):
+            target_dev = self.get_inverter()
+        elif m.mqtt_field.startswith("battery."):
+            target_dev = self.get_battery()
+        elif m.mqtt_field.startswith("rebus_beacon."):
+            target_dev = self.get_beacon()
+
+        if not target_dev:
+            devs = self.get_devices_by_type(m.device_type)
+            if devs:
+                target_dev = devs[0]
+            else:
+                target_dev = self.get_inverter() or self.get_beacon()
+        if not target_dev:
+            return None
+
+        # 1. Lookup MQTT Field
+        mqtt_field = self._find_field(m.mqtt_field)
+        mqtt_val = mqtt_field.value if mqtt_field else None
+        mqtt_raw = mqtt_field.raw_value if mqtt_field else None
+        mqtt_upd = mqtt_field.last_updated if mqtt_field else None
+        mqtt_k = mqtt_field.key if mqtt_field else m.mqtt_field
+
+        # 2. Lookup Modbus Field (primary candidate then alternatives)
+        candidates = [m.modbus_field] + [c for c in m.modbus_candidates if c != m.modbus_field]
+        mb_fields: List[StateField] = []
+        chosen_cand_key = m.modbus_field
+        for cand_key in candidates:
+            fields = self.find_fields(cand_key)
+            if fields and any(f.value is not None for f in fields):
+                mb_fields = fields
+                chosen_cand_key = cand_key
+                break
+        if not mb_fields:
+            mb_fields = self.find_fields(m.modbus_field)
+
+        should_sum = (
+            m.transform in ("sum", "sum_all", "sum_devices")
+            or m.id == "solar_power"
+            or (chosen_cand_key.startswith("pv_link.") and m.mqtt_field == "inverter.live.solar_power_w")
+        )
+
+        mb_field = mb_fields[0] if mb_fields else None
+        if should_sum and mb_fields:
+            num_vals = [f.value for f in mb_fields if isinstance(f.value, (int, float))]
+            mb_raw = sum(num_vals) if num_vals else (0.0 if mb_fields else None)
+            mb_upd = max((f.last_updated for f in mb_fields), default=None)
+            mb_k = chosen_cand_key
+            if m.transform and m.transform not in ("sum", "sum_all", "sum_devices"):
+                mb_val = apply_transform(mb_raw, m.transform)
+            else:
+                mb_val = mb_raw
+        else:
+            mb_raw = mb_field.value if mb_field else None
+            mb_upd = mb_field.last_updated if mb_field else None
+            mb_k = mb_field.key if mb_field else chosen_cand_key
+            mb_val = apply_transform(mb_raw, m.transform)
+
+        # 3. Determine Latest Value
+        if mqtt_upd is not None and mb_upd is not None:
+            if mb_upd > mqtt_upd:
+                latest_val = mb_val
+                latest_src = FieldSource.MODBUS_POLL.value
+                latest_upd = mb_upd
+            else:
+                latest_val = mqtt_val
+                latest_src = FieldSource.MQTT_PUSH.value
+                latest_upd = mqtt_upd
+        elif mqtt_upd is not None:
+            latest_val = mqtt_val
+            latest_src = FieldSource.MQTT_PUSH.value
+            latest_upd = mqtt_upd
+        elif mb_upd is not None:
+            latest_val = mb_val
+            latest_src = FieldSource.MODBUS_POLL.value
+            latest_upd = mb_upd
+        else:
+            latest_val = None
+            latest_src = "NONE"
+            latest_upd = 0.0
+
+        # Compute delta and match percentage
+        delta = None
+        match_pct = None
+        if isinstance(mqtt_val, (int, float)) and isinstance(mb_val, (int, float)):
+            delta = abs(mqtt_val - mb_val)
+            denom = max(abs(mqtt_val), abs(mb_val), 1.0)
+            match_pct = max(0.0, 100.0 - (delta / denom * 100.0))
+
+        key = f"{target_dev.device_type}.compound.{m.id}"
+        is_writable = (mb_field.is_writable if mb_field else False)
+
+        return CompoundFieldView(
+            key=key,
+            mapping_id=m.id,
+            device_sn=target_dev.serial_number,
+            device_type=target_dev.device_type,
+            name=m.id,
+            label=m.label,
+            description=m.description,
+            units=m.unit or (mb_field.units if mb_field else (mqtt_field.units if mqtt_field else None)),
+            access="RW" if is_writable else "R",
+            is_writable=is_writable,
+            latest_value=latest_val,
+            latest_source=latest_src,
+            latest_updated=latest_upd,
+            mqtt_value=mqtt_val,
+            mqtt_raw_value=mqtt_raw,
+            mqtt_key=mqtt_k,
+            mqtt_updated=mqtt_upd,
+            modbus_value=mb_val,
+            modbus_raw_value=mb_raw,
+            modbus_key=mb_k,
+            modbus_updated=mb_upd,
+            delta=delta,
+            match_pct=match_pct,
+            ha_platform=m.ha_platform,
+            ha_device_class=m.ha_device_class,
+            ha_state_class=m.ha_state_class,
+            ha_unit=m.unit,
+        )
+
+    def get_compound_views(self, device_sn: Optional[str] = None) -> List[CompoundFieldView]:
+        """Compute all compound views, optionally filtered by device_sn."""
+        reg = MappingRegistry.get_instance()
+        views = []
+        for m in reg.get_all():
+            view = self.get_compound_view(m.id)
+            if view:
+                if device_sn is None or view.device_sn == device_sn:
+                    views.append(view)
+        return views
+
+    def subscribe_compound(self, listener: Callable[[CompoundFieldView], None]):
+        """Register a callback for compound view updates."""
+        with self._lock:
+            self._compound_listeners.append(listener)
+
+    def notify_field_change(self, field_obj: StateField):
+        """Notify registered listeners of a field change."""
+        with self._lock:
+            listeners = list(self._listeners)
+        for listener in listeners:
+            try:
+                listener(field_obj)
+            except Exception as e:
+                logger.debug("Error in state change listener: %s", e)
+
+    def notify_compound_change(self, c_view: Any):
+        """Notify registered compound listeners of a compound view change."""
+        with self._lock:
+            compound_listeners = list(self._compound_listeners)
+        for listener in compound_listeners:
+            try:
+                listener(c_view)
+            except Exception as e:
+                logger.debug("Error in compound change listener: %s", e)
+
+    def set_field(
+        self,
+        device_sn: str,
+        name: str,
+        label: str,
+        description: str,
+        value: Any,
+        raw_value: Any,
+        units: Optional[str] = None,
+        source: FieldSource = FieldSource.MODBUS_POLL,
+        access: str = "R",
+        symbols: Optional[List[Any]] = None,
+        point_type: Optional[str] = None,
+        is_enum: Optional[bool] = None,
+        is_bitfield: Optional[bool] = None,
+        bitmask_flags: Optional[List[str]] = None,
+        is_scale_factor: bool = False,
+        ha_hint: Optional[HomeAssistantHint] = None,
+        sub_group: Optional[str] = None,
+        model_id: Optional[int] = None,
+        model_name: Optional[str] = None,
+        model_label: Optional[str] = None,
+    ) -> StateField:
+        """Set a field value, notify listeners and compound subscribers if changed."""
+        with self._lock:
+            dev = self.devices.get(device_sn)
+            if not dev:
+                raise ValueError(f"Device with serial number {device_sn} not registered")
+
+            # Resolve model metadata if not explicitly provided
+            if model_id is None and sub_group:
+                if sub_group == "live":
+                    model_name = "live"
+                    model_label = "Push Telemetry"
+                elif sub_group == "compound":
+                    model_name = "compound"
+                    model_label = "Merged Telemetry"
+                else:
+                    cat_model = self.catalog.get_model_by_name(sub_group)
+                    if not cat_model and sub_group.startswith("model_"):
+                        try:
+                            cat_model = self.catalog.get_model(int(sub_group[6:]))
+                        except ValueError:
+                            pass
+                    if cat_model:
+                        model_id = cat_model.model_id
+                        model_name = cat_model.name
+                        model_label = cat_model.label
+
+            if model_id is not None and model_id not in dev.supported_models:
+                dev.supported_models = sorted(list(set(dev.supported_models + [model_id])))
+
+            group_prefix = f"{sub_group}." if sub_group else ""
+            key = f"{dev.device_type}.{group_prefix}{name}"
+            mqtt_eq = MODBUS_TO_MQTT_MAPPING.get(key)
+
+            existing = dev.fields.get(key)
+            if existing is not None:
+                changed = (existing.value != value)
+                existing.value = value
+                existing.raw_value = raw_value
+                if point_type is not None:
+                    existing.point_type = point_type
+                if is_enum is not None:
+                    existing.is_enum = is_enum
+                if is_bitfield is not None:
+                    existing.is_bitfield = is_bitfield
+                if bitmask_flags is not None:
+                    existing.bitmask_flags = bitmask_flags
+                elif is_bitfield and isinstance(value, list):
+                    existing.bitmask_flags = value
+                if symbols is not None:
+                    existing.symbols = symbols
+                if model_id is not None:
+                    existing.model_id = model_id
+                if model_name is not None:
+                    existing.model_name = model_name
+                if model_label is not None:
+                    existing.model_label = model_label
+                existing.is_scale_factor = is_scale_factor
+                existing.mqtt_equivalent = mqtt_eq
+                existing.last_updated = time.time()
+                field_obj = existing
+            else:
+                field_obj = StateField(
+                    key=key,
+                    device_sn=device_sn,
+                    device_type=dev.device_type,
+                    name=name,
+                    label=label,
+                    description=description,
+                    value=value,
+                    raw_value=raw_value,
+                    units=units,
+                    point_type=point_type,
+                    is_enum=bool(is_enum),
+                    is_bitfield=bool(is_bitfield),
+                    bitmask_flags=bitmask_flags or (value if (is_bitfield and isinstance(value, list)) else None),
+                    source=source,
+                    access=access,
+                    symbols=symbols,
+                    is_scale_factor=is_scale_factor,
+                    mqtt_equivalent=mqtt_eq,
+                    ha_hint=ha_hint,
+                    model_id=model_id,
+                    model_name=model_name,
+                    model_label=model_label,
+                )
+                dev.fields[key] = field_obj
+                changed = True
+
+            dev.last_seen = time.time()
+            listeners = list(self._listeners) if changed else []
+            compound_listeners = list(self._compound_listeners) if changed else []
+
+        # Check if this field affects any compound view
+        affected_view = None
+        if changed and compound_listeners:
+            reg = MappingRegistry.get_instance()
+            mapping = reg.get_by_mqtt(key) or reg.find_mapping_for_modbus(key)
+            if mapping:
+                affected_view = self.get_compound_view(mapping.id)
+
+        # Notify outside lock
+        for listener in listeners:
+            try:
+                listener(field_obj)
+            except Exception as e:
+                logger.debug("Error in state change listener: %s", e)
+
+        if affected_view and compound_listeners:
+            for c_listener in compound_listeners:
+                try:
+                    c_listener(affected_view)
+                except Exception as e:
+                    logger.debug("Error in compound change listener: %s", e)
+
+        return field_obj
+
+    def update_from_telemetry_snapshot(self, snapshot: LiveTelemetrySnapshot):
+        """Ingest a push telemetry snapshot from internal MQTT."""
+        inv = self.get_inverter()
+        if inv:
+            self.set_field(
+                device_sn=inv.serial_number,
+                name="grid_power_w",
+                label="Grid Net Power",
+                description="Real-time power imported from (+) or exported to (-) utility grid",
+                value=round(snapshot.grid_power_w, 1),
+                raw_value=snapshot.grid_power_w,
+                units="W",
+                source=FieldSource.MQTT_PUSH,
+                ha_hint=HomeAssistantHint(platform="sensor", device_class="power", state_class="measurement", unit_of_measurement="W"),
+                sub_group="live",
+            )
+            self.set_field(
+                device_sn=inv.serial_number,
+                name="solar_power_w",
+                label="Solar Production Power",
+                description="Total real-time solar generation across all PV strings",
+                value=round(snapshot.solar_power_w, 1),
+                raw_value=snapshot.solar_power_w,
+                units="W",
+                source=FieldSource.MQTT_PUSH,
+                ha_hint=HomeAssistantHint(platform="sensor", device_class="power", state_class="measurement", unit_of_measurement="W"),
+                sub_group="live",
+            )
+            self.set_field(
+                device_sn=inv.serial_number,
+                name="load_power_w",
+                label="Home Consumption Power",
+                description="Real-time total electrical power consumed by home loads",
+                value=round(snapshot.load_power_w, 1),
+                raw_value=snapshot.load_power_w,
+                units="W",
+                source=FieldSource.MQTT_PUSH,
+                ha_hint=HomeAssistantHint(platform="sensor", device_class="power", state_class="measurement", unit_of_measurement="W"),
+                sub_group="live",
+            )
+            self.set_field(
+                device_sn=inv.serial_number,
+                name="system_mode",
+                label="Live System Mode",
+                description="Current system operating mode pushed from inverter",
+                value=snapshot.system_mode_name,
+                raw_value=snapshot.system_mode,
+                units=None,
+                source=FieldSource.MQTT_PUSH,
+                ha_hint=HomeAssistantHint(platform="sensor", device_class="enum", entity_category=None),
+                sub_group="live",
+            )
+            if snapshot.inverter_state:
+                self.set_field(
+                    device_sn=inv.serial_number,
+                    name="inverter_state",
+                    label="Inverter State",
+                    description="PWRcell inverter operational status code",
+                    value=snapshot.inverter_state,
+                    raw_value=snapshot.inverter_state,
+                    units=None,
+                    source=FieldSource.MQTT_PUSH,
+                    ha_hint=HomeAssistantHint(platform="sensor", device_class=None, entity_category="diagnostic"),
+                    sub_group="live",
+                )
+                self.set_field(
+                    device_sn=inv.serial_number,
+                    name="inverter_state_name",
+                    label="Inverter State Name",
+                    description="PWRcell inverter operational status description",
+                    value=snapshot.inverter_state_name,
+                    raw_value=snapshot.inverter_state,
+                    units=None,
+                    source=FieldSource.MQTT_PUSH,
+                    ha_hint=HomeAssistantHint(platform="sensor", device_class="enum", entity_category="diagnostic"),
+                    sub_group="live",
+                )
+            if snapshot.inverter_id:
+                self.set_field(
+                    device_sn=inv.serial_number,
+                    name="inverter_id",
+                    label="Inverter Serial Number",
+                    description="Inverter unique identifier from MQTT push",
+                    value=snapshot.inverter_id,
+                    raw_value=snapshot.inverter_id,
+                    units=None,
+                    source=FieldSource.MQTT_PUSH,
+                    ha_hint=HomeAssistantHint(platform="sensor", device_class=None, entity_category="diagnostic"),
+                    sub_group="live",
+                )
+            if snapshot.system_family:
+                self.set_field(
+                    device_sn=inv.serial_number,
+                    name="system_family",
+                    label="System Architecture Family",
+                    description="PWRcell system family architecture generation",
+                    value=snapshot.system_family,
+                    raw_value=snapshot.system_family,
+                    units=None,
+                    source=FieldSource.MQTT_PUSH,
+                    ha_hint=HomeAssistantHint(platform="sensor", device_class=None, entity_category="diagnostic"),
+                    sub_group="live",
+                )
+
+        beacon = self.get_beacon()
+        if beacon:
+            if snapshot.gateway_id:
+                self.set_field(
+                    device_sn=beacon.serial_number,
+                    name="gateway_id",
+                    label="Gateway Serial Number",
+                    description="REbus Beacon gateway identifier from MQTT telemetry",
+                    value=snapshot.gateway_id,
+                    raw_value=snapshot.gateway_id,
+                    units=None,
+                    source=FieldSource.MQTT_PUSH,
+                    ha_hint=HomeAssistantHint(platform="sensor", device_class=None, entity_category="diagnostic"),
+                    sub_group="live",
+                )
+            if snapshot.gateway_type:
+                self.set_field(
+                    device_sn=beacon.serial_number,
+                    name="gateway_type",
+                    label="Gateway Type",
+                    description="REbus Beacon hardware gateway type",
+                    value=snapshot.gateway_type,
+                    raw_value=snapshot.gateway_type,
+                    units=None,
+                    source=FieldSource.MQTT_PUSH,
+                    ha_hint=HomeAssistantHint(platform="sensor", device_class=None, entity_category="diagnostic"),
+                    sub_group="live",
+                )
+
+        bat = self.get_battery()
+        if bat:
+            self.set_field(
+                device_sn=bat.serial_number,
+                name="battery_power_w",
+                label="Battery Power",
+                description="Real-time battery charge (+) or discharge (-) power",
+                value=round(snapshot.battery_power_w, 1),
+                raw_value=snapshot.battery_power_w,
+                units="W",
+                source=FieldSource.MQTT_PUSH,
+                ha_hint=HomeAssistantHint(platform="sensor", device_class="power", state_class="measurement", unit_of_measurement="W"),
+                sub_group="live",
+            )
+            if snapshot.battery_soc is not None:
+                self.set_field(
+                    device_sn=bat.serial_number,
+                    name="state_of_charge",
+                    label="State of Charge",
+                    description="Battery state of charge percentage",
+                    value=round(snapshot.battery_soc, 1),
+                    raw_value=snapshot.battery_soc,
+                    units="%",
+                    source=FieldSource.MQTT_PUSH,
+                    ha_hint=HomeAssistantHint(platform="sensor", device_class="battery", state_class="measurement", unit_of_measurement="%"),
+                    sub_group="live",
+                )
+            if snapshot.battery_soh is not None:
+                self.set_field(
+                    device_sn=bat.serial_number,
+                    name="state_of_health",
+                    label="State of Health",
+                    description="Battery state of health percentage",
+                    value=round(snapshot.battery_soh, 1),
+                    raw_value=snapshot.battery_soh,
+                    units="%",
+                    source=FieldSource.MQTT_PUSH,
+                    ha_hint=HomeAssistantHint(platform="sensor", device_class="battery", state_class="measurement", unit_of_measurement="%"),
+                    sub_group="live",
+                )
+
+        # Ingest channel-level energy and voltage telemetries
+        for ch in snapshot.channels.values():
+            # Channel 1: NET / Grid
+            if (ch.channel_type_name in ("NET", "NET_GRID") or ch.channel_type == 1) and inv:
+                if ch.voltage_v:
+                    self.set_field(
+                        device_sn=inv.serial_number,
+                        name="grid_voltage_v",
+                        label="Grid AC Voltage",
+                        description="Real-time AC grid voltage",
+                        value=round(ch.voltage_v, 1),
+                        raw_value=ch.voltage_v,
+                        units="V",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="voltage", state_class="measurement", unit_of_measurement="V"),
+                        sub_group="live",
+                    )
+                if ch.imported_energy_ws is not None and ch.imported_energy_ws > 0:
+                    self.set_field(
+                        device_sn=inv.serial_number,
+                        name="grid_imported_energy_wh",
+                        label="Grid Imported Energy",
+                        description="Cumulative grid imported energy",
+                        value=round(ch.imported_energy_ws / 3600.0, 1),
+                        raw_value=ch.imported_energy_ws,
+                        units="Wh",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh"),
+                        sub_group="live",
+                    )
+                if ch.exported_energy_ws is not None and ch.exported_energy_ws > 0:
+                    self.set_field(
+                        device_sn=inv.serial_number,
+                        name="grid_exported_energy_wh",
+                        label="Grid Exported Energy",
+                        description="Cumulative grid exported energy",
+                        value=round(ch.exported_energy_ws / 3600.0, 1),
+                        raw_value=ch.exported_energy_ws,
+                        units="Wh",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh"),
+                        sub_group="live",
+                    )
+
+            # Channel 2: GENERATION / Solar
+            elif (ch.channel_type_name in ("GENERATION", "GENERATION_SOLAR") or ch.channel_type == 2) and inv:
+                if ch.exported_energy_ws is not None and ch.exported_energy_ws > 0:
+                    self.set_field(
+                        device_sn=inv.serial_number,
+                        name="solar_generation_energy_wh",
+                        label="Solar Lifetime Generated Energy",
+                        description="Cumulative solar PV generated energy",
+                        value=round(ch.exported_energy_ws / 3600.0, 1),
+                        raw_value=ch.exported_energy_ws,
+                        units="Wh",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh"),
+                        sub_group="live",
+                    )
+
+            # Channel 3: CONSUMPTION / Home Load
+            elif (ch.channel_type_name in ("CONSUMPTION", "CONSUMPTION_LOAD") or ch.channel_type == 3) and inv:
+                if ch.imported_energy_ws is not None and ch.imported_energy_ws > 0:
+                    self.set_field(
+                        device_sn=inv.serial_number,
+                        name="load_imported_energy_wh",
+                        label="Home Consumption Energy",
+                        description="Cumulative home consumption energy",
+                        value=round(ch.imported_energy_ws / 3600.0, 1),
+                        raw_value=ch.imported_energy_ws,
+                        units="Wh",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh"),
+                        sub_group="live",
+                    )
+
+            # Channel 4: STORAGE / Battery DC
+            elif (ch.channel_type_name in ("STORAGE", "STORAGE_BATTERY") or ch.channel_type == 4) and bat:
+                if ch.voltage_v:
+                    self.set_field(
+                        device_sn=bat.serial_number,
+                        name="battery_voltage_v",
+                        label="Battery DC Voltage",
+                        description="Real-time battery pack DC voltage",
+                        value=round(ch.voltage_v, 1),
+                        raw_value=ch.voltage_v,
+                        units="V",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="voltage", state_class="measurement", unit_of_measurement="V"),
+                        sub_group="live",
+                    )
+                if ch.imported_energy_ws is not None and ch.imported_energy_ws > 0:
+                    self.set_field(
+                        device_sn=bat.serial_number,
+                        name="battery_imported_energy_wh",
+                        label="Battery Charged Energy",
+                        description="Cumulative energy charged into battery",
+                        value=round(ch.imported_energy_ws / 3600.0, 1),
+                        raw_value=ch.imported_energy_ws,
+                        units="Wh",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh"),
+                        sub_group="live",
+                    )
+                if ch.exported_energy_ws is not None and ch.exported_energy_ws > 0:
+                    self.set_field(
+                        device_sn=bat.serial_number,
+                        name="battery_exported_energy_wh",
+                        label="Battery Discharged Energy",
+                        description="Cumulative energy discharged from battery",
+                        value=round(ch.exported_energy_ws / 3600.0, 1),
+                        raw_value=ch.exported_energy_ws,
+                        units="Wh",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh"),
+                        sub_group="live",
+                    )
+                if ch.real_power_sink_max_w:
+                    self.set_field(
+                        device_sn=bat.serial_number,
+                        name="max_charge_power_w",
+                        label="Max Battery Charge Power",
+                        description="Maximum rated battery charging power capability",
+                        value=round(ch.real_power_sink_max_w, 1),
+                        raw_value=ch.real_power_sink_max_w,
+                        units="W",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="power", state_class="measurement", unit_of_measurement="W"),
+                        sub_group="live",
+                    )
+                if ch.real_power_source_max_w:
+                    self.set_field(
+                        device_sn=bat.serial_number,
+                        name="max_discharge_power_w",
+                        label="Max Battery Discharge Power",
+                        description="Maximum rated battery discharge power capability",
+                        value=round(ch.real_power_source_max_w, 1),
+                        raw_value=ch.real_power_source_max_w,
+                        units="W",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="power", state_class="measurement", unit_of_measurement="W"),
+                        sub_group="live",
+                    )
+
+            # Channel 5: INVERTER_OUTPUT / Inverter AC
+            elif (ch.channel_type_name == "INVERTER_OUTPUT" or ch.channel_type == 5) and inv:
+                self.set_field(
+                    device_sn=inv.serial_number,
+                    name="inverter_output_power_w",
+                    label="Inverter AC Output Power",
+                    description="Real-time inverter AC output real power",
+                    value=round(ch.real_power_w, 1),
+                    raw_value=ch.real_power_w,
+                    units="W",
+                    source=FieldSource.MQTT_PUSH,
+                    ha_hint=HomeAssistantHint(platform="sensor", device_class="power", state_class="measurement", unit_of_measurement="W"),
+                    sub_group="live",
+                )
+                if ch.exported_energy_ws is not None and ch.exported_energy_ws > 0:
+                    self.set_field(
+                        device_sn=inv.serial_number,
+                        name="inverter_output_exported_energy_wh",
+                        label="Inverter Output Exported Energy",
+                        description="Cumulative inverter AC output energy",
+                        value=round(ch.exported_energy_ws / 3600.0, 1),
+                        raw_value=ch.exported_energy_ws,
+                        units="Wh",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh"),
+                        sub_group="live",
+                    )
+                if ch.real_power_source_max_w:
+                    self.set_field(
+                        device_sn=inv.serial_number,
+                        name="inverter_max_power_w",
+                        label="System Max Power Capability",
+                        description="Instantaneous maximum power capability of inverter and battery",
+                        value=round(ch.real_power_source_max_w, 1),
+                        raw_value=ch.real_power_source_max_w,
+                        units="W",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="power", state_class="measurement", unit_of_measurement="W"),
+                        sub_group="live",
+                    )
+                if bat and ch.real_power_source_max_w:
+                    self.set_field(
+                        device_sn=bat.serial_number,
+                        name="max_discharge_power_w",
+                        label="Max Battery Discharge Power",
+                        description="Maximum rated discharge power capability",
+                        value=round(ch.real_power_source_max_w, 1),
+                        raw_value=ch.real_power_source_max_w,
+                        units="W",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="power", state_class="measurement", unit_of_measurement="W"),
+                        sub_group="live",
+                    )
+
+            # Channel 6: STORAGE_AC / Battery AC Side
+            elif (ch.channel_type_name == "STORAGE_AC" or ch.channel_type == 7) and bat:
+                if ch.exported_energy_ws is not None and ch.exported_energy_ws > 0:
+                    self.set_field(
+                        device_sn=bat.serial_number,
+                        name="storage_ac_discharged_energy_wh",
+                        label="Battery AC Discharged Energy",
+                        description="Cumulative AC energy discharged from battery",
+                        value=round(ch.exported_energy_ws / 3600.0, 1),
+                        raw_value=ch.exported_energy_ws,
+                        units="Wh",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh"),
+                        sub_group="live",
+                    )
+                if ch.imported_energy_ws is not None and ch.imported_energy_ws > 0:
+                    self.set_field(
+                        device_sn=bat.serial_number,
+                        name="storage_ac_charged_energy_wh",
+                        label="Battery AC Charged Energy",
+                        description="Cumulative AC energy charged into battery",
+                        value=round(ch.imported_energy_ws / 3600.0, 1),
+                        raw_value=ch.imported_energy_ws,
+                        units="Wh",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh"),
+                        sub_group="live",
+                    )
+
+            # Channel 7: GENERATION_AC / Solar AC Output
+            elif (ch.channel_type_name == "GENERATION_AC" or ch.channel_type == 6) and inv:
+                if ch.exported_energy_ws is not None and ch.exported_energy_ws > 0:
+                    self.set_field(
+                        device_sn=inv.serial_number,
+                        name="solar_generation_ac_energy_wh",
+                        label="Solar AC Generated Energy",
+                        description="Cumulative AC energy generated from solar PV",
+                        value=round(ch.exported_energy_ws / 3600.0, 1),
+                        raw_value=ch.exported_energy_ws,
+                        units="Wh",
+                        source=FieldSource.MQTT_PUSH,
+                        ha_hint=HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh"),
+                        sub_group="live",
+                    )
+
+    def update_from_modbus_points(
+        self,
+        serial_number: str,
+        model_id: int,
+        raw_values: Dict[str, Any],
+        computed_values: Optional[Dict[str, Any]] = None,
+    ):
+        """Update fields from a polled SunSpec Modbus model block.
+
+        Accurately resolves SunSpec scale factors once, avoiding duplicate multiplier issues.
+        """
+        model_def = self.catalog.get_model(model_id)
+        model_name = model_def.name if model_def else f"model_{model_id}"
+        model_label = model_def.label if (model_def and model_def.label) else model_name
+
+        # Collect all scale factor point values in this block
+        scale_factors: Dict[str, int] = {}
+        for pt_name, val in raw_values.items():
+            if isinstance(val, (int, float)) and (pt_name.endswith("_sf") or pt_name.endswith("_SF")):
+                scale_factors[pt_name] = int(val)
+                scale_factors[pt_name.lower()] = int(val)
+                scale_factors[pt_name.upper()] = int(val)
+
+        for pt_name, raw_val in raw_values.items():
+            if pt_name in ("ID", "L", "Pad") or pt_name.startswith("Pad"):
+                continue
+
+            pt_def = model_def.points.get(pt_name) if model_def else None
+            label = pt_def.label if pt_def else pt_name
+            desc = pt_def.desc if pt_def else ""
+            units = pt_def.units if pt_def else None
+            access = pt_def.access if pt_def else "R"
+
+            # Determine final scaled value:
+            # Case 1: Pre-computed value provided (e.g. from pysunspec2 point.cvalue or MockPointValue.scaled_value)
+            if computed_values and pt_name in computed_values and computed_values[pt_name] is not None:
+                scaled_val = computed_values[pt_name]
+            # Case 2: Defined scale factor from SunSpec model definition (e.g. AMax_SF, VT_sf)
+            elif isinstance(raw_val, (int, float)) and pt_def and pt_def.sf:
+                sf_name = pt_def.sf
+                sf = scale_factors.get(sf_name) or scale_factors.get(sf_name.lower()) or scale_factors.get(sf_name.upper())
+                if sf is not None:
+                    scaled_val = round(raw_val * (10 ** sf), abs(sf) if sf < 0 else 0)
+                else:
+                    scaled_val = raw_val
+            # Case 3: Standard convention <name>_sf
+            elif isinstance(raw_val, (int, float)) and (f"{pt_name}_sf" in scale_factors or f"{pt_name}_SF" in scale_factors):
+                sf = scale_factors.get(f"{pt_name}_sf", scale_factors.get(f"{pt_name}_SF"))
+                scaled_val = round(raw_val * (10 ** sf), abs(sf) if sf < 0 else 0)
+            else:
+                scaled_val = raw_val
+
+            # If enum, lookup against enum symbols:
+            # scaled_val becomes the enum symbol name, while raw_val remains the integer register value
+            if pt_def and pt_def.is_enum:
+                sym = None
+                if isinstance(raw_val, int):
+                    sym = pt_def.symbols_by_value.get(raw_val)
+                elif isinstance(raw_val, str) and (raw_val.isdigit() or (raw_val.startswith("-") and raw_val[1:].isdigit())):
+                    sym = pt_def.symbols_by_value.get(int(raw_val))
+                elif isinstance(raw_val, str) and raw_val in pt_def.symbols_by_name:
+                    sym = pt_def.symbols_by_name[raw_val]
+                elif isinstance(scaled_val, int):
+                    sym = pt_def.symbols_by_value.get(scaled_val)
+
+                if sym is not None:
+                    scaled_val = sym.name
+
+            # If bitfield, decode integer bitmask into list of active symbol names:
+            # scaled_val becomes the list of active flag names, while raw_val remains the integer register value
+            bitmask_flags = None
+            if pt_def and pt_def.is_bitfield:
+                bit_val = raw_val if isinstance(raw_val, int) else (int(raw_val) if isinstance(raw_val, str) and (raw_val.isdigit() or (raw_val.startswith("-") and raw_val[1:].isdigit())) else None)
+                if bit_val is not None:
+                    bitmask_flags = pt_def.decode_bitfield(bit_val)
+                    scaled_val = bitmask_flags
+                elif isinstance(scaled_val, list):
+                    bitmask_flags = scaled_val
+
+            # Derive HA hints
+            ha_hint = self.catalog.derive_ha_metadata(pt_def, model_id=model_id) if pt_def else None
+
+            # Symbol definitions if enum or bitfield
+            symbols_defs = [s.to_dict() for s in pt_def.symbols] if (pt_def and (pt_def.is_enum or pt_def.is_bitfield or pt_def.symbols)) else None
+
+            # Detect scale factor point
+            is_sf = (pt_def and pt_def.is_scale_factor) or pt_name.endswith(("_SF", "_sf"))
+
+            self.set_field(
+                device_sn=serial_number,
+                name=pt_name,
+                label=label,
+                description=desc,
+                value=scaled_val,
+                raw_value=raw_val,
+                units=units,
+                source=FieldSource.MODBUS_POLL,
+                access=access,
+                symbols=symbols_defs,
+                point_type=pt_def.type if pt_def else None,
+                is_enum=pt_def.is_enum if pt_def else False,
+                is_bitfield=pt_def.is_bitfield if pt_def else False,
+                bitmask_flags=bitmask_flags,
+                is_scale_factor=is_sf,
+                ha_hint=ha_hint,
+                sub_group=model_name,
+                model_id=model_id,
+                model_name=model_name,
+                model_label=model_label,
+            )
+
+    def subscribe(self, listener: Callable[[StateField], None]):
+        """Register a callback for field value changes."""
+        with self._lock:
+            self._listeners.append(listener)
+
+    def to_dict(self) -> dict:
+        """Full serializable dictionary of all devices and fields."""
+        with self._lock:
+            return {
+                sn: {
+                    **dev.to_dict(self.catalog),
+                    "fields": {f_key: f.to_dict() for f_key, f in dev.fields.items()},
+                }
+                for sn, dev in self.devices.items()
+            }

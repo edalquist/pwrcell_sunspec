@@ -1,0 +1,219 @@
+"""Unified CLI Entrypoint for Generac PWRcell (v3).
+
+Subcommands:
+  pwrcell explore    - Launch the companion Web Explorer (UI)
+  pwrcell run        - Run the Home Assistant bridge daemon
+  pwrcell scan       - Scan and discover Modbus devices
+  pwrcell set-mode   - Change system operating mode
+  pwrcell status     - Show current live status
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+import time
+
+from .bridge import HomeAssistantBridge
+from .client import create_client
+from .config import AppConfig
+from .ui.server import run_explorer
+
+
+def cmd_explore(args, config: AppConfig):
+    print(f"Starting PWRcell Web Explorer (mock={args.mock}) at http://{args.host}:{args.port}")
+    with create_client(config=config, mock=args.mock) as client:
+        run_explorer(client, host=args.host, port=args.port, debug=args.debug)
+
+
+def cmd_run(args, config: AppConfig):
+    print(f"Starting PWRcell Home Assistant Bridge (mock={args.mock})...")
+    with create_client(config=config, mock=args.mock) as client:
+        bridge = HomeAssistantBridge(client=client)
+        bridge.start()
+        print("PWRcell HA Bridge running. Press Ctrl+C to exit.")
+        try:
+            while True:
+                time.sleep(1.0)
+        except KeyboardInterrupt:
+            print("\nShutting down bridge...")
+        finally:
+            bridge.stop()
+
+
+def cmd_service(args, config: AppConfig):
+    print(f"Starting PWRcell Combined Service (mock={args.mock})...")
+    with create_client(config=config, mock=args.mock) as client:
+        bridge = HomeAssistantBridge(client=client)
+        client.bridge = bridge
+        bridge.start()
+        print("PWRcell Home Assistant MQTT Bridge started.")
+        try:
+            if not getattr(args, "no_ui", False):
+                print(f"Starting Web Explorer on http://{args.host}:{args.port}...")
+                run_explorer(client, host=args.host, port=args.port, debug=args.debug)
+            else:
+                while True:
+                    time.sleep(1.0)
+        except KeyboardInterrupt:
+            print("\nShutting down service...")
+        finally:
+            bridge.stop()
+
+
+def cmd_scan(args, config: AppConfig):
+    print(f"Scanning Modbus slave IDs {args.start}..{args.end}...")
+    with create_client(config=config, mock=False) as client:
+        if not client.modbus:
+            print("Error: Modbus client not available")
+            return
+        discovered = client.modbus.scan_range(args.start, args.end)
+        client._save_scanned_devices(discovered)
+        print(f"Discovered and saved {len(discovered)} devices into devices.yaml")
+
+
+def cmd_set_mode(args, config: AppConfig):
+    mode = args.mode.upper()
+    print(f"Setting PWRcell system operating mode to '{mode}'...")
+    with create_client(config=config, mock=args.mock) as client:
+        try:
+            confirmed = client.controls.set_system_mode(mode)
+            print(f"Successfully set system mode to: {mode} ({confirmed})")
+        except Exception as e:
+            print(f"Error setting mode: {e}")
+
+
+def cmd_status(args, config: AppConfig):
+    with create_client(config=config, mock=args.mock) as client:
+        time.sleep(1.5)  # Let initial telemetry populate
+        print("\n=== Generac PWRcell Live Status ===")
+        print(f"Mode: {'MOCK/SIMULATION' if client.is_mock else 'LIVE HARDWARE'}")
+        print(f"Total Discovered Devices: {len(client.state.devices)}")
+        for sn, dev in client.state.devices.items():
+            print(f"  • [{dev.device_type.upper()}] {dev.model_name} (SN: {sn}, Slave ID: {dev.slave_id})")
+
+        inv = client.state.get_inverter()
+        if inv:
+            grid = inv.fields.get("inverter.live.grid_power_w")
+            solar = inv.fields.get("inverter.live.solar_power_w")
+            load = inv.fields.get("inverter.live.load_power_w")
+            mode = inv.fields.get("inverter.live.system_mode")
+            print("\n--- Inverter Telemetry ---")
+            print(f"  Solar Power: {solar.value if solar else '--'} W")
+            print(f"  Grid Power:  {grid.value if grid else '--'} W")
+            print(f"  Home Load:   {load.value if load else '--'} W")
+            print(f"  Operating Mode: {mode.value if mode else '--'}")
+
+        bat = client.state.get_battery()
+        if bat:
+            soc = bat.fields.get("battery.live.state_of_charge")
+            pwr = bat.fields.get("battery.live.battery_power_w")
+            print("\n--- Battery Telemetry ---")
+            print(f"  State of Charge: {soc.value if soc else '--'} %")
+            print(f"  Battery Power:   {pwr.value if pwr else '--'} W")
+        print("===================================\n")
+
+
+def cmd_compare(args, config: AppConfig):
+    from .correlator import evaluate_comparisons, format_comparison_table, log_unrecognized_proto_fields
+    print(f"Connecting to PWRcell (mock={args.mock}) for telemetry comparison...")
+    with create_client(config=config, mock=args.mock) as client:
+        start_wait = time.time()
+        while time.time() - start_wait < 5.0:
+            if client.get_latest_record_set() is not None:
+                break
+            time.sleep(0.5)
+        try:
+            while True:
+                if not client.is_mock:
+                    client.poll_telemetry_models_live()
+                results = evaluate_comparisons(client.state)
+                unrecognized = client.get_unrecognized_proto_fields()
+                log_unrecognized_proto_fields(unrecognized)
+                if not args.once:
+                    print("\033[H\033[J", end="")  # ANSI clear screen
+                print(f"=== Generac PWRcell Telemetry vs Modbus Correlation [{time.strftime('%H:%M:%S')}] ===")
+                print(format_comparison_table(results, unrecognized_fields=unrecognized))
+                print("\nPress Ctrl+C to exit.\n")
+                if args.once:
+                    break
+                time.sleep(args.interval)
+        except KeyboardInterrupt:
+            print("\nExiting comparison monitor.")
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="pwrcell", description="Generac PWRcell v3 Client & Explorer")
+    parser.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
+    parser.add_argument("--log-level", type=str, default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
+
+    subparsers = parser.add_subparsers(dest="subcommand", help="Available subcommands")
+
+    # explore
+    sub_explore = subparsers.add_parser("explore", help="Launch companion Web Explorer")
+    sub_explore.add_argument("--host", type=str, default="0.0.0.0", help="HTTP bind host")
+    sub_explore.add_argument("--port", type=int, default=5555, help="HTTP bind port")
+    sub_explore.add_argument("--debug", action="store_true", default=False, help="Enable Flask debug")
+    sub_explore.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
+
+    # compare
+    sub_compare = subparsers.add_parser("compare", help="Compare live MQTT telemetry with candidate Modbus registers")
+    sub_compare.add_argument("--interval", type=float, default=1.0, help="Refresh interval in seconds (default: 1.0)")
+    sub_compare.add_argument("--once", action="store_true", default=False, help="Print snapshot once and exit")
+    sub_compare.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
+
+    # run
+    sub_run = subparsers.add_parser("run", help="Run Home Assistant MQTT bridge daemon")
+    sub_run.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
+
+    # service (Bridge + Web Explorer for HA Add-on / Systemd)
+    sub_service = subparsers.add_parser("service", help="Run Home Assistant MQTT bridge and Web Explorer together")
+    sub_service.add_argument("--host", type=str, default="0.0.0.0", help="HTTP bind host")
+    sub_service.add_argument("--port", type=int, default=5555, help="HTTP bind port")
+    sub_service.add_argument("--no-ui", action="store_true", default=False, help="Disable Web Explorer UI")
+    sub_service.add_argument("--debug", action="store_true", default=False, help="Enable Flask debug")
+    sub_service.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
+
+    # scan
+    sub_scan = subparsers.add_parser("scan", help="Scan Modbus slave IDs")
+    sub_scan.add_argument("--start", type=int, default=1, help="Start slave ID")
+    sub_scan.add_argument("--end", type=int, default=100, help="End slave ID")
+
+    # set-mode
+    sub_mode = subparsers.add_parser("set-mode", help="Set system operating mode")
+    sub_mode.add_argument("mode", type=str, help="Operating mode (e.g. CLEAN_BACKUP, SELF_SUPPLY, GRID_TIE)")
+
+    # status
+    subparsers.add_parser("status", help="Display live status summary")
+
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        format="%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
+        level=getattr(logging, args.log_level.upper(), logging.INFO),
+    )
+
+    try:
+        config = AppConfig.read()
+    except Exception:
+        config = AppConfig()
+
+    if args.subcommand == "explore" or args.subcommand is None:
+        cmd_explore(args if hasattr(args, "port") else argparse.Namespace(host="0.0.0.0", port=5555, debug=False, mock=args.mock), config)
+    elif args.subcommand == "service":
+        cmd_service(args, config)
+    elif args.subcommand == "compare":
+        cmd_compare(args, config)
+    elif args.subcommand == "run":
+        cmd_run(args, config)
+    elif args.subcommand == "scan":
+        cmd_scan(args, config)
+    elif args.subcommand == "set-mode":
+        cmd_set_mode(args, config)
+    elif args.subcommand == "status":
+        cmd_status(args, config)
+
+
+if __name__ == "__main__":
+    main()

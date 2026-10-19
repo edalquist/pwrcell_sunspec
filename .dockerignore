@@ -1,0 +1,9 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.DS_Store
+model_dump/
+model_dump_2/
+.vscode
