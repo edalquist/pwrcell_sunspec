@@ -152,7 +152,8 @@ class MqttClient:
         self.__unrecognized_topics: Dict[str, int] = {}
         self.__mqttc: Optional[mqtt.Client] = None
         self._reconnecting: bool = False
-        self.__lock = threading.Lock()
+        self._stopping: bool = False
+        self.__lock = threading.RLock()
 
     @property
     def port(self) -> int:
@@ -172,6 +173,7 @@ class MqttClient:
         with self.__lock:
             if self.__mqttc is not None:
                 return
+            self._stopping = False
             self.__mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
             self.__mqttc.on_connect = self.__mqtt_on_connect
             self.__mqttc.on_message = self.__mqtt_on_message
@@ -185,12 +187,15 @@ class MqttClient:
         with self.__lock:
             if self.__mqttc is None:
                 return
-            try:
-                self.__mqttc.loop_stop()
-                self.__mqttc.disconnect()
-            except Exception as e:
-                logger.debug("Error disconnecting MQTT: %s", e)
+            mqttc = self.__mqttc
             self.__mqttc = None
+            self._stopping = True
+
+        try:
+            mqttc.loop_stop()
+            mqttc.disconnect()
+        except Exception as e:
+            logger.debug("Error disconnecting MQTT: %s", e)
 
     def register_callback(self, callback: Callable[[energy_record_set_pb2.EnergyRecordSet], None]):
         """Register a callback for raw protobuf record sets."""
@@ -241,6 +246,9 @@ class MqttClient:
         properties: Properties,
     ):
         logger.warning("PWRcell internal MQTT disconnected: %s", reason_code)
+        if getattr(self, "_stopping", False) or self.__mqttc is None:
+            return
+
         if self.__tunnel_manager:
             with self.__lock:
                 if self._reconnecting:

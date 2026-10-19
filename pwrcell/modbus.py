@@ -203,7 +203,7 @@ class SerializedModbusClient:
         self.worker = SerializedModbusWorker()
         self._devices: Dict[int, ss2_client.SunSpecModbusClientDeviceTCP] = {}
         self._shared_client: Optional[mb.ModbusClientTCP] = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         configure_sunspec_model_paths()
 
     def __enter__(self):

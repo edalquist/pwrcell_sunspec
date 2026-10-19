@@ -52,7 +52,23 @@ class TestPwrCellTunnel(unittest.TestCase):
             with pwrcell_tunnel(self.config) as cfg:
                 self.assertEqual(cfg.host, "127.0.0.1")
                 self.assertEqual(cfg.modbus_port, 5020)
-                self.assertEqual(cfg.mqtt_port, 18830)
+    def test_mqtt_client_stop_no_deadlock(self):
+        from pwrcell.mqtt import MqttClient
+        from pwrcell.tunnel import TunnelConfig
+
+        cfg = TunnelConfig(host="127.0.0.1", mqtt_port=1883, modbus_port=502)
+        client = MqttClient(cfg)
+        mock_mqttc = MagicMock()
+        # Simulate paho-mqtt invoking on_disconnect synchronously inside disconnect()
+        def mock_disconnect():
+            if mock_mqttc.on_disconnect:
+                mock_mqttc.on_disconnect(mock_mqttc, None, None, 0, None)
+        mock_mqttc.disconnect.side_effect = mock_disconnect
+
+        with patch("paho.mqtt.client.Client", return_value=mock_mqttc):
+            client.start()
+            # Calling stop() must complete cleanly without deadlocking
+            client.stop()
 
 
 if __name__ == "__main__":

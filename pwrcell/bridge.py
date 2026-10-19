@@ -48,7 +48,7 @@ class HomeAssistantBridge:
         self._command_topic_to_field: Dict[str, Any] = {}
         self._published_discovery_topics: set[str] = set()
         self._mqttc: Optional[mqtt.Client] = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._running = False
 
     def start(self):
@@ -99,15 +99,17 @@ class HomeAssistantBridge:
             if not self._running:
                 return
             self._running = False
-            if self._mqttc:
-                try:
-                    # Publish graceful offline status
-                    self._mqttc.publish(f"{self.base_topic}/status", "offline", qos=1, retain=True)
-                    self._mqttc.loop_stop()
-                    self._mqttc.disconnect()
-                except Exception as e:
-                    logger.debug("Error disconnecting HA MQTT: %s", e)
-                self._mqttc = None
+            mqttc = self._mqttc
+            self._mqttc = None
+
+        if mqttc:
+            try:
+                # Publish graceful offline status
+                mqttc.publish(f"{self.base_topic}/status", "offline", qos=1, retain=True)
+                mqttc.loop_stop()
+                mqttc.disconnect()
+            except Exception as e:
+                logger.debug("Error disconnecting HA MQTT: %s", e)
             logger.info("Home Assistant bridge stopped")
 
     def _on_connect(
