@@ -114,6 +114,7 @@ def create_app(client: PwrcellClient) -> Flask:
         return jsonify({
             "is_mock": client.is_mock,
             "device_count": len(client.state.devices),
+            "initial_poll_running": getattr(client, "is_initial_poll_running", False),
             "ha_selected_count": len(ha_selected),
             "grid_power_w": grid_w,
             "solar_power_w": solar_w,
@@ -208,7 +209,9 @@ def create_app(client: PwrcellClient) -> Flask:
 
     @app.route("/api/poller/status")
     def get_poller_status():
-        return jsonify(client.poller.to_dict())
+        status = client.poller.to_dict()
+        status["initial_poll_running"] = getattr(client, "is_initial_poll_running", False)
+        return jsonify(status)
 
     @app.route("/api/poller/trigger", methods=["POST"])
     def trigger_poller():

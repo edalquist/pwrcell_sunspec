@@ -40,6 +40,7 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertIn("grid_power_w", data)
         self.assertIn("solar_power_w", data)
         self.assertIn("system_mode", data)
+        self.assertIn("initial_poll_running", data)
 
     def test_devices_endpoint(self):
         resp = self.test_client.get("/api/devices")
@@ -186,6 +187,7 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertIn("slow_seconds", data["intervals"])
         self.assertIn("poll_counts", data)
         self.assertIn("models", data)
+        self.assertIn("initial_poll_running", data)
 
         # 2. POST /api/poller/trigger
         resp_trigger = self.test_client.post(

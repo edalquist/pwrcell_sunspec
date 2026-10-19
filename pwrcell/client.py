@@ -52,8 +52,14 @@ class PwrcellClient:
             enabled=self.config.enable_polling,
         )
         self._last_known_sys_mode: Optional[int] = None
+        self._init_poll_thread: Optional[threading.Thread] = None
         self._running = False
         self._lock = threading.Lock()
+
+    @property
+    def is_initial_poll_running(self) -> bool:
+        """Return True if background initial SunSpec model scan is currently running."""
+        return bool(self._init_poll_thread and self._init_poll_thread.is_alive())
 
     def start(self):
         """Start client background workers and initialize device discovery."""
@@ -73,6 +79,9 @@ class PwrcellClient:
             if not self._running:
                 return
             self._running = False
+
+            if self._init_poll_thread and self._init_poll_thread.is_alive():
+                self._init_poll_thread.join(timeout=1.0)
 
             if self.poller:
                 self.poller.stop()
@@ -226,10 +235,18 @@ class PwrcellClient:
             self.mqtt.start()
 
         self.load_or_discover_devices()
-        self._poll_device_models_live()
 
         if self.config.enable_polling:
             self.poller.start()
+
+        # Start initial deep SunSpec model poll asynchronously in the background
+        # so Web Explorer UI, Home Assistant bridge, and live MQTT telemetry start immediately!
+        self._init_poll_thread = threading.Thread(
+            target=self._poll_device_models_live,
+            name="PwrCellInitialModelPoll",
+            daemon=True,
+        )
+        self._init_poll_thread.start()
 
     def _on_mqtt_snapshot(self, snapshot: LiveTelemetrySnapshot):
         """Process incoming MQTT push snapshot and detect panel mode changes for instant sync."""
@@ -250,17 +267,20 @@ class PwrcellClient:
             self._last_known_sys_mode = snapshot.system_mode
 
     def _poll_device_models_live(self):
-        """Read all supported SunSpec models and common metadata for all devices on initial startup."""
+        """Read all supported SunSpec models and common metadata for all devices asynchronously."""
         if not self.modbus:
             return
 
+        logger.info("Starting background initial SunSpec model poll across devices...")
         for dev in list(self.state.devices.values()):
+            if not self._running:
+                break
             if dev.slave_id is None:
                 continue
 
             try:
                 tcp_dev = self.modbus.scan_device(dev.slave_id, full_model_read=False)
-                if not tcp_dev:
+                if not tcp_dev or not self._running:
                     continue
 
                 # Discover and register all supported SunSpec model IDs on this device
@@ -278,11 +298,15 @@ class PwrcellClient:
 
                 # Poll all remaining supported models on initial startup so state and Web UI are fully populated
                 for mid in supported:
+                    if not self._running:
+                        break
                     if mid != 1:
                         self.poller.poll_device_model(dev.slave_id, dev.serial_number, mid)
 
             except Exception as e:
                 logger.warning("Failed polling device %s (slave %d): %s", dev.serial_number, dev.slave_id, e)
+
+        logger.info("Completed background initial SunSpec model poll across devices")
 
     def poll_telemetry_models_live(self):
         """Quickly read ONLY the models relevant to live power, energy, and telemetry comparisons."""
