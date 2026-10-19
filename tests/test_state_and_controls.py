@@ -232,6 +232,124 @@ class TestStateAndControls(unittest.TestCase):
         with self.assertRaises(PermissionError):
             self.controls.write_field("battery.battery.A", 50.0)
 
+    def test_sunspec_sentinels_evaluated_to_none(self):
+        # 1. int16 sentinel 0x8000 (32768) with scale factor -2
+        self.state.update_from_modbus_points(
+            serial_number=self.bat.serial_number,
+            model_id=802,
+            raw_values={"A": 0x8000, "A_SF": -2},
+            computed_values={"A": -327.68, "A_SF": -2},
+        )
+        a_field = self.bat.fields.get("battery.battery.A")
+        self.assertIsNotNone(a_field)
+        self.assertIsNone(a_field.value)
+        self.assertIsNone(a_field.raw_value)
+
+        # 2. uint16 sentinel 0xFFFF (65535)
+        self.state.update_from_modbus_points(
+            serial_number=self.bat.serial_number,
+            model_id=802,
+            raw_values={"SoC": 0xFFFF, "SoC_SF": -2},
+            computed_values={"SoC": 655.35, "SoC_SF": -2},
+        )
+        soc_field = self.bat.fields.get("battery.battery.SoC")
+        self.assertIsNotNone(soc_field)
+        self.assertIsNone(soc_field.value)
+        self.assertIsNone(soc_field.raw_value)
+
+        # 3. None cvalue from sunspec2
+        self.state.update_from_modbus_points(
+            serial_number=self.bat.serial_number,
+            model_id=802,
+            raw_values={"SoCMax": 100},
+            computed_values={"SoCMax": None},
+        )
+        socmax_field = self.bat.fields.get("battery.battery.SoCMax")
+        self.assertIsNotNone(socmax_field)
+        self.assertIsNone(socmax_field.value)
+        self.assertIsNone(socmax_field.raw_value)
+
+    def test_nan_equality_does_not_loop_notifications(self):
+        notified = []
+        def listener(f):
+            notified.append(f.key)
+
+        self.state.subscribe(listener)
+        try:
+            # Set NaN first time -> should notify
+            self.state.set_field(
+                device_sn=self.inv.serial_number,
+                name="nan_test",
+                value=float("nan"),
+                raw_value=float("nan"),
+            )
+            self.assertEqual(len(notified), 1)
+
+            # Set NaN second time -> should NOT notify because NaN == NaN logically in state store
+            self.state.set_field(
+                device_sn=self.inv.serial_number,
+                name="nan_test",
+                value=float("nan"),
+                raw_value=float("nan"),
+            )
+            self.assertEqual(len(notified), 1)
+        finally:
+            self.state.unsubscribe(listener)
+
+    def test_state_store_unsubscription(self):
+        calls = 0
+        def listener(f):
+            nonlocal calls
+            calls += 1
+
+        self.state.subscribe(listener)
+        self.state.set_field(device_sn=self.inv.serial_number, name="test_sub", value=1)
+        self.assertEqual(calls, 1)
+
+        self.state.unsubscribe(listener)
+        self.state.set_field(device_sn=self.inv.serial_number, name="test_sub", value=2)
+        self.assertEqual(calls, 1)
+
+        # Compound unsubscribe
+        c_calls = 0
+        def c_listener(c):
+            nonlocal c_calls
+            c_calls += 1
+
+        self.state.subscribe_compound(c_listener)
+        self.state.set_field(device_sn=self.inv.serial_number, name="grid_power_w", value=100.0, sub_group="live")
+        self.assertGreaterEqual(c_calls, 1)
+
+        prev_c_calls = c_calls
+        self.state.unsubscribe_compound(c_listener)
+        self.state.set_field(device_sn=self.inv.serial_number, name="grid_power_w", value=200.0, sub_group="live")
+        self.assertEqual(c_calls, prev_c_calls)
+
+    def test_find_fields_thread_safety(self):
+        import threading
+        stop_threads = False
+
+        def writer():
+            idx = 0
+            while not stop_threads:
+                self.state.set_field(
+                    device_sn=self.inv.serial_number,
+                    name=f"dyn_{idx % 20}",
+                    value=idx,
+                    sub_group="dynamic",
+                )
+                idx += 1
+
+        t = threading.Thread(target=writer)
+        t.start()
+        try:
+            for _ in range(50):
+                fields = self.state.find_fields("inverter.dynamic.*")
+                self.assertIsInstance(fields, list)
+        finally:
+            stop_threads = True
+            t.join()
+
 
 if __name__ == "__main__":
     unittest.main()

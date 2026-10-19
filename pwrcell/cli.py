@@ -183,9 +183,11 @@ def main():
     # set-mode
     sub_mode = subparsers.add_parser("set-mode", help="Set system operating mode")
     sub_mode.add_argument("mode", type=str, help="Operating mode (e.g. CLEAN_BACKUP, SELF_SUPPLY, GRID_TIE)")
+    sub_mode.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
 
     # status
-    subparsers.add_parser("status", help="Display live status summary")
+    sub_status = subparsers.add_parser("status", help="Display live status summary")
+    sub_status.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
 
     args = parser.parse_args()
 

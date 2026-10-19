@@ -1,0 +1,14 @@
+[Unit]
+Description=Generac PWRcell Home Assistant Gateway & Web Explorer
+After=syslog.target network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/pwrcell_sunspec
+ExecStart=/opt/pwrcell_sunspec/.venv/bin/python /opt/pwrcell_sunspec/main.py service --host 0.0.0.0 --port 5555
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

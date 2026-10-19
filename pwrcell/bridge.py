@@ -44,7 +44,8 @@ class HomeAssistantBridge:
         self.discovery_prefix = discovery_prefix
         self.base_topic = base_topic
         self.selected_field_keys: List[str] = []
-        self._command_topic_to_field: Dict[str, StateField] = {}
+        self._selected_set: set[str] = set()
+        self._command_topic_to_field: Dict[str, Any] = {}
         self._published_discovery_topics: set[str] = set()
         self._mqttc: Optional[mqtt.Client] = None
         self._lock = threading.Lock()
@@ -62,6 +63,7 @@ class HomeAssistantBridge:
             if not self.selected_field_keys:
                 logger.info("No ha_config.yaml found, using recommended default entities")
                 self.selected_field_keys = get_recommended_field_keys(self.client.state)
+            self._selected_set = set(self.selected_field_keys)
 
             if not self.mqtt_config or not self.mqtt_config.host:
                 logger.warning("No Home Assistant MQTT broker configured in config.yaml")
@@ -82,7 +84,10 @@ class HomeAssistantBridge:
 
             logger.info("Connecting to Home Assistant MQTT broker on %s:%d", self.mqtt_config.host, self.mqtt_config.port)
             self._mqttc.loop_start()
-            self._mqttc.connect(self.mqtt_config.host, self.mqtt_config.port)
+            try:
+                self._mqttc.connect(self.mqtt_config.host, self.mqtt_config.port)
+            except Exception as e:
+                logger.warning("Initial connection to Home Assistant MQTT broker failed (%s); client loop will retry", e)
 
             # Subscribe to StateStore updates and compound view updates
             self.client.state.subscribe(self._on_field_update)
@@ -131,6 +136,7 @@ class HomeAssistantBridge:
     def reload_config_and_republish(self):
         """Reload selected entities from ha_config.yaml and republish discovery."""
         self.selected_field_keys = load_ha_config()
+        self._selected_set = set(self.selected_field_keys)
         self.publish_discovery()
 
     def publish_discovery(self):
@@ -211,6 +217,9 @@ class HomeAssistantBridge:
 
     def _publish_field_state(self, field: StateField, payload_info: Dict[str, Any], retain: bool = False):
         """Publish state and optional JSON attributes for a field."""
+        if field.value is None:
+            return
+
         state_topic = payload_info["state_topic"]
         if getattr(field, "is_bitfield", False):
             flags = field.active_flags if hasattr(field, "active_flags") else (field.value if isinstance(field.value, list) else [])
@@ -231,7 +240,7 @@ class HomeAssistantBridge:
 
     def _on_field_update(self, field: StateField):
         """Called when a field value updates in the StateStore."""
-        if not self._mqttc or field.key not in self.selected_field_keys:
+        if not self._mqttc or field.value is None or field.key not in self._selected_set:
             return
 
         dev = self.client.state.devices.get(field.device_sn)
@@ -252,7 +261,7 @@ class HomeAssistantBridge:
         """Called when a compound view updates from either MQTT push or Modbus poll."""
         if not self._mqttc:
             return
-        if c_view.key in self.selected_field_keys:
+        if c_view.key in self._selected_set and c_view.latest_value is not None:
             dev = self.client.state.devices.get(c_view.device_sn)
             if not dev:
                 return
@@ -265,8 +274,7 @@ class HomeAssistantBridge:
                 ha_prefix=self.discovery_prefix,
             )
             state_topic = payload_info["state_topic"]
-            if c_view.latest_value is not None:
-                self._mqttc.publish(state_topic, str(c_view.latest_value))
+            self._mqttc.publish(state_topic, str(c_view.latest_value))
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
         """Handle incoming command messages on subscribed command topics."""
@@ -281,8 +289,17 @@ class HomeAssistantBridge:
             logger.warning("No registered field for command topic %s", topic)
             return
 
+        # Offload blocking Modbus write operation to worker thread to prevent freezing Paho's network loop
+        threading.Thread(
+            target=self._execute_command_async,
+            args=(target_field.key, payload_str),
+            daemon=True,
+            name=f"HACommand_{target_field.key}",
+        ).start()
+
+    def _execute_command_async(self, field_key: str, payload_str: str):
         try:
-            confirmed_val = self.client.controls.write_field(target_field.key, payload_str)
-            logger.info("Executed command for %s: confirmed=%s", target_field.key, confirmed_val)
+            confirmed_val = self.client.controls.write_field(field_key, payload_str)
+            logger.info("Executed command for %s: confirmed=%s", field_key, confirmed_val)
         except Exception as e:
-            logger.error("Failed executing command for %s: %s", target_field.key, e)
+            logger.error("Failed executing command for %s: %s", field_key, e)

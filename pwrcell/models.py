@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator
 
-from paramiko import SSHClient
+from paramiko import AutoAddPolicy, SSHClient
 from scp import SCPClient
 
 from .config import AppConfig
@@ -17,10 +17,14 @@ def load_models_dir(config: AppConfig) -> Path:
 
   @Return The directory that contains the sunspec files
   """
-  sunspec_cache_dir = Path(config.sunspec_cache_dir) if config.sunspec_cache_dir else Path(sys.path[0])
-  sunspec_models_dir =  sunspec_cache_dir / 'sunspec-models'
+  repo_root = Path(__file__).resolve().parent.parent
+  sunspec_cache_dir = Path(config.sunspec_cache_dir) if config.sunspec_cache_dir else repo_root
+  sunspec_models_dir = sunspec_cache_dir / 'sunspec-models'
+  sunspec_models_dir.mkdir(parents=True, exist_ok=True)
+
   with SSHClient() as ssh:
     ssh.load_system_host_keys()
+    ssh.set_missing_host_key_policy(AutoAddPolicy())
 
     ssh.connect(config.pwrcell.ssh_tunnel.host,
                 port=config.pwrcell.ssh_tunnel.port,
@@ -31,7 +35,7 @@ def load_models_dir(config: AppConfig) -> Path:
     with SCPClient(ssh.get_transport()) as scp:
       remote_version_file = sunspec_models_dir / 'version.chk'
       scp.get('/opt/pika/sunspec-models/version',
-              remote_version_file,
+              str(remote_version_file),
               preserve_times=True)
       cached_version_file = sunspec_models_dir / 'version'
       if cached_version_file.exists() and filecmp.cmp(cached_version_file, remote_version_file):

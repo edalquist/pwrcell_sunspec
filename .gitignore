@@ -2,8 +2,8 @@ pwrcell.yaml
 local_config.yaml
 devices.yaml
 model_dump/
-sunspec-models/
 model_dump_2/
+sunspec-models/
 scan.json
 
 # Created by https://www.toptal.com/developers/gitignore/api/venv,python,visualstudiocode,macos

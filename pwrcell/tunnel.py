@@ -36,6 +36,7 @@ class PwrCellTunnel:
         self.modbus_port: Optional[int] = None
         self._server: Optional[SSHTunnelForwarder] = None
         self._lock = threading.Lock()
+        self._reconnect_lock = threading.Lock()
         self._running = False
         self._watchdog_thread: Optional[threading.Thread] = None
 
@@ -50,9 +51,14 @@ class PwrCellTunnel:
         with self._lock:
             if self._running:
                 return self.get_config()
-
             self._running = True
-            self._start_server_locked()
+
+        server, host, mod_port, mqtt_port = self._create_and_start_server(None, None)
+        with self._lock:
+            self._server = server
+            self.host = host
+            self.modbus_port = mod_port
+            self.mqtt_port = mqtt_port
 
             # Start background watchdog to automatically heal tunnel drops
             self._watchdog_thread = threading.Thread(
@@ -65,22 +71,22 @@ class PwrCellTunnel:
             return self.get_config()
 
     def get_config(self) -> TunnelConfig:
-        return TunnelConfig(
-            host=self.host,
-            mqtt_port=self.mqtt_port,
-            modbus_port=self.modbus_port,
-            manager=self,
-        )
+        with self._lock:
+            return TunnelConfig(
+                host=self.host,
+                mqtt_port=self.mqtt_port,
+                modbus_port=self.modbus_port,
+                manager=self,
+            )
 
-    def _start_server_locked(self):
+    def _create_and_start_server(self, target_modbus_port: Optional[int], target_mqtt_port: Optional[int]):
         ssh_cfg = self.config.pwrcell.ssh_tunnel
         logger.info("Opening PWRcell SSH tunnel to %s:%s", ssh_cfg.host, ssh_cfg.port)
 
-        # If ports are already assigned, reuse them across reconnects so clients don't break
-        if self.modbus_port and self.mqtt_port:
+        if target_modbus_port and target_mqtt_port:
             local_binds = [
-                (self.host, self.modbus_port),
-                (self.host, self.mqtt_port),
+                (self.host, target_modbus_port),
+                (self.host, target_mqtt_port),
             ]
         else:
             local_binds = [
@@ -88,7 +94,7 @@ class PwrCellTunnel:
                 (self.host, ),  # MQTT - random free port
             ]
 
-        self._server = SSHTunnelForwarder(
+        server = SSHTunnelForwarder(
             (ssh_cfg.host, ssh_cfg.port),
             ssh_username=ssh_cfg.username,
             ssh_pkey=ssh_cfg.identity_file,
@@ -100,17 +106,18 @@ class PwrCellTunnel:
             set_keepalive=15.0,
             mute_exceptions=True,
         )
-        self._server.start()
+        server.start()
 
-        self.host = self._server.local_bind_hosts[0]
-        self.modbus_port = self._server.local_bind_ports[0]
-        self.mqtt_port = self._server.local_bind_ports[1]
+        host = server.local_bind_hosts[0]
+        mod_port = server.local_bind_ports[0]
+        mqtt_port = server.local_bind_ports[1]
         logger.info(
             "PWRcell tunnel listening: TunnelConfig(host=%r, mqtt_port=%s, modbus_port=%s)",
-            self.host,
-            self.mqtt_port,
-            self.modbus_port,
+            host,
+            mqtt_port,
+            mod_port,
         )
+        return server, host, mod_port, mqtt_port
 
     def ensure_active(self) -> bool:
         """Verify tunnel health and re-establish connection if dropped."""
@@ -120,55 +127,69 @@ class PwrCellTunnel:
             if self._server and self._server.is_active:
                 return True
 
+        with self._reconnect_lock:
+            with self._lock:
+                if not self._running:
+                    return False
+                if self._server and self._server.is_active:
+                    return True
+                old_server = self._server
+                self._server = None
+                old_mod_port = self.modbus_port
+                old_mqtt_port = self.mqtt_port
+
+            if old_server:
+                try:
+                    old_server.stop(force=True)
+                except Exception as e:
+                    logger.debug("Error stopping dead SSH tunnel: %s", e)
+
             logger.warning("SSH tunnel session dropped; re-establishing connection to PWRcell...")
-            return self._reconnect_locked()
+            time.sleep(0.5)
 
-    def _reconnect_locked(self) -> bool:
-        if self._server:
-            try:
-                self._server.stop(force=True)
-            except Exception as e:
-                logger.debug("Error stopping dead SSH tunnel: %s", e)
-            self._server = None
+            for attempt in range(1, 4):
+                with self._lock:
+                    if not self._running:
+                        return False
+                try:
+                    server, host, mod_port, mqtt_port = self._create_and_start_server(old_mod_port, old_mqtt_port)
+                    with self._lock:
+                        self._server = server
+                        self.host = host
+                        self.modbus_port = mod_port
+                        self.mqtt_port = mqtt_port
+                    logger.info("SSH tunnel successfully reconnected (attempt %d/3)", attempt)
+                    return True
+                except Exception as e:
+                    logger.warning("Failed to reconnect SSH tunnel (attempt %d/3): %s", attempt, e)
+                    time.sleep(1.0 * attempt)
 
-        time.sleep(0.5)
-
-        for attempt in range(1, 4):
-            try:
-                self._start_server_locked()
-                logger.info("SSH tunnel successfully reconnected (attempt %d/3)", attempt)
-                return True
-            except Exception as e:
-                logger.warning("Failed to reconnect SSH tunnel (attempt %d/3): %s", attempt, e)
-                time.sleep(1.0 * attempt)
-
-        return False
+            return False
 
     def _watchdog_loop(self):
         """Background thread checking tunnel health every 2 seconds."""
-        while self._running:
+        while True:
             time.sleep(2.0)
-            if not self._running:
-                break
-            try:
-                with self._lock:
-                    is_down = not (self._server and self._server.is_active)
-                if is_down and self._running:
-                    self.ensure_active()
-            except Exception as e:
-                logger.debug("Tunnel watchdog error: %s", e)
+            with self._lock:
+                if not self._running:
+                    break
+                is_down = not (self._server and self._server.is_active)
+            if is_down:
+                self.ensure_active()
 
     def stop(self):
         """Stop tunnel and watchdog."""
         with self._lock:
             self._running = False
-            if self._server:
-                try:
-                    self._server.stop(force=True)
-                except Exception as e:
-                    logger.debug("Error closing tunnel: %s", e)
-                self._server = None
-            logger.info("PWRcell SSH tunnel closed")
+            old_server = self._server
+            self._server = None
+
+        if old_server:
+            try:
+                old_server.stop(force=True)
+            except Exception as e:
+                logger.debug("Error closing tunnel: %s", e)
+        logger.info("PWRcell SSH tunnel closed")
 
 
 @contextmanager

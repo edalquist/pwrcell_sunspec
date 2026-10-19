@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 try:
@@ -71,7 +71,7 @@ class LiveTelemetrySnapshot:
     system_family: str = ""
     gateway_id: str = ""
     gateway_type: str = ""
-    channels: Dict[int, ChannelTelemetry] = None
+    channels: Dict[int, ChannelTelemetry] = field(default_factory=dict)
 
 
 if energy_record_set_pb2 is not None:
@@ -151,7 +151,14 @@ class MqttClient:
         self.__latest_snapshot: Optional[LiveTelemetrySnapshot] = None
         self.__unrecognized_topics: Dict[str, int] = {}
         self.__mqttc: Optional[mqtt.Client] = None
+        self._reconnecting: bool = False
         self.__lock = threading.Lock()
+
+    @property
+    def port(self) -> int:
+        if self.__tunnel_manager and getattr(self.__tunnel_manager, "mqtt_port", None):
+            return self.__tunnel_manager.mqtt_port
+        return self.__tunnel_port
 
     def __enter__(self):
         self.start()
@@ -171,8 +178,8 @@ class MqttClient:
             self.__mqttc.on_disconnect = self.__mqtt_disconnect
 
             self.__mqttc.loop_start()
-            logger.info("Connecting to internal PWRcell MQTT on %s:%s", self.__tunnel_ip, self.__tunnel_port)
-            self.__mqttc.connect(self.__tunnel_ip, self.__tunnel_port)
+            logger.info("Connecting to internal PWRcell MQTT on %s:%s", self.__tunnel_ip, self.port)
+            self.__mqttc.connect(self.__tunnel_ip, self.port)
 
     def stop(self):
         with self.__lock:
@@ -235,8 +242,19 @@ class MqttClient:
     ):
         logger.warning("PWRcell internal MQTT disconnected: %s", reason_code)
         if self.__tunnel_manager:
-            # Trigger background health check / reconnect on the SSH tunnel if transport dropped
-            threading.Thread(target=self.__tunnel_manager.ensure_active, daemon=True).start()
+            with self.__lock:
+                if self._reconnecting:
+                    return
+                self._reconnecting = True
+
+            def _reconnect_bg():
+                try:
+                    self.__tunnel_manager.ensure_active()
+                finally:
+                    with self.__lock:
+                        self._reconnecting = False
+
+            threading.Thread(target=_reconnect_bg, daemon=True, name="MqttTunnelReconnect").start()
 
     def __mqtt_on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
         logger.debug("PWRcell MQTT msg on %s (%d bytes)", msg.topic, len(msg.payload))
@@ -274,7 +292,8 @@ class MqttClient:
                 logger.error("Failed to parse EnergyRecordSet from %s: %s", msg.topic, e)
         else:
             with self.__lock:
-                self.__unrecognized_topics[msg.topic] = len(msg.payload)
+                if len(self.__unrecognized_topics) < 500 or msg.topic in self.__unrecognized_topics:
+                    self.__unrecognized_topics[msg.topic] = len(msg.payload)
             logger.debug("Received unhandled PWRcell topic: %s", msg.topic)
 
     @classmethod
@@ -314,7 +333,14 @@ class MqttClient:
         for ch in rec.channel:
             ch_type_name = CHANNEL_TYPE_NAMES.get(ch.channelType, f"TYPE_{ch.channelType}")
             power_w = float(ch.realPower_Wf) if ch.realPower_Wf != 0 else float(ch.realPower_W)
-            soc_val = float(ch.soc) if (ch.deviceType == energy_record_set_pb2.BATTERY or ch.soc != 0) else None
+            is_storage = (
+                (energy_record_set_pb2 is not None and (
+                    ch.deviceType == energy_record_set_pb2.BATTERY
+                    or ch.channelType in (energy_record_set_pb2.STORAGE, energy_record_set_pb2.STORAGE_AC)
+                ))
+                or ch.channelType == 4
+            )
+            soc_val = float(ch.soc) if (is_storage or ch.soc != 0) else None
             soh_val = float(ch.soh) if ch.soh > 0.0 else None
 
             ch_telemetry = ChannelTelemetry(

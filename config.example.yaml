@@ -1,19 +1,26 @@
 ---
-testing: true # If true MQTT topics prefixed with TEST/
-poll_rate: 12 # Rate (time in seconds) at which to poll for data
-log_level: DEBUG
+# PWRcell v3 Configuration
+testing: false
+poll_rate: 12               # Fast telemetry Modbus polling interval in seconds
+config_poll_interval: 45    # Front-panel keypad & config sync interval in seconds
+slow_poll_interval: 300     # Diagnostic accumulators polling interval in seconds
+enable_polling: true        # Enable background Modbus polling
+log_level: INFO             # Logging level: DEBUG, INFO, WARNING, ERROR
+
 pwrcell:
   ssh_tunnel:
-    host: 127.0.0.1
-    identity_file: /Users/example/.ssh/pwrcell
-  device_ids: # Get these IDs by running `python scan.py`
-    rebus_beacon: 1
-    inverter: 8
-    battery: 9
-    pv_links: [3, 4, 5, 6, 7]
+    host: 192.168.0.73       # IP address or hostname of Generac Beacon on local LAN
+    port: 22
+    username: root
+    identity_file: /path/to/your/ssh_key
+
 mqtt:
   client_name: pwrcell-ha
-  host: homeassistant
+  host: homeassistant        # IP or hostname of Home Assistant MQTT Broker
   port: 1883
-  username: mqtt-pwrcell
-  password: hunter2
+  username: mqtt-user
+  password: your-password
+
+# Optional:
+# telemetry_mappings_file: telemetry_mappings.yaml
+# sunspec_cache_dir: /path/to/models/cache

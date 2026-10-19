@@ -89,6 +89,7 @@ class TieredModbusPoller:
         }
 
         self._pending_triggers: queue.Queue[str] = queue.Queue()
+        self._last_discovery_retry: float = 0.0
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._cond = threading.Condition()
@@ -148,7 +149,8 @@ class TieredModbusPoller:
             return 0
 
         polled_count = 0
-        devices = list(self.client.state.devices.values())
+        with self.client.state._lock:
+            devices = list(self.client.state.devices.values())
 
         for dev in devices:
             if dev.slave_id is None:
@@ -190,7 +192,10 @@ class TieredModbusPoller:
                     return True
         except Exception as e:
             self.poll_counts["errors"] = self.poll_counts.get("errors", 0) + 1
-            logger.debug("Failed reading model %s on slave %d (%s): %s", model_id, slave_id, serial_number, e)
+            if self.poll_counts["errors"] % 20 == 1:
+                logger.warning("Repeated Modbus read failure on model %s (slave %d, %s): %s (total errors: %d)", model_id, slave_id, serial_number, e, self.poll_counts["errors"])
+            else:
+                logger.debug("Failed reading model %s on slave %d (%s): %s", model_id, slave_id, serial_number, e)
 
         return False
 
@@ -273,6 +278,18 @@ class TieredModbusPoller:
 
             # 2. Check periodic intervals
             now = time.time()
+
+            # If no devices are registered (e.g. initial connection failed or inverter was rebooting), retry discovery
+            with self.client.state._lock:
+                no_devices = len(self.client.state.devices) == 0
+            if no_devices and (now - self._last_discovery_retry >= 30.0):
+                self._last_discovery_retry = now
+                logger.info("No devices registered in StateStore; attempting Modbus discovery...")
+                try:
+                    self.client.load_or_discover_devices()
+                    self.client._poll_device_models_live()
+                except Exception as de:
+                    logger.debug("Discovery retry failed: %s", de)
 
             # Fast Tier
             if now - self.last_poll.get(PollingTier.FAST.value, 0.0) >= self.fast_interval:

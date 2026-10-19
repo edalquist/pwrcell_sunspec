@@ -199,6 +199,8 @@ def generate_discovery_payload(
             payload["unit_of_measurement"] = field.ha_unit or field.units
         if platform in ("select", "number") and field.is_writable:
             payload["command_topic"] = command_topic
+        if (platform == "select" or getattr(field, "ha_device_class", None) == "enum") and getattr(field, "ha_options", None):
+            payload["options"] = field.ha_options
     elif field.ha_hint:
         hint = field.ha_hint
         if hint.device_class:
@@ -211,8 +213,9 @@ def generate_discovery_payload(
             payload["entity_category"] = hint.entity_category
         if hint.icon:
             payload["icon"] = hint.icon
-        if platform == "select" and hint.options:
+        if (platform == "select" or hint.device_class == "enum") and hint.options:
             payload["options"] = hint.options
+        if platform == "select":
             payload["command_topic"] = command_topic
         elif platform == "number":
             payload["command_topic"] = command_topic

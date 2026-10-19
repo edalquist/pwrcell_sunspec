@@ -36,6 +36,8 @@ def create_app(client: PwrcellClient) -> Flask:
     # Event subscribers queue list for Server-Sent Events
     sse_queues: list[queue.Queue] = []
     sse_lock = threading.Lock()
+    app.sse_queues = sse_queues  # type: ignore[attr-defined]
+    app.sse_lock = sse_lock      # type: ignore[attr-defined]
 
     def on_field_change(field: StateField):
         event_data = {
@@ -297,7 +299,7 @@ def create_app(client: PwrcellClient) -> Flask:
                     except queue.Empty:
                         # Keepalive ping
                         yield ": keepalive\n\n"
-            except GeneratorExit:
+            finally:
                 with sse_lock:
                     if client_queue in sse_queues:
                         sse_queues.remove(client_queue)

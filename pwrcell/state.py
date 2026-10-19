@@ -8,11 +8,20 @@ Home Assistant hints, and change subscription hooks.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
+
+# Standard SunSpec unimplemented / null sentinel register values
+SUNSPEC_SENTINELS = {
+    0x8000, -32768,          # int16 / sunssf
+    0xFFFF, 65535,           # uint16
+    0x80000000, -2147483648, # int32
+    0xFFFFFFFF, 4294967295,  # uint32
+}
 
 from .catalog import HomeAssistantHint, ModelCatalog, SunspecPointDef, get_catalog
 from .mapping import MappingRegistry, apply_transform
@@ -380,26 +389,28 @@ class StateStore:
 
     def find_fields(self, key: str) -> List[StateField]:
         """Find all StateField instances across all devices matching exact key or point suffix."""
-        matched: List[StateField] = []
-        for dev in self.devices.values():
-            if key in dev.fields:
-                matched.append(dev.fields[key])
+        with self._lock:
+            matched: List[StateField] = []
+            devices_list = list(self.devices.values())
+            for dev in devices_list:
+                if key in dev.fields:
+                    matched.append(dev.fields[key])
 
-        if matched:
+            if matched:
+                return matched
+
+            # Suffix match e.g. inverter.inverter_status.CTPow matching inverter.model_64208.CTPow
+            parts = key.split(".")
+            if len(parts) >= 3:
+                target_dev_type = parts[0]
+                target_point = parts[-1]
+                for dev in devices_list:
+                    if dev.device_type == target_dev_type:
+                        for f_key, f_obj in list(dev.fields.items()):
+                            if f_key.endswith(f".{target_point}") and f_obj.source != FieldSource.MQTT_PUSH:
+                                matched.append(f_obj)
+                                break
             return matched
-
-        # Suffix match e.g. inverter.inverter_status.CTPow matching inverter.model_64208.CTPow
-        parts = key.split(".")
-        if len(parts) >= 3:
-            target_dev_type = parts[0]
-            target_point = parts[-1]
-            for dev in self.devices.values():
-                if dev.device_type == target_dev_type:
-                    for f_key, f_obj in dev.fields.items():
-                        if f_key.endswith(f".{target_point}") and f_obj.source != FieldSource.MQTT_PUSH:
-                            matched.append(f_obj)
-                            break
-        return matched
 
     def _find_field(self, key: str) -> Optional[StateField]:
         """Find a StateField by exact key or by device_type + point_name suffix."""
@@ -510,6 +521,13 @@ class StateStore:
         key = f"{target_dev.device_type}.compound.{m.id}"
         is_writable = (mb_field.is_writable if mb_field else False)
 
+        options = None
+        if m.id == "system_mode":
+            from .controls import OPERATING_MODES
+            options = sorted(list(set(OPERATING_MODES.keys())))
+        elif mb_field and mb_field.ha_hint and mb_field.ha_hint.options:
+            options = mb_field.ha_hint.options
+
         return CompoundFieldView(
             key=key,
             mapping_id=m.id,
@@ -538,6 +556,7 @@ class StateStore:
             ha_device_class=m.ha_device_class,
             ha_state_class=m.ha_state_class,
             ha_unit=m.unit,
+            ha_options=options,
         )
 
     def get_compound_views(self, device_sn: Optional[str] = None) -> List[CompoundFieldView]:
@@ -555,6 +574,12 @@ class StateStore:
         """Register a callback for compound view updates."""
         with self._lock:
             self._compound_listeners.append(listener)
+
+    def unsubscribe_compound(self, listener: Callable[[CompoundFieldView], None]):
+        """Unregister a callback for compound view updates."""
+        with self._lock:
+            if listener in self._compound_listeners:
+                self._compound_listeners.remove(listener)
 
     def notify_field_change(self, field_obj: StateField):
         """Notify registered listeners of a field change."""
@@ -580,10 +605,10 @@ class StateStore:
         self,
         device_sn: str,
         name: str,
-        label: str,
-        description: str,
-        value: Any,
-        raw_value: Any,
+        label: str = "",
+        description: str = "",
+        value: Any = None,
+        raw_value: Any = None,
         units: Optional[str] = None,
         source: FieldSource = FieldSource.MODBUS_POLL,
         access: str = "R",
@@ -604,6 +629,11 @@ class StateStore:
             dev = self.devices.get(device_sn)
             if not dev:
                 raise ValueError(f"Device with serial number {device_sn} not registered")
+
+            if not label:
+                label = name
+            if raw_value is None and value is not None:
+                raw_value = value
 
             # Resolve model metadata if not explicitly provided
             if model_id is None and sub_group:
@@ -634,7 +664,15 @@ class StateStore:
 
             existing = dev.fields.get(key)
             if existing is not None:
-                changed = (existing.value != value)
+                if (
+                    isinstance(existing.value, float)
+                    and isinstance(value, float)
+                    and math.isnan(existing.value)
+                    and math.isnan(value)
+                ):
+                    changed = False
+                else:
+                    changed = (existing.value != value)
                 existing.value = value
                 existing.raw_value = raw_value
                 if point_type is not None:
@@ -1166,9 +1204,18 @@ class StateStore:
             access = pt_def.access if pt_def else "R"
 
             # Determine final scaled value:
-            # Case 1: Pre-computed value provided (e.g. from pysunspec2 point.cvalue or MockPointValue.scaled_value)
-            if computed_values and pt_name in computed_values and computed_values[pt_name] is not None:
+            # Case 1: Sentinel value or None represents an unimplemented register
+            if raw_val is None or (isinstance(raw_val, (int, float)) and raw_val in SUNSPEC_SENTINELS):
+                raw_val = None
+                scaled_val = None
+            # Case 2: Pre-computed value provided (e.g. from pysunspec2 point.cvalue or MockPointValue.scaled_value)
+            elif computed_values is not None and pt_name in computed_values:
                 scaled_val = computed_values[pt_name]
+                if scaled_val is not None and isinstance(scaled_val, (int, float)) and scaled_val in SUNSPEC_SENTINELS:
+                    scaled_val = None
+                    raw_val = None
+                elif scaled_val is None:
+                    raw_val = None
             # Case 2: Defined scale factor from SunSpec model definition (e.g. AMax_SF, VT_sf)
             elif isinstance(raw_val, (int, float)) and pt_def and pt_def.sf:
                 sf_name = pt_def.sf
@@ -1186,7 +1233,7 @@ class StateStore:
 
             # If enum, lookup against enum symbols:
             # scaled_val becomes the enum symbol name, while raw_val remains the integer register value
-            if pt_def and pt_def.is_enum:
+            if pt_def and pt_def.is_enum and raw_val not in SUNSPEC_SENTINELS:
                 sym = None
                 if isinstance(raw_val, int):
                     sym = pt_def.symbols_by_value.get(raw_val)
@@ -1203,7 +1250,7 @@ class StateStore:
             # If bitfield, decode integer bitmask into list of active symbol names:
             # scaled_val becomes the list of active flag names, while raw_val remains the integer register value
             bitmask_flags = None
-            if pt_def and pt_def.is_bitfield:
+            if pt_def and pt_def.is_bitfield and raw_val not in SUNSPEC_SENTINELS:
                 bit_val = raw_val if isinstance(raw_val, int) else (int(raw_val) if isinstance(raw_val, str) and (raw_val.isdigit() or (raw_val.startswith("-") and raw_val[1:].isdigit())) else None)
                 if bit_val is not None:
                     bitmask_flags = pt_def.decode_bitfield(bit_val)
@@ -1247,6 +1294,12 @@ class StateStore:
         """Register a callback for field value changes."""
         with self._lock:
             self._listeners.append(listener)
+
+    def unsubscribe(self, listener: Callable[[StateField], None]):
+        """Unregister a callback for field value changes."""
+        with self._lock:
+            if listener in self._listeners:
+                self._listeners.remove(listener)
 
     def to_dict(self) -> dict:
         """Full serializable dictionary of all devices and fields."""

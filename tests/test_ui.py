@@ -29,6 +29,7 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertIn(b"data-sort=\"ha\"", resp.data)
         self.assertIn(b"multiSortToggle", resp.data)
         self.assertIn(b"sortBar", resp.data)
+        resp.close()
 
     def test_overview_endpoint(self):
         resp = self.test_client.get("/api/overview")
@@ -234,6 +235,51 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertTrue(data["success"])
+
+    def test_sse_stream_cleanup(self):
+        # Initial sse_queues should be empty
+        self.assertEqual(len(self.app.sse_queues), 0)
+
+        resp = self.test_client.get("/api/stream")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(self.app.sse_queues), 1)
+
+        # Read initial connected event
+        initial_chunk = next(resp.response)
+        self.assertIn(b"connected", initial_chunk)
+
+        # Close the response / generator
+        resp.close()
+
+        # The finally block in event_generator must have executed and cleaned up the queue
+        self.assertEqual(len(self.app.sse_queues), 0)
+
+    def test_ha_discovery_options_for_enum_and_select(self):
+        # 1. Preview for enum select field (rebus_beacon.REbus_dir.SysMd)
+        self.test_client.post(
+            "/api/ha/config",
+            json={"selected_fields": ["rebus_beacon.REbus_dir.SysMd"]},
+        )
+        resp = self.test_client.get("/api/ha/preview")
+        self.assertEqual(resp.status_code, 200)
+        preview = resp.get_json()
+        self.assertEqual(len(preview), 1)
+        item = preview[0]
+        self.assertEqual(item["platform"], "select")
+        self.assertIn("options", item["payload"])
+        self.assertIn("CLEAN_BACKUP", item["payload"]["options"])
+        self.assertIn("SELF_SUPPLY", item["payload"]["options"])
+
+        # 2. Compound enum sensor field: system_mode
+        inv = self.client.state.get_inverter()
+        c_view = self.client.state.get_compound_view("system_mode")
+        self.assertIsNotNone(c_view)
+        c_payload_info = generate_discovery_payload(c_view, inv)
+        self.assertEqual(c_payload_info["platform"], "sensor")
+        self.assertEqual(c_payload_info["payload"]["device_class"], "enum")
+        self.assertIn("options", c_payload_info["payload"])
+        self.assertIn("CLEAN_BACKUP", c_payload_info["payload"]["options"])
+        self.assertIn("PRIORITY_BACKUP", c_payload_info["payload"]["options"])
 
 
 if __name__ == "__main__":

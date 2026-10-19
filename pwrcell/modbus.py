@@ -80,6 +80,14 @@ class SerializedModbusWorker:
             if not self._running:
                 return
             self._running = False
+            # Drain remaining queued jobs and reject pending futures so callers don't hang
+            while not self._queue.empty():
+                try:
+                    remaining_job = self._queue.get_nowait()
+                    if remaining_job and not remaining_job.future.done():
+                        remaining_job.future.set_exception(RuntimeError("Modbus worker stopped"))
+                except queue.Empty:
+                    break
             self._queue.put(None)  # Sentinel to terminate thread
             if self._thread and self._thread.is_alive():
                 self._thread.join(timeout=timeout)
@@ -120,10 +128,12 @@ class SerializedModbusWorker:
 
     def _worker_loop(self):
         logger.debug("Serialized Modbus worker loop running")
-        while self._running:
+        while True:
             try:
                 job = self._queue.get(timeout=1.0)
             except queue.Empty:
+                if not self._running:
+                    break
                 continue
 
             if job is None:
@@ -136,27 +146,29 @@ class SerializedModbusWorker:
 
     def _execute_job(self, job: ModbusJob):
         last_exception: Optional[Exception] = None
-        for attempt in range(1, job.retries + 1):
+        attempts = max(1, job.retries)
+        for attempt in range(1, attempts + 1):
             try:
                 if job.description:
                     logger.debug(
                         "Executing Modbus op: %s (attempt %d/%d)",
                         job.description,
                         attempt,
-                        job.retries,
+                        attempts,
                     )
                 result = job.func()
-                job.future.set_result(result)
+                if not job.future.done():
+                    job.future.set_result(result)
                 return
             except Exception as exc:
                 last_exception = exc
                 err_msg = str(exc)
-                if attempt < job.retries:
+                if attempt < attempts:
                     logger.info(
                         "Transient Modbus error on '%s' (attempt %d/%d, retrying): %s",
                         job.description,
                         attempt,
-                        job.retries,
+                        attempts,
                         err_msg,
                     )
                     delay = job.base_backoff_sec * (2 ** (attempt - 1))
@@ -166,11 +178,11 @@ class SerializedModbusWorker:
                         "Modbus error on '%s' (attempt %d/%d): %s",
                         job.description,
                         attempt,
-                        job.retries,
+                        attempts,
                         err_msg,
                     )
 
-        if last_exception:
+        if last_exception and not job.future.done():
             job.future.set_exception(last_exception)
 
 
@@ -215,6 +227,16 @@ class SerializedModbusClient:
         self.worker.stop()
 
     def _get_shared_client(self) -> mb.ModbusClientTCP:
+        current_port = self.tunnel.modbus_port if (self.tunnel and getattr(self.tunnel, "modbus_port", None)) else self.port
+        if self._shared_client is not None and self._shared_client.ipport != current_port:
+            logger.info("Modbus port updated from tunnel: %s -> %s", self._shared_client.ipport, current_port)
+            try:
+                self._shared_client.disconnect()
+            except Exception:
+                pass
+            self._shared_client = None
+            self.port = current_port
+
         if self._shared_client is None:
             self._shared_client = mb.ModbusClientTCP(
                 slave_id=1,
@@ -325,13 +347,15 @@ class SerializedModbusClient:
 
             try:
                 self.read_model_block(dev, 1)
-                sn = str(dev.common[0].SN.value).strip() if hasattr(dev, "common") else ""
-                md = str(dev.common[0].Md.value).strip() if hasattr(dev, "common") else ""
+                raw_sn = dev.common[0].SN.value if (hasattr(dev, "common") and dev.common) else None
+                sn = str(raw_sn).strip() if (raw_sn is not None and str(raw_sn).strip() != "None") else ""
+                raw_md = dev.common[0].Md.value if (hasattr(dev, "common") and dev.common) else None
+                md = str(raw_md).strip() if (raw_md is not None and str(raw_md).strip() != "None") else ""
             except Exception as e:
                 logger.debug("Could not read common model on slave %d: %s", slave_id, e)
                 continue
 
-            if sn:
+            if sn and sn not in ("", "0"):
                 ids = found_serials.setdefault(sn, [])
                 ids.append(slave_id)
                 if len(ids) > 1 and stop_on_duplicate_serial:
