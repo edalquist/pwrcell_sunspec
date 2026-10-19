@@ -35,7 +35,7 @@ class PwrCellTunnel:
         self.mqtt_port: Optional[int] = None
         self.modbus_port: Optional[int] = None
         self._server: Optional[SSHTunnelForwarder] = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._reconnect_lock = threading.Lock()
         self._running = False
         self._watchdog_thread: Optional[threading.Thread] = None
@@ -49,9 +49,12 @@ class PwrCellTunnel:
     def start(self) -> TunnelConfig:
         """Start the SSH tunnel, establishing forwarded ports and launching the watchdog."""
         with self._lock:
-            if self._running:
-                return self.get_config()
-            self._running = True
+            already_running = self._running
+            if not already_running:
+                self._running = True
+
+        if already_running:
+            return self.get_config()
 
         server, host, mod_port, mqtt_port = self._create_and_start_server(None, None)
         with self._lock:
@@ -68,7 +71,7 @@ class PwrCellTunnel:
             )
             self._watchdog_thread.start()
 
-            return self.get_config()
+        return self.get_config()
 
     def get_config(self) -> TunnelConfig:
         with self._lock:
