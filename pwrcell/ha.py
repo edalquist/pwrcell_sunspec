@@ -295,9 +295,9 @@ def get_device_info(
 def get_suggested_precision(unit: Optional[str], device_class: Optional[str] = None) -> Optional[int]:
     """Derive Home Assistant suggested display precision for numeric sensors."""
     u = (unit or "").strip()
-    if u in ("W", "VA", "VAr", "VAR", "Wh"):
+    if u in ("W", "VA", "VAr", "VAR", "Wh", "Ws", "VAh", "varh"):
         return 0
-    if u in ("kWh", "Hz"):
+    if u in ("kWh", "Hz", "kVAh", "kvarh"):
         return 2
     if u in ("V", "A", "%", "C", "°C", "kW"):
         return 1
@@ -462,13 +462,13 @@ def generate_discovery_payload(
     precision = None
     if platform == "sensor":
         if is_compound:
-            precision = getattr(field, "ha_suggested_display_precision", None) or get_suggested_precision(
-                field.ha_unit or field.units, field.ha_device_class
-            )
+            precision = getattr(field, "ha_suggested_display_precision", None)
+            if precision is None:
+                precision = get_suggested_precision(field.ha_unit or field.units, field.ha_device_class)
         elif field.ha_hint:
-            precision = getattr(field.ha_hint, "suggested_display_precision", None) or get_suggested_precision(
-                field.ha_hint.unit_of_measurement or field.units, field.ha_hint.device_class
-            )
+            precision = getattr(field.ha_hint, "suggested_display_precision", None)
+            if precision is None:
+                precision = get_suggested_precision(field.ha_hint.unit_of_measurement or field.units, field.ha_hint.device_class)
         elif field.units:
             precision = get_suggested_precision(field.units)
 

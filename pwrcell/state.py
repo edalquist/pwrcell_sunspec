@@ -748,6 +748,18 @@ class StateStore:
                     changed = (existing.value != value)
                 existing.value = value
                 existing.raw_value = raw_value
+                if units is not None:
+                    existing.units = units
+                if ha_hint is not None:
+                    existing.ha_hint = ha_hint
+                if label and label != existing.name:
+                    existing.label = label
+                if description:
+                    existing.description = description
+                if source is not None:
+                    existing.source = source
+                if access != "R" or existing.access == "R":
+                    existing.access = access
                 if point_type is not None:
                     existing.point_type = point_type
                 if is_enum is not None:
@@ -867,10 +879,35 @@ class StateStore:
         model_name = sub_group
         model_label = sub_group
 
+        source = FieldSource.MODBUS_POLL
         if sub_group == "live":
             label = name.replace("_", " ").title()
             model_name = "live"
             model_label = "Push Telemetry"
+            source = FieldSource.MQTT_PUSH
+            if name.endswith("_wh"):
+                units = "Wh"
+                ha_hint = HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh")
+            elif name.endswith("_w"):
+                units = "W"
+                ha_hint = HomeAssistantHint(platform="sensor", device_class="power", state_class="measurement", unit_of_measurement="W")
+            elif name.endswith("_v"):
+                units = "V"
+                ha_hint = HomeAssistantHint(platform="sensor", device_class="voltage", state_class="measurement", unit_of_measurement="V")
+            elif name.endswith("_a"):
+                units = "A"
+                ha_hint = HomeAssistantHint(platform="sensor", device_class="current", state_class="measurement", unit_of_measurement="A")
+            elif name.endswith("_hz"):
+                units = "Hz"
+                ha_hint = HomeAssistantHint(platform="sensor", device_class="frequency", state_class="measurement", unit_of_measurement="Hz")
+            elif name.endswith("_deg_c") or name.endswith("_c"):
+                units = "°C"
+                ha_hint = HomeAssistantHint(platform="sensor", device_class="temperature", state_class="measurement", unit_of_measurement="°C")
+            elif name in ("state_of_charge", "state_of_health"):
+                units = "%"
+                ha_hint = HomeAssistantHint(platform="sensor", device_class="battery", state_class="measurement", unit_of_measurement="%")
+            elif name == "system_mode":
+                ha_hint = HomeAssistantHint(platform="sensor", device_class="enum")
         elif self.catalog:
             cat_model = self.catalog.get_model_by_name(sub_group)
             if not cat_model and sub_group.startswith("model_"):
@@ -912,6 +949,7 @@ class StateStore:
             model_id=model_id,
             model_name=model_name,
             model_label=model_label,
+            source=source,
         )
 
     def update_from_telemetry_snapshot(self, snapshot: LiveTelemetrySnapshot):

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock
 
-from pwrcell.bridge import HomeAssistantBridge
+from pwrcell.bridge import HomeAssistantBridge, format_state_value
 from pwrcell.client import PwrcellClient
 from pwrcell.ha import generate_discovery_payload
 
@@ -213,6 +213,65 @@ class TestHomeAssistantBridge(unittest.TestCase):
         state_call = next(call for call in self.mock_mqttc.publish.call_args_list if call[0][0] == state_topic)
         # Should be formatted to 1 decimal place: "12.3"
         self.assertEqual(state_call[0][1], "12.3")
+
+    def test_format_state_value_never_scientific_notation(self):
+        """Verify format_state_value never formats numbers with scientific notation."""
+        # Large integer float
+        self.assertEqual(format_state_value(63050200.0), "63050200")
+        self.assertEqual(format_state_value(63050200.0, 0), "63050200")
+        self.assertEqual(format_state_value(63050200), "63050200")
+        self.assertEqual(format_state_value(63050200, 0), "63050200")
+
+        # Large float with decimal fraction
+        self.assertEqual(format_state_value(63050200.5, None), "63050200.5")
+        self.assertEqual(format_state_value(63050200.5, 0), "63050200")
+        self.assertEqual(format_state_value(63050200.5, 1), "63050200.5")
+        self.assertEqual(format_state_value(63050200.5, 2), "63050200.50")
+
+        # Scientific notation string input
+        self.assertEqual(format_state_value("6.30502e+07"), "63050200")
+        self.assertEqual(format_state_value("6.30502e+07", 0), "63050200")
+
+        # Zero and negative
+        self.assertEqual(format_state_value(0.0), "0")
+        self.assertEqual(format_state_value(0.0, 0), "0")
+        self.assertEqual(format_state_value(-63050200.5, None), "-63050200.5")
+        self.assertEqual(format_state_value(-63050200.5, 0), "-63050200")
+
+        # Ensure no 'e+' or 'e-' in output for large/small numbers
+        self.assertNotIn("e+", format_state_value(100000000.1234))
+        self.assertNotIn("e-", format_state_value(0.0001))
+
+    def test_large_energy_exported_state_publishing(self):
+        """Verify that cumulative energy exported (Wh) formats cleanly without scientific notation."""
+        inv = self.client.state.get_inverter()
+        sn = inv.serial_number
+
+        self.bridge.selected_field_keys = [f"{sn}:inverter.live.inverter_output_exported_energy_wh"]
+        self.bridge.publish_discovery()
+
+        config_topic = f"homeassistant/sensor/pwrcell_{sn.lower()}/live_inverter_output_exported_energy_wh/config"
+        matching_call = next(call for call in self.mock_mqttc.publish.call_args_list if call[0][0] == config_topic)
+        payload = json.loads(matching_call[0][1])
+        # Energy in Wh has suggested_display_precision 0
+        self.assertEqual(payload.get("suggested_display_precision"), 0)
+        self.assertEqual(payload.get("unit_of_measurement"), "Wh")
+
+        # Update field with large energy value: 63,050,200 Wh (63.05 MWh)
+        self.client.state.subscribe(self.bridge._on_field_update)
+        self.mock_mqttc.publish.reset_mock()
+        self.client.state.set_field(
+            device_sn=sn,
+            name="inverter_output_exported_energy_wh",
+            sub_group="live",
+            value=63050200.4,
+            units="Wh",
+        )
+
+        state_topic = f"pwrcell/{sn.lower()}/live_inverter_output_exported_energy_wh/state"
+        state_call = next(call for call in self.mock_mqttc.publish.call_args_list if call[0][0] == state_topic)
+        self.assertEqual(state_call[0][1], "63050200")
+        self.assertNotIn("e+", state_call[0][1])
 
 
 if __name__ == "__main__":

@@ -41,21 +41,33 @@ def get_default_published_topics_path() -> Path:
 
 
 def format_state_value(value: Any, precision: Optional[int] = None) -> str:
-    """Format a state value for MQTT publishing, ensuring float precision is clean."""
+    """Format a state value for MQTT publishing, ensuring float precision is clean and avoiding scientific notation."""
     if value is None:
         return ""
-    if isinstance(value, float):
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, str):
+        try:
+            if "e" in value.lower():
+                val_float = float(value)
+                return format_state_value(val_float, precision)
+        except ValueError:
+            pass
+        return value
+    if isinstance(value, (int, float)):
         import math
-        if math.isnan(value):
+        if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
             return "nan"
         if precision is not None:
             if precision == 0:
                 return str(int(round(value)))
             return f"{value:.{precision}f}"
-        rounded = round(value, 4)
-        if rounded == int(rounded):
-            return str(int(rounded))
-        return f"{rounded:g}"
+        if isinstance(value, float):
+            rounded = round(value, 4)
+            if rounded == int(rounded):
+                return str(int(rounded))
+            return f"{rounded:.4f}".rstrip("0").rstrip(".")
+        return str(value)
     return str(value)
 
 
