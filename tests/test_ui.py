@@ -277,13 +277,13 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertIn("CLEAN_BACKUP", item["payload"]["options"])
         self.assertIn("SELF_SUPPLY", item["payload"]["options"])
 
-        # 2. Compound enum sensor field: system_mode
+        # 2. Compound writable select entity: system_mode
         inv = self.client.state.get_inverter()
         c_view = self.client.state.get_compound_view("system_mode")
         self.assertIsNotNone(c_view)
         c_payload_info = generate_discovery_payload(c_view, inv)
-        self.assertEqual(c_payload_info["platform"], "sensor")
-        self.assertEqual(c_payload_info["payload"]["device_class"], "enum")
+        self.assertEqual(c_payload_info["platform"], "select")
+        self.assertIn("command_topic", c_payload_info["payload"])
         self.assertIn("options", c_payload_info["payload"])
         self.assertIn("CLEAN_BACKUP", c_payload_info["payload"]["options"])
         self.assertIn("PRIORITY_BACKUP", c_payload_info["payload"]["options"])

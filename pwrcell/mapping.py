@@ -170,8 +170,8 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
             transform="none",
             transform_desc="",
             description="PWRcell operating mode (Grid Tie, Self Supply, Clean Backup, Priority Backup, Sell)",
-            ha_platform="sensor",
-            ha_device_class="enum",
+            ha_platform="select",
+            ha_device_class=None,
             ha_state_class=None,
         ),
         TelemetryMappingDef(

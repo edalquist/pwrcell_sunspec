@@ -48,6 +48,7 @@ class HomeAssistantHint:
     max_value: Optional[float] = None
     step: Optional[float] = None
     options: Optional[List[str]] = None
+    suggested_display_precision: Optional[int] = None
 
 
 @dataclass
@@ -623,12 +624,30 @@ class ModelCatalog:
         elif point.is_numeric and not point.is_scale_factor:
             state_class = "measurement"
 
+        # Determine suggested display precision
+        precision = None
+        if canonical_units in ("W", "VA", "VAr", "VAR", "Wh"):
+            precision = 0
+        elif canonical_units in ("kWh", "Hz"):
+            precision = 2
+        elif canonical_units in ("V", "A", "%", "C", "°C", "kW"):
+            precision = 1
+        elif device_class == "power":
+            precision = 0
+        elif device_class == "energy":
+            precision = 2 if "k" in (canonical_units or "").lower() else 0
+        elif device_class in ("voltage", "current", "battery", "temperature"):
+            precision = 1
+        elif device_class == "frequency":
+            precision = 2
+
         return HomeAssistantHint(
             platform="sensor",
             device_class=device_class,
             state_class=state_class,
             unit_of_measurement=canonical_units if canonical_units else None,
             icon=icon,
+            suggested_display_precision=precision,
         )
 
 

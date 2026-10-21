@@ -292,6 +292,26 @@ def get_device_info(
     return dev_info
 
 
+def get_suggested_precision(unit: Optional[str], device_class: Optional[str] = None) -> Optional[int]:
+    """Derive Home Assistant suggested display precision for numeric sensors."""
+    u = (unit or "").strip()
+    if u in ("W", "VA", "VAr", "VAR", "Wh"):
+        return 0
+    if u in ("kWh", "Hz"):
+        return 2
+    if u in ("V", "A", "%", "C", "°C", "kW"):
+        return 1
+    if device_class == "power":
+        return 0
+    if device_class == "energy":
+        return 2 if "k" in u.lower() else 0
+    if device_class in ("voltage", "current", "battery", "temperature"):
+        return 1
+    if device_class == "frequency":
+        return 2
+    return None
+
+
 def generate_discovery_payload(
     field: Any,
     device: UnifiedDevice,
@@ -301,7 +321,27 @@ def generate_discovery_payload(
 ) -> Dict[str, Any]:
     """Generate modern Home Assistant MQTT Discovery configuration dictionary and topics."""
     is_compound = getattr(field, "is_compound", False)
-    platform = field.ha_platform if is_compound else (field.ha_hint.platform if field.ha_hint else "sensor")
+    is_writable = getattr(field, "is_writable", False)
+
+    if is_compound:
+        platform = field.ha_platform
+        if is_writable and platform == "sensor":
+            if getattr(field, "ha_options", None) or getattr(field, "ha_device_class", None) == "enum":
+                platform = "select"
+            else:
+                platform = "number"
+    else:
+        hint = field.ha_hint
+        if hint and hint.platform:
+            platform = hint.platform
+        elif is_writable:
+            if getattr(field, "is_enum", False) or getattr(field, "symbols", None):
+                platform = "select"
+            else:
+                platform = "number"
+        else:
+            platform = "sensor"
+
     clean_sn = device.serial_number.strip().lower()
     short_sn = clean_sn[-4:] if len(clean_sn) >= 4 else clean_sn
 
@@ -316,6 +356,8 @@ def generate_discovery_payload(
     state_topic = f"{base_topic}/{clean_sn}/{object_id}/state"
     command_topic = f"{base_topic}/{clean_sn}/{object_id}/set"
     availability_topic = f"{base_topic}/status"
+
+    old_sensor_topic = f"{ha_prefix}/sensor/{node_id}/{object_id}/config" if platform in ("select", "number", "switch") else None
 
     device_info = get_device_info(device, gateway_device=gateway_device)
 
@@ -338,56 +380,115 @@ def generate_discovery_payload(
     }
 
     if is_compound:
-        if field.ha_device_class:
-            payload["device_class"] = field.ha_device_class
-        if field.ha_state_class:
-            payload["state_class"] = field.ha_state_class
-        if field.ha_unit or field.units:
-            payload["unit_of_measurement"] = field.ha_unit or field.units
-        if platform in ("select", "number") and field.is_writable:
-            payload["command_topic"] = command_topic
-        if (platform == "select" or getattr(field, "ha_device_class", None) == "enum") and getattr(field, "ha_options", None):
-            payload["options"] = field.ha_options
-    elif field.ha_hint:
-        hint = field.ha_hint
-        if hint.device_class:
-            payload["device_class"] = hint.device_class
-        if hint.state_class:
-            payload["state_class"] = hint.state_class
-        if hint.unit_of_measurement:
-            payload["unit_of_measurement"] = hint.unit_of_measurement
-        if hint.entity_category:
-            payload["entity_category"] = hint.entity_category
-        if hint.icon:
-            payload["icon"] = hint.icon
-        if (platform == "select" or hint.device_class == "enum") and hint.options:
-            payload["options"] = hint.options
         if platform == "select":
             payload["command_topic"] = command_topic
+            if getattr(field, "ha_options", None):
+                payload["options"] = field.ha_options
+            if getattr(field, "entity_category", None):
+                payload["entity_category"] = field.entity_category
         elif platform == "number":
             payload["command_topic"] = command_topic
             payload["mode"] = "auto"
+            if field.ha_unit or field.units:
+                payload["unit_of_measurement"] = field.ha_unit or field.units
+            if field.ha_device_class:
+                payload["device_class"] = field.ha_device_class
+        else:
+            if field.ha_device_class:
+                payload["device_class"] = field.ha_device_class
+            if field.ha_state_class:
+                payload["state_class"] = field.ha_state_class
+            if field.ha_unit or field.units:
+                payload["unit_of_measurement"] = field.ha_unit or field.units
+            if (platform == "select" or getattr(field, "ha_device_class", None) == "enum") and getattr(field, "ha_options", None):
+                payload["options"] = field.ha_options
+    elif field.ha_hint:
+        hint = field.ha_hint
+        if platform == "select":
+            payload["command_topic"] = command_topic
+            if hint.options:
+                payload["options"] = hint.options
+            elif getattr(field, "symbols", None):
+                payload["options"] = [
+                    s.name if hasattr(s, "name") else s["name"]
+                    for s in sorted(field.symbols, key=lambda x: getattr(x, "value", x.get("value") if isinstance(x, dict) else 0))
+                ]
+            if hint.entity_category:
+                payload["entity_category"] = hint.entity_category
+        elif platform == "number":
+            payload["command_topic"] = command_topic
+            payload["mode"] = "auto"
+            if hint.unit_of_measurement or field.units:
+                payload["unit_of_measurement"] = hint.unit_of_measurement or field.units
+            if hint.device_class:
+                payload["device_class"] = hint.device_class
             if hint.min_value is not None:
                 payload["min"] = hint.min_value
             if hint.max_value is not None:
                 payload["max"] = hint.max_value
             if hint.step is not None:
                 payload["step"] = hint.step
+            if hint.entity_category:
+                payload["entity_category"] = hint.entity_category
+        else:
+            if hint.device_class:
+                payload["device_class"] = hint.device_class
+            if hint.state_class:
+                payload["state_class"] = hint.state_class
+            if hint.unit_of_measurement or field.units:
+                payload["unit_of_measurement"] = hint.unit_of_measurement or field.units
+            if hint.entity_category:
+                payload["entity_category"] = hint.entity_category
+            if hint.icon:
+                payload["icon"] = hint.icon
+            if hint.device_class == "enum" and hint.options:
+                payload["options"] = hint.options
+    elif is_writable:
+        if platform == "select":
+            payload["command_topic"] = command_topic
+            if getattr(field, "symbols", None):
+                payload["options"] = [
+                    s.name if hasattr(s, "name") else s["name"]
+                    for s in sorted(field.symbols, key=lambda x: getattr(x, "value", x.get("value") if isinstance(x, dict) else 0))
+                ]
+        elif platform == "number":
+            payload["command_topic"] = command_topic
+            payload["mode"] = "auto"
+            if field.units:
+                payload["unit_of_measurement"] = field.units
     elif field.units:
         payload["unit_of_measurement"] = field.units
+
+    precision = None
+    if platform == "sensor":
+        if is_compound:
+            precision = getattr(field, "ha_suggested_display_precision", None) or get_suggested_precision(
+                field.ha_unit or field.units, field.ha_device_class
+            )
+        elif field.ha_hint:
+            precision = getattr(field.ha_hint, "suggested_display_precision", None) or get_suggested_precision(
+                field.ha_hint.unit_of_measurement or field.units, field.ha_hint.device_class
+            )
+        elif field.units:
+            precision = get_suggested_precision(field.units)
+
+        if precision is not None:
+            payload["suggested_display_precision"] = precision
 
     attributes_topic = None
     if getattr(field, "is_bitfield", False) or (getattr(field, "point_type", "") or "").startswith("bitfield"):
         attributes_topic = f"{base_topic}/{clean_sn}/{object_id}/attributes"
         payload["json_attributes_topic"] = attributes_topic
-        if field.is_writable:
+        if is_writable:
             payload["command_topic"] = command_topic
 
     return {
         "config_topic": config_topic,
         "state_topic": state_topic,
         "attributes_topic": attributes_topic,
-        "command_topic": command_topic if field.is_writable else None,
+        "command_topic": command_topic if is_writable else None,
+        "old_sensor_topic": old_sensor_topic,
+        "suggested_display_precision": precision,
         "availability_topic": availability_topic,
         "platform": platform,
         "payload": payload,

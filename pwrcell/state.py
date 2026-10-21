@@ -109,6 +109,7 @@ class CompoundFieldView:
     ha_state_class: Optional[str] = None
     ha_unit: Optional[str] = None
     ha_options: Optional[List[str]] = None
+    ha_suggested_display_precision: Optional[int] = None
     is_compound: bool = True
     model_id: Optional[int] = None
     model_name: str = "compound"
@@ -541,7 +542,17 @@ class StateStore:
             match_pct = max(0.0, 100.0 - (delta / denom * 100.0))
 
         key = f"{target_dev.device_type}.compound.{m.id}"
-        is_writable = (mb_field.is_writable if mb_field else False)
+        is_writable = False
+        if m.id == "system_mode":
+            is_writable = True
+        elif mb_field and mb_field.is_writable:
+            is_writable = True
+        else:
+            for cand_key in candidates:
+                pt_def = self.catalog.get_point_for_field(cand_key) if self.catalog else None
+                if pt_def and pt_def.is_writable:
+                    is_writable = True
+                    break
 
         options = None
         if m.id == "system_mode":
@@ -549,6 +560,42 @@ class StateStore:
             options = sorted(list(set(OPERATING_MODES.keys())))
         elif mb_field and mb_field.ha_hint and mb_field.ha_hint.options:
             options = mb_field.ha_hint.options
+        elif is_writable:
+            for cand_key in candidates:
+                pt_def = self.catalog.get_point_for_field(cand_key) if self.catalog else None
+                if pt_def and pt_def.symbols:
+                    options = [s.name for s in sorted(pt_def.symbols, key=lambda x: x.value)]
+                    break
+
+        ha_platform = m.ha_platform
+        ha_device_class = m.ha_device_class
+        ha_state_class = m.ha_state_class
+        if is_writable:
+            if options or m.ha_device_class == "enum" or m.id == "system_mode":
+                ha_platform = "select"
+                ha_device_class = None
+                ha_state_class = None
+            elif m.unit and m.unit != "":
+                ha_platform = "number"
+                ha_state_class = None
+
+        precision = None
+        if ha_platform == "sensor":
+            u = (m.unit or (mb_field.units if mb_field else (mqtt_field.units if mqtt_field else "")) or "").strip()
+            if u in ("W", "VA", "VAr", "VAR", "Wh"):
+                precision = 0
+            elif u in ("kWh", "Hz"):
+                precision = 2
+            elif u in ("V", "A", "%", "C", "°C", "kW"):
+                precision = 1
+            elif ha_device_class == "power":
+                precision = 0
+            elif ha_device_class == "energy":
+                precision = 2 if "k" in u.lower() else 0
+            elif ha_device_class in ("voltage", "current", "battery", "temperature"):
+                precision = 1
+            elif ha_device_class == "frequency":
+                precision = 2
 
         return CompoundFieldView(
             key=key,
@@ -575,11 +622,12 @@ class StateStore:
             modbus_candidates=candidates,
             delta=delta,
             match_pct=match_pct,
-            ha_platform=m.ha_platform,
-            ha_device_class=m.ha_device_class,
-            ha_state_class=m.ha_state_class,
+            ha_platform=ha_platform,
+            ha_device_class=ha_device_class,
+            ha_state_class=ha_state_class,
             ha_unit=m.unit,
             ha_options=options,
+            ha_suggested_display_precision=precision,
         )
 
     def get_compound_views(self, device_sn: Optional[str] = None) -> List[CompoundFieldView]:

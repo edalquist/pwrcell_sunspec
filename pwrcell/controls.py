@@ -146,20 +146,50 @@ class ControlDispatcher:
         return int_mode
 
     def write_field(self, field_key: str, new_value: Any) -> Any:
-        """Write any writable field by key (e.g. 'rebus_beacon.REbus_dir.SysMd').
+        """Write any writable field by key (e.g. 'rebus_beacon.REbus_dir.SysMd', 'inverter.compound.system_mode').
         
         Restricts inputs based on the field descriptor from the SunSpec metamodel catalog.
         """
         target_field = None
         target_dev = None
 
-        # Handle system mode specifically
-        if field_key.endswith(".SysMd") or field_key in ("inverter.live.system_mode", "system_mode"):
+        # Handle system mode specifically (raw or compound)
+        if (
+            field_key.endswith(".SysMd")
+            or field_key.endswith(".system_mode")
+            or field_key in ("inverter.live.system_mode", "system_mode", "inverter.compound.system_mode")
+        ):
             self.set_system_mode(new_value)
             for dev in self.state_store.devices.values():
                 if field_key in dev.fields:
                     return dev.fields[field_key].value
+            c_view = self.state_store.get_compound_view("system_mode")
+            if c_view:
+                return c_view.latest_value
             return new_value
+
+        # Handle other compound fields
+        if ".compound." in field_key:
+            mapping_id = field_key.split(".compound.", 1)[-1]
+            c_view = self.state_store.get_compound_view(mapping_id)
+            if not c_view:
+                raise KeyError(f"Compound field '{field_key}' not found in state store")
+            if not c_view.is_writable:
+                raise PermissionError(f"Compound field '{field_key}' is read-only")
+            target_mb_key = c_view.modbus_key
+            if not target_mb_key:
+                for cand in c_view.modbus_candidates:
+                    pt = self.catalog.get_point_for_field(cand) if self.catalog else None
+                    if pt and pt.is_writable:
+                        target_mb_key = cand
+                        break
+            if not target_mb_key:
+                raise PermissionError(f"Compound field '{field_key}' has no writable modbus target point")
+            res = self.write_field(target_mb_key, new_value)
+            updated_c = self.state_store.get_compound_view(mapping_id)
+            if updated_c:
+                self.state_store.notify_compound_change(updated_c)
+            return res
 
         for dev in self.state_store.devices.values():
             if field_key in dev.fields:
@@ -194,7 +224,15 @@ class ControlDispatcher:
             parts = field_key.split(".")
             group_name = parts[1] if len(parts) > 2 else ""
             model_def = self.catalog.get_model_by_name(group_name)
-            model_id = model_def.model_id if model_def else (point_def.model_id if hasattr(point_def, "model_id") else None)
+            model_id = (
+                getattr(target_field, "model_id", None)
+                or (model_def.model_id if model_def else (point_def.model_id if hasattr(point_def, "model_id") else None))
+            )
+            if not model_id and group_name.startswith("model_"):
+                try:
+                    model_id = int(group_name[6:])
+                except ValueError:
+                    pass
 
             if model_id:
                 device_tcp = self.modbus_client.get_or_create_device(target_dev.slave_id)

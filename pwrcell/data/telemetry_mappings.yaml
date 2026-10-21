@@ -38,8 +38,8 @@ mappings:
   transform: none
   transform_desc: ''
   description: PWRcell operating mode (Grid Tie, Self Supply, Clean Backup, Priority Backup, Sell)
-  ha_platform: sensor
-  ha_device_class: enum
+  ha_platform: select
+  ha_device_class: null
   ha_state_class: null
 
 - id: battery_power

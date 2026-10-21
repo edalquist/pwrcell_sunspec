@@ -1,6 +1,8 @@
 """Unit tests for pwrcell.bridge HomeAssistantBridge."""
 
 import json
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import MagicMock
 
@@ -12,14 +14,17 @@ from pwrcell.ha import generate_discovery_payload
 class TestHomeAssistantBridge(unittest.TestCase):
 
     def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.topics_file = Path(self.tmp_dir.name) / ".ha_published_topics.json"
         self.client = PwrcellClient(is_mock=True)
         self.client.start()
-        self.bridge = HomeAssistantBridge(client=self.client)
+        self.bridge = HomeAssistantBridge(client=self.client, published_topics_path=self.topics_file)
         self.mock_mqttc = MagicMock()
         self.bridge._mqttc = self.mock_mqttc
 
     def tearDown(self):
         self.client.stop()
+        self.tmp_dir.cleanup()
 
     def test_publish_discovery_pre_populates_unpolled_devices(self):
         """Verify that devices without pre-existing polled fields (e.g. PV Links) have discovery published."""
@@ -50,6 +55,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
         payload = json.loads(matching_calls[0][0][1])
         self.assertEqual(payload["device_class"], "power")
         self.assertEqual(payload["unit_of_measurement"], "W")
+        self.assertEqual(payload.get("suggested_display_precision"), 0)
         self.assertEqual(payload["device"]["name"], "PWRcell PV Link (K_01)")
 
     def test_on_field_update_auto_discovers_unseen_field(self):
@@ -77,6 +83,136 @@ class TestHomeAssistantBridge(unittest.TestCase):
         topics_published = [call[0][0] for call in self.mock_mqttc.publish.call_args_list]
         self.assertIn(expected_config_topic, topics_published)
         self.assertIn("pwrcell/0001000714e9/inverter_a/state", topics_published)
+
+    def test_deduplication_suppresses_raw_field_discovery(self):
+        """Verify that when a compound field is active, the backing raw live field is suppressed and cleared."""
+        inv = self.client.state.get_inverter()
+        self.assertIsNotNone(inv)
+        sn = inv.serial_number
+
+        # Select live system mode, which matches compound system_mode via mqtt_key
+        self.bridge.selected_field_keys = [f"{sn}:inverter.live.system_mode"]
+        self.bridge.publish_discovery()
+
+        published_topics_with_payload = {
+            call[0][0]: call[0][1] for call in self.mock_mqttc.publish.call_args_list
+        }
+
+        compound_config_topic = f"homeassistant/select/pwrcell_{sn.lower()}/compound_system_mode/config"
+        raw_config_topic = f"homeassistant/sensor/pwrcell_{sn.lower()}/live_system_mode/config"
+
+        # Compound discovery config must be published with non-empty payload
+        self.assertIn(compound_config_topic, published_topics_with_payload)
+        self.assertNotEqual(published_topics_with_payload[compound_config_topic], "")
+
+        # Raw discovery config must be suppressed / cleared with empty payload to delete from HA
+        self.assertIn(raw_config_topic, published_topics_with_payload)
+        self.assertEqual(published_topics_with_payload[raw_config_topic], "")
+
+    def test_deduplication_suppresses_raw_field_update(self):
+        """Verify that _on_field_update does not publish state for a suppressed raw field."""
+        inv = self.client.state.get_inverter()
+        self.assertIsNotNone(inv)
+        sn = inv.serial_number
+
+        self.client.state.subscribe(self.bridge._on_field_update)
+        self.bridge.selected_field_keys = [f"{sn}:inverter.live.system_mode"]
+        self.bridge.publish_discovery()
+        self.mock_mqttc.publish.reset_mock()
+
+        # Update raw live field
+        self.client.state.set_field(
+            device_sn=sn,
+            name="system_mode",
+            sub_group="live",
+            value="Clean Backup",
+        )
+
+        raw_state_topic = f"pwrcell/{sn.lower()}/live_system_mode/state"
+        published_topics = [call[0][0] for call in self.mock_mqttc.publish.call_args_list]
+        self.assertNotIn(raw_state_topic, published_topics)
+
+    def test_persistent_startup_cleanup(self):
+        """Verify that discovery topics from a previous process run are purged if no longer selected."""
+        orphaned_topic = "homeassistant/sensor/pwrcell_0001000714e9/old_deprecated_field/config"
+        # Pre-seed persisted topics file representing previous run
+        with open(self.topics_file, "w", encoding="utf-8") as f:
+            json.dump([orphaned_topic], f)
+
+        # Start a brand new bridge instance pointing to this topics file
+        new_bridge = HomeAssistantBridge(client=self.client, published_topics_path=self.topics_file)
+        mock_mqttc = MagicMock()
+        new_bridge._mqttc = mock_mqttc
+        new_bridge.selected_field_keys = ["0001000714E9:inverter.inverter.A"]
+
+        # Run discovery
+        new_bridge.publish_discovery()
+
+        # The orphaned topic must have received an empty retained publish to remove it
+        published_calls = {call[0][0]: call[0][1] for call in mock_mqttc.publish.call_args_list}
+        self.assertIn(orphaned_topic, published_calls)
+        self.assertEqual(published_calls[orphaned_topic], "")
+
+        # The persisted topics file must now be updated without the orphaned topic
+        with open(self.topics_file, "r", encoding="utf-8") as f:
+            persisted = json.load(f)
+        self.assertNotIn(orphaned_topic, persisted)
+        self.assertIn("homeassistant/sensor/pwrcell_0001000714e9/inverter_a/config", persisted)
+
+    def test_compound_write_command_execution(self):
+        """Verify that incoming MQTT commands on compound command topics execute writes."""
+        inv = self.client.state.get_inverter()
+        sn = inv.serial_number
+
+        self.bridge.selected_field_keys = [f"{sn}:inverter.live.system_mode"]
+        self.bridge.publish_discovery()
+
+        cmd_topic = f"pwrcell/{sn.lower()}/compound_system_mode/set"
+        self.assertIn(cmd_topic, self.bridge._command_topic_to_field)
+
+        # Simulate incoming command message
+        msg = MagicMock()
+        msg.topic = cmd_topic
+        msg.payload = b"PRIORITY_BACKUP"
+
+        self.bridge._on_message(self.mock_mqttc, None, msg)
+
+        # Allow worker thread to execute
+        import time
+        time.sleep(0.5)
+
+        c_view = self.client.state.get_compound_view("system_mode")
+        self.assertEqual(c_view.latest_value, "PRIORITY_BACKUP")
+
+    def test_suggested_display_precision_and_state_formatting(self):
+        """Verify that suggested_display_precision is added to discovery payload and published states are formatted cleanly."""
+        inv = self.client.state.get_inverter()
+        sn = inv.serial_number
+
+        self.bridge.selected_field_keys = [f"{sn}:inverter.inverter.A"]
+        self.bridge.publish_discovery()
+
+        config_topic = f"homeassistant/sensor/pwrcell_{sn.lower()}/inverter_a/config"
+        matching_call = next(call for call in self.mock_mqttc.publish.call_args_list if call[0][0] == config_topic)
+        payload = json.loads(matching_call[0][1])
+        # Current in Amperes has precision 1
+        self.assertEqual(payload.get("suggested_display_precision"), 1)
+
+        # Update field with noisy float
+        self.client.state.subscribe(self.bridge._on_field_update)
+        self.mock_mqttc.publish.reset_mock()
+        self.client.state.set_field(
+            device_sn=sn,
+            name="A",
+            sub_group="inverter",
+            value=12.345678,
+            units="A",
+        )
+
+        state_topic = f"pwrcell/{sn.lower()}/inverter_a/state"
+        state_call = next(call for call in self.mock_mqttc.publish.call_args_list if call[0][0] == state_topic)
+        # Should be formatted to 1 decimal place: "12.3"
+        self.assertEqual(state_call[0][1], "12.3")
 
 
 if __name__ == "__main__":

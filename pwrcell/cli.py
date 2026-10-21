@@ -165,6 +165,30 @@ def cmd_export_default_config(args):
         sys.exit(1)
 
 
+def cmd_clean_discovery(args, config: AppConfig):
+    from .clean_discovery import purge_pwrcell_discovery_topics
+    from .config import MqttConfig
+    mqtt_cfg = config.mqtt or MqttConfig()
+    host = args.host or mqtt_cfg.host or "127.0.0.1"
+    port = args.port or mqtt_cfg.port or 1883
+    username = args.username or mqtt_cfg.username
+    password = args.password or mqtt_cfg.password
+
+    purged = purge_pwrcell_discovery_topics(
+        broker_host=host,
+        broker_port=port,
+        username=username,
+        password=password,
+        discovery_prefix=args.prefix,
+        timeout=args.timeout,
+        dry_run=args.dry_run,
+        match_exact_origin=args.exact_origin,
+        clear_cache=not args.no_clear_cache,
+    )
+    action = "Identified" if args.dry_run else "Purged"
+    print(f"\nFinished: {action} {len(purged)} entities.")
+
+
 def main():
     parser = argparse.ArgumentParser(prog="pwrcell", description="Generac PWRcell v3 Client & Explorer")
     parser.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
@@ -220,6 +244,31 @@ def main():
     sub_export.add_argument("--source", type=str, default=None, help="Source config path (default: ha_config.yaml)")
     sub_export.add_argument("--target", type=str, default=None, help="Target default config path (default: ha_default_config.yaml)")
 
+    # clean-discovery
+    sub_clean = subparsers.add_parser(
+        "clean-discovery",
+        help="Purge all Home Assistant MQTT discovery topics matching PWRcell SunSpec",
+    )
+    sub_clean.add_argument("--host", type=str, default=None, help="MQTT broker host")
+    sub_clean.add_argument("--port", type=int, default=None, help="MQTT broker port")
+    sub_clean.add_argument("--username", "-u", type=str, default=None, help="MQTT broker username")
+    sub_clean.add_argument("--password", "-p", type=str, default=None, help="MQTT broker password")
+    sub_clean.add_argument("--prefix", type=str, default="homeassistant", help="HA discovery prefix (default: homeassistant)")
+    sub_clean.add_argument("--timeout", type=float, default=4.0, help="Wait timeout in seconds for retained messages")
+    sub_clean.add_argument("--dry-run", action="store_true", default=False, help="Show topics without deleting")
+    sub_clean.add_argument(
+        "--exact-origin",
+        action="store_true",
+        default=False,
+        help="Match exact origin dict instead of matching origin name 'PWRcell SunSpec'",
+    )
+    sub_clean.add_argument(
+        "--no-clear-cache",
+        action="store_true",
+        default=False,
+        help="Do not delete .ha_published_topics.json cache file",
+    )
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -248,6 +297,8 @@ def main():
         cmd_status(args, config)
     elif args.subcommand == "export-default-config":
         cmd_export_default_config(args)
+    elif args.subcommand == "clean-discovery":
+        cmd_clean_discovery(args, config)
 
 
 if __name__ == "__main__":
