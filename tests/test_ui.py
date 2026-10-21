@@ -527,7 +527,7 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertEqual(len(pv_links), 5)
         for pv in pv_links:
             sn = pv.serial_number.strip().upper()
-            self.assertIn(f"{sn}:pv_link.string_combiner.DCW", qualified)
+            self.assertIn(f"{sn}:pv_link.REbus_status.V", qualified)
             self.assertIn(f"{sn}:pv_link.REbus_status.P", qualified)
 
     def test_export_default_config_api_and_helpers(self):
