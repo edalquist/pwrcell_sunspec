@@ -386,7 +386,7 @@ class ModelCatalog:
             logger.info("Loaded %d models from %s", len(self._models_by_id), target_zip)
 
     def _load_from_dir(self, directory: Path):
-        for json_file in directory.glob("model_*.json"):
+        for json_file in sorted(directory.glob("model_*.json"), key=lambda p: int(p.stem.split('_')[1]) if p.stem.split('_')[1].isdigit() else 0):
             try:
                 with open(json_file, "r", encoding="utf-8") as f:
                     raw = json.load(f)
@@ -396,14 +396,14 @@ class ModelCatalog:
 
     def _load_from_zip(self, zip_path: Path):
         with zipfile.ZipFile(zip_path, "r") as zf:
-            for item in zf.namelist():
-                if item.startswith("sunspec-models/json/model_") and item.endswith(".json"):
-                    try:
-                        with zf.open(item) as f:
-                            raw = json.load(f)
-                            self._parse_model_json(raw)
-                    except Exception as e:
-                        logger.debug("Failed to parse zip item %s: %s", item, e)
+            items = [i for i in zf.namelist() if i.startswith("sunspec-models/json/model_") and i.endswith(".json")]
+            for item in sorted(items):
+                try:
+                    with zf.open(item) as f:
+                        raw = json.load(f)
+                        self._parse_model_json(raw)
+                except Exception as e:
+                    logger.debug("Failed to parse zip item %s: %s", item, e)
 
     def _parse_model_json(self, raw: dict):
         model_id = raw.get("id")
@@ -538,7 +538,10 @@ class ModelCatalog:
                     pt_def.label = f"Scale Factor: {clean_sf}"
 
         self._models_by_id[int(model_id)] = model_def
-        self._models_by_name[model_name] = model_def
+        # Prefer vendor models (64000+) if names collide with draft/standard models
+        existing = self._models_by_name.get(model_name)
+        if existing is None or int(model_id) >= 64000:
+            self._models_by_name[model_name] = model_def
         self._models_by_name[f"model_{model_id}"] = model_def
         self._models_by_name[str(model_id)] = model_def
 

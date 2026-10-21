@@ -6,7 +6,6 @@ url: "https://github.com/edalquist/pwrcell_sunspec"
 arch:
   - aarch64
   - amd64
-  - armv7
 startup: services
 boot: auto
 ingress: true
