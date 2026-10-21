@@ -2,8 +2,6 @@
 # Generated from existing ha_config.yaml (hardware serial numbers stripped)
 
 selected_fields:
-- battery.DCB105_warranty.I
-- battery.DCB105_warranty.THSin
 - battery.REbus_status.E
 - battery.REbus_status.I
 - battery.REbus_status.P
@@ -70,7 +68,3 @@ selected_fields:
 - pv_link.REbus_status.St
 - pv_link.REbus_status.T
 - pv_link.REbus_status.V
-- pv_link.pvlink_status.Iin
-- pv_link.pvlink_status.Vin
-- pv_link.string_combiner.DCW
-- pv_link.string_combiner.DCWh
