@@ -1,8 +1,9 @@
 name: "Generac PWRcell"
-version: "3.0.1"
+version: "3.0.2"
 slug: "pwrcell"
 description: "Generac PWRcell SunSpec Gateway, Home Assistant MQTT Bridge & Web Explorer"
 url: "https://github.com/edalquist/pwrcell_sunspec"
+init: false
 arch:
   - aarch64
   - amd64
