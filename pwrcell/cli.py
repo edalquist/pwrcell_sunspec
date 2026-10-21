@@ -22,9 +22,20 @@ from .ui.server import run_explorer
 
 
 def cmd_explore(args, config: AppConfig):
-    print(f"Starting PWRcell Web Explorer (mock={args.mock}) at http://{args.host}:{args.port}")
+    publish = getattr(args, "publish", False)
+    print(f"Starting PWRcell Web Explorer (mock={args.mock}, publish={publish}) at http://{args.host}:{args.port}")
     with create_client(config=config, mock=args.mock) as client:
-        run_explorer(client, host=args.host, port=args.port, debug=args.debug)
+        bridge = None
+        if publish:
+            bridge = HomeAssistantBridge(client=client)
+            client.bridge = bridge
+            bridge.start()
+            print("PWRcell Home Assistant MQTT Bridge started.")
+        try:
+            run_explorer(client, host=args.host, port=args.port, debug=args.debug)
+        finally:
+            if bridge:
+                bridge.stop()
 
 
 def cmd_run(args, config: AppConfig):
@@ -167,6 +178,7 @@ def main():
     sub_explore.add_argument("--port", type=int, default=5555, help="HTTP bind port")
     sub_explore.add_argument("--debug", action="store_true", default=False, help="Enable Flask debug")
     sub_explore.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
+    sub_explore.add_argument("--publish", action="store_true", default=False, help="Also start and publish to Home Assistant MQTT bridge")
 
     # compare
     sub_compare = subparsers.add_parser("compare", help="Compare live MQTT telemetry with candidate Modbus registers")
