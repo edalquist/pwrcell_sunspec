@@ -12,8 +12,10 @@ if [ -f "$OPTIONS_FILE" ]; then
     BEACON_HOST=$(jq -r '.beacon_host // "192.168.0.73"' "$OPTIONS_FILE")
     BEACON_PORT=$(jq -r '.beacon_port // 22' "$OPTIONS_FILE")
     BEACON_USER=$(jq -r '.beacon_user // "root"' "$OPTIONS_FILE")
+    BEACON_PASS=$(jq -r '.beacon_password // ""' "$OPTIONS_FILE")
     SSH_KEY_FILE=$(jq -r '.ssh_key_file // ""' "$OPTIONS_FILE")
     SSH_KEY=$(jq -r '.ssh_key // ""' "$OPTIONS_FILE")
+    SSH_PASSPHRASE=$(jq -r '.ssh_key_passphrase // ""' "$OPTIONS_FILE")
 
     MQTT_HOST=$(jq -r '.mqtt_host // "core-mosquitto"' "$OPTIONS_FILE")
     MQTT_PORT=$(jq -r '.mqtt_port // 1883' "$OPTIONS_FILE")
@@ -30,11 +32,9 @@ if [ -f "$OPTIONS_FILE" ]; then
 
     # Set up SSH private key
     ID_FILE=""
-    if [ -n "$SSH_KEY" ] && [ "$SSH_KEY" != "null" ] && [ "$SSH_KEY" != "" ]; then
-        echo "[INFO] Configuring SSH private key from add-on options..."
-        mkdir -p /root/.ssh
-        echo "$SSH_KEY" > /root/.ssh/id_rsa_pwrcell
-        chmod 600 /root/.ssh/id_rsa_pwrcell
+    python3 -m pwrcell.setup_key "$OPTIONS_FILE" || true
+
+    if [ -f "/root/.ssh/id_rsa_pwrcell" ] && [ -s "/root/.ssh/id_rsa_pwrcell" ]; then
         ID_FILE="/root/.ssh/id_rsa_pwrcell"
     elif [ -n "$SSH_KEY_FILE" ] && [ "$SSH_KEY_FILE" != "null" ] && [ -f "$SSH_KEY_FILE" ]; then
         echo "[INFO] Using SSH key file at $SSH_KEY_FILE"
@@ -61,6 +61,8 @@ pwrcell:
     port: $BEACON_PORT
     username: "$BEACON_USER"
     identity_file: "$ID_FILE"
+    password: "$BEACON_PASS"
+    key_passphrase: "$SSH_PASSPHRASE"
 mqtt:
   client_name: "pwrcell-ha"
   host: "$MQTT_HOST"

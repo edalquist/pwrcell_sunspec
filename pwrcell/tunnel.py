@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+from pathlib import Path
 import threading
 import time
 from contextlib import contextmanager
@@ -100,6 +101,24 @@ class PwrCellTunnel:
         ssh_cfg = self.config.pwrcell.ssh_tunnel
         logger.info("Opening PWRcell SSH tunnel to %s:%s", ssh_cfg.host, ssh_cfg.port)
 
+        if ssh_cfg.identity_file:
+            id_path = Path(ssh_cfg.identity_file).expanduser()
+            if not id_path.exists():
+                logger.error("SSH identity file not found at: %s", id_path)
+            else:
+                key_obj = SSHTunnelForwarder.read_private_key_file(
+                    str(id_path),
+                    pkey_password=getattr(ssh_cfg, "key_passphrase", None),
+                )
+                if key_obj is None:
+                    logger.error(
+                        "SSH identity file at %s could not be loaded as a valid private key. "
+                        "Check that the key format is valid OpenSSH/PEM and passphrase (if encrypted) is correct.",
+                        id_path,
+                    )
+                else:
+                    logger.info("Successfully loaded SSH private key from %s (%s)", id_path, type(key_obj).__name__)
+
         def _try_bind_and_start(mod_p: Optional[int], mqtt_p: Optional[int]):
             if mod_p and mqtt_p:
                 local_binds = [
@@ -115,7 +134,9 @@ class PwrCellTunnel:
             srv = SSHTunnelForwarder(
                 (ssh_cfg.host, ssh_cfg.port),
                 ssh_username=ssh_cfg.username,
+                ssh_password=getattr(ssh_cfg, "password", None) or None,
                 ssh_pkey=ssh_cfg.identity_file,
+                ssh_private_key_password=getattr(ssh_cfg, "key_passphrase", None) or None,
                 local_bind_addresses=local_binds,
                 remote_bind_addresses=[
                     ("127.0.0.1", 502),   # ModBus

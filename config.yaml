@@ -1,5 +1,5 @@
 name: "Generac PWRcell"
-version: "3.0.3"
+version: "3.0.4"
 slug: "pwrcell"
 description: "Generac PWRcell SunSpec Gateway, Home Assistant MQTT Bridge & Web Explorer"
 url: "https://github.com/edalquist/pwrcell_sunspec"
@@ -27,8 +27,10 @@ schema:
   beacon_host: str
   beacon_port: int?
   beacon_user: str?
+  beacon_password: password?
   ssh_key_file: str?
   ssh_key: password?
+  ssh_key_passphrase: password?
   mqtt_host: str?
   mqtt_port: int?
   mqtt_username: str?
@@ -44,8 +46,10 @@ options:
   beacon_host: "192.168.0.73"
   beacon_port: 22
   beacon_user: "root"
+  beacon_password: ""
   ssh_key_file: "/share/pwrcell_ssh_key"
   ssh_key: ""
+  ssh_key_passphrase: ""
   mqtt_host: "core-mosquitto"
   mqtt_port: 1883
   mqtt_username: ""

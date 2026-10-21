@@ -61,6 +61,8 @@ class SshTunnel:
   port: int = 22
   username: str = "root"
   identity_file: str | None = None
+  password: str | None = None
+  key_passphrase: str | None = None
 
 
 @dataclasses.dataclass
