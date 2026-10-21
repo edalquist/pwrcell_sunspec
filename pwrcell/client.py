@@ -350,6 +350,11 @@ class PwrcellClient:
 
         logger.info("Completed background initial SunSpec model poll across devices")
         self.poller.refresh_model_resolutions()
+        if getattr(self, "bridge", None):
+            try:
+                self.bridge.publish_discovery()
+            except Exception as e:
+                logger.debug("Error refreshing HA discovery after initial model poll: %s", e)
 
     def poll_telemetry_models_live(self):
         """Quickly read ONLY the models relevant to live power, energy, and telemetry comparisons."""

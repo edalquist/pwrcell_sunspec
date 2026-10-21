@@ -154,6 +154,13 @@ class HomeAssistantBridge:
         if not self._mqttc:
             return
 
+        if not self.selected_field_keys:
+            raw_keys = load_ha_config()
+            self.selected_field_keys = qualify_legacy_ha_config(raw_keys, self.client.state)
+            if not self.selected_field_keys:
+                self.selected_field_keys = get_recommended_field_keys(self.client.state)
+            self._selected_set = set(self.selected_field_keys)
+
         gateway = self.client.state.get_beacon() or self.client.state.get_inverter()
         published_count = 0
 
@@ -187,7 +194,21 @@ class HomeAssistantBridge:
                             self._mqttc.publish(payload_info["state_topic"], str(c_view.latest_value), retain=True)
 
                 # 2. Publish selected raw fields
-                for f_key, field in dev.fields.items():
+                # Pre-populate metadata for any selected fields not yet polled
+                for sel_key in self.selected_field_keys:
+                    if ":" in sel_key:
+                        target_sn, f_path = sel_key.split(":", 1)
+                        if target_sn.strip().upper() != dev.serial_number.strip().upper():
+                            continue
+                    else:
+                        f_path = sel_key
+                        if not f_path.startswith(f"{dev.device_type}."):
+                            continue
+
+                    if f_path not in dev.fields and not f_path.startswith(f"{dev.device_type}.compound."):
+                        self.client.state.ensure_field_definition(dev.serial_number, f_path)
+
+                for f_key, field in list(dev.fields.items()):
                     if is_field_selected(f_key, dev.serial_number, self.selected_field_keys):
                         payload_info = generate_discovery_payload(
                             field,
@@ -267,6 +288,18 @@ class HomeAssistantBridge:
             base_topic=self.base_topic,
             ha_prefix=self.discovery_prefix,
         )
+
+        config_topic = payload_info["config_topic"]
+        if config_topic not in self._published_discovery_topics:
+            config_payload = json.dumps(payload_info["payload"])
+            self._mqttc.publish(config_topic, config_payload, retain=True)
+            self._published_discovery_topics.add(config_topic)
+            cmd_topic = payload_info.get("command_topic")
+            if cmd_topic:
+                with self._lock:
+                    self._command_topic_to_field[cmd_topic] = field
+                self._mqttc.subscribe(cmd_topic)
+
         self._publish_field_state(field, payload_info, retain=False)
 
     def _on_compound_update(self, c_view: Any):
@@ -286,6 +319,18 @@ class HomeAssistantBridge:
             base_topic=self.base_topic,
             ha_prefix=self.discovery_prefix,
         )
+
+        config_topic = payload_info["config_topic"]
+        if config_topic not in self._published_discovery_topics:
+            config_payload = json.dumps(payload_info["payload"])
+            self._mqttc.publish(config_topic, config_payload, retain=True)
+            self._published_discovery_topics.add(config_topic)
+            cmd_topic = payload_info.get("command_topic")
+            if cmd_topic:
+                with self._lock:
+                    self._command_topic_to_field[cmd_topic] = c_view
+                self._mqttc.subscribe(cmd_topic)
+
         state_topic = payload_info["state_topic"]
         self._mqttc.publish(state_topic, str(c_view.latest_value))
 

@@ -782,6 +782,90 @@ class StateStore:
 
         return field_obj
 
+    def ensure_field_definition(self, device_sn: str, field_key: str) -> Optional[StateField]:
+        """Ensure a StateField metadata definition exists for a device (resolving from catalog if not yet polled)."""
+        dev = self.devices.get(device_sn)
+        if not dev:
+            return None
+
+        if field_key in dev.fields:
+            return dev.fields[field_key]
+
+        parts = field_key.split(".")
+        if len(parts) < 2:
+            return None
+
+        dev_type = parts[0]
+        if dev_type != dev.device_type:
+            return None
+
+        sub_group = parts[1] if len(parts) >= 3 else ""
+        name = parts[-1]
+
+        # Compound fields are handled separately by get_compound_views()
+        if sub_group == "compound":
+            return None
+
+        label = name
+        description = ""
+        units = None
+        access = "R"
+        point_type = "uint16"
+        is_enum = False
+        is_bitfield = False
+        symbols = None
+        ha_hint = None
+        model_id = None
+        model_name = sub_group
+        model_label = sub_group
+
+        if sub_group == "live":
+            label = name.replace("_", " ").title()
+            model_name = "live"
+            model_label = "Push Telemetry"
+        elif self.catalog:
+            cat_model = self.catalog.get_model_by_name(sub_group)
+            if not cat_model and sub_group.startswith("model_"):
+                try:
+                    cat_model = self.catalog.get_model(int(sub_group[6:]))
+                except ValueError:
+                    pass
+            if cat_model:
+                model_id = cat_model.model_id
+                model_name = cat_model.name
+                model_label = cat_model.label
+                cat_point = cat_model.points.get(name)
+                if cat_point:
+                    label = cat_point.label or name
+                    description = cat_point.desc or ""
+                    units = cat_point.units
+                    access = cat_point.access or "R"
+                    point_type = cat_point.type or "uint16"
+                    is_enum = cat_point.is_enum
+                    is_bitfield = cat_point.is_bitfield
+                    symbols = cat_point.symbols
+                    ha_hint = self.catalog.derive_ha_metadata(cat_point, model_id)
+
+        return self.set_field(
+            device_sn=device_sn,
+            name=name,
+            label=label,
+            description=description,
+            value=None,
+            raw_value=None,
+            units=units,
+            access=access,
+            point_type=point_type,
+            is_enum=is_enum,
+            is_bitfield=is_bitfield,
+            symbols=symbols,
+            ha_hint=ha_hint,
+            sub_group=sub_group,
+            model_id=model_id,
+            model_name=model_name,
+            model_label=model_label,
+        )
+
     def update_from_telemetry_snapshot(self, snapshot: LiveTelemetrySnapshot):
         """Ingest a push telemetry snapshot from internal MQTT."""
         inv = self.get_inverter()
