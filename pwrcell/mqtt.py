@@ -257,7 +257,20 @@ class MqttClient:
 
             def _reconnect_bg():
                 try:
-                    self.__tunnel_manager.ensure_active()
+                    reconnected = self.__tunnel_manager.ensure_active()
+                    if reconnected:
+                        new_port = self.port
+                        with self.__lock:
+                            if self.__mqttc and not getattr(self, "_stopping", False):
+                                logger.info("Tunnel active; pointing internal MQTT client to port %s", new_port)
+                                try:
+                                    self.__mqttc.disconnect()
+                                except Exception:
+                                    pass
+                                try:
+                                    self.__mqttc.connect_async(self.__tunnel_ip, new_port)
+                                except Exception as e:
+                                    logger.warning("Failed reconnecting internal MQTT to %s:%s: %s", self.__tunnel_ip, new_port, e)
                 finally:
                     with self.__lock:
                         self._reconnecting = False

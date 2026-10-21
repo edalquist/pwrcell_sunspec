@@ -51,9 +51,9 @@ mappings:
   modbus_candidates:
   - battery.model_64252.W
   - battery.model_802.W
-  transform: none
-  transform_desc: ''
-  description: Battery charge (+) or discharge (-) real power
+  transform: negate
+  transform_desc: '-1 * W (SunSpec Modbus polarity inverted: positive = battery discharge)'
+  description: Battery discharge (+) or charge (-) real power
   ha_platform: sensor
   ha_device_class: power
   ha_state_class: measurement

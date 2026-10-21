@@ -18,8 +18,10 @@ const state = {
   groupByModel: false,
   activeFields: [],
   selectedHaKeys: new Set(),
+  modifiedDeviceSerials: new Set(),
   activeFilter: 'all',
   hideScaleFactors: true,
+  hideCombinedRaw: true,
   searchQuery: '',
   isMock: false,
   eventSource: null,
@@ -45,6 +47,7 @@ const el = {
   groupByModel: document.getElementById('groupByModel'),
   filterPills: document.getElementById('filterPills'),
   hideScaleFactors: document.getElementById('hideScaleFactors'),
+  hideCombinedRaw: document.getElementById('hideCombinedRaw'),
   multiSortToggle: document.getElementById('multiSortToggle'),
   sortBar: document.getElementById('sortBar'),
   sortPills: document.getElementById('sortPills'),
@@ -58,6 +61,7 @@ const el = {
   haSelectedCount: document.getElementById('haSelectedCount'),
   btnSelectRecommended: document.getElementById('btnSelectRecommended'),
   btnDeselectAll: document.getElementById('btnDeselectAll'),
+  btnApplySameType: document.getElementById('btnApplySameType'),
   btnPreviewHA: document.getElementById('btnPreviewHA'),
   btnSaveHA: document.getElementById('btnSaveHA'),
   previewModal: document.getElementById('previewModal'),
@@ -101,8 +105,8 @@ async function initApp() {
   await Promise.all([
     fetchOverview(),
     fetchHaConfig(),
-    fetchDevices(),
   ]);
+  await fetchDevices();
   connectSSE();
 }
 
@@ -161,6 +165,10 @@ async function fetchHaConfig() {
     const data = await res.json();
     state.selectedHaKeys = new Set(data.selected_fields || []);
     updateHaCounter();
+    updateFilterCounts();
+    if (state.activeDevice) {
+      renderFieldTable();
+    }
   } catch (err) {
     console.error('Failed fetching HA config:', err);
   }
@@ -214,6 +222,20 @@ function renderDeviceSidebar() {
   });
 }
 
+// Format device type plural label
+function formatDeviceTypePlural(type) {
+  if (!type) return 'Devices';
+  switch (type) {
+    case 'pv_link': return 'PV Links';
+    case 'battery': return 'Batteries';
+    case 'inverter': return 'Inverters';
+    case 'rebus_beacon': return 'Beacons';
+    case 'icm': return 'ICMs';
+    default:
+      return type.replace('_', ' ') + 's';
+  }
+}
+
 // Select a Device
 async function selectDevice(serialNumber) {
   const dev = state.devices.find(d => d.serial_number === serialNumber);
@@ -227,16 +249,93 @@ async function selectDevice(serialNumber) {
   el.activeDeviceSlaveId.textContent = dev.slave_id ?? 'N/A';
   el.activeDeviceVersion.textContent = dev.version || 'v1.0';
 
+  if (el.btnApplySameType) {
+    const peerDevices = (state.devices || []).filter(d => d.device_type === dev.device_type);
+    if (peerDevices.length > 1) {
+      const typeLabel = formatDeviceTypePlural(dev.device_type);
+      el.btnApplySameType.style.display = 'inline-flex';
+      el.btnApplySameType.textContent = `📋 Apply to All ${typeLabel} (${peerDevices.length})`;
+      el.btnApplySameType.title = `Apply current selected fields to all ${peerDevices.length} ${typeLabel}`;
+    } else {
+      el.btnApplySameType.style.display = 'none';
+    }
+  }
+
   el.fieldTableBody.innerHTML = `<tr><td colspan="8" class="empty-state">Loading fields...</td></tr>`;
 
   try {
-    const res = await fetch(apiPath(`api/devices/${serialNumber}`));
-    const data = await res.json();
+    const [devRes, haRes] = await Promise.all([
+      fetch(apiPath(`api/devices/${serialNumber}`)),
+      fetch(apiPath('api/ha/config')),
+    ]);
+    const data = await devRes.json();
+
+    if (haRes.ok) {
+      try {
+        const haData = await haRes.json();
+        if (Array.isArray(haData.selected_fields)) {
+          const serverKeys = haData.selected_fields;
+          const unmodifiedSerials = new Set(
+            (state.devices || [])
+              .map(d => (d.serial_number || '').trim().toUpperCase())
+              .filter(sn => sn && !state.modifiedDeviceSerials.has(sn))
+          );
+
+          // Clear keys for devices that haven't been locally modified
+          for (const k of Array.from(state.selectedHaKeys)) {
+            const sn = k.includes(':') ? k.split(':')[0].trim().toUpperCase() : null;
+            if (sn && unmodifiedSerials.has(sn)) {
+              state.selectedHaKeys.delete(k);
+            }
+          }
+
+          // Merge authoritative server keys
+          serverKeys.forEach(k => {
+            const sn = k.includes(':') ? k.split(':')[0].trim().toUpperCase() : null;
+            if (!sn || unmodifiedSerials.has(sn)) {
+              state.selectedHaKeys.add(k);
+            }
+          });
+          updateHaCounter();
+        }
+      } catch (e) {
+        console.warn('Failed parsing HA config response:', e);
+      }
+    }
+
     const rawFields = Object.values(data.fields || {});
     const compoundFields = (data.compound_fields || []).map(cf => ({
       ...cf,
       is_compound: true,
     }));
+
+    // Build lookup of raw keys that are covered by compound fields on this device
+    const combinedRawKeys = new Set();
+    const compoundKeyByRaw = new Map();
+    for (const cf of compoundFields) {
+      if (cf.mqtt_key) {
+        combinedRawKeys.add(cf.mqtt_key);
+        compoundKeyByRaw.set(cf.mqtt_key, cf.key);
+      }
+      if (cf.modbus_key) {
+        combinedRawKeys.add(cf.modbus_key);
+        compoundKeyByRaw.set(cf.modbus_key, cf.key);
+      }
+      if (Array.isArray(cf.modbus_candidates)) {
+        for (const cand of cf.modbus_candidates) {
+          combinedRawKeys.add(cand);
+          compoundKeyByRaw.set(cand, cf.key);
+        }
+      }
+    }
+
+    rawFields.forEach(f => {
+      if (f.is_compound_raw || combinedRawKeys.has(f.key) || (f.mqtt_equivalent && combinedRawKeys.has(f.mqtt_equivalent))) {
+        f.is_compound_raw = true;
+        f.compound_key = f.compound_key || compoundKeyByRaw.get(f.key) || compoundKeyByRaw.get(f.mqtt_equivalent);
+      }
+    });
+
     // Compound fields first, then raw fields
     state.activeFields = [...compoundFields, ...rawFields];
     el.activeDeviceFieldCount.textContent = state.activeFields.length;
@@ -302,10 +401,49 @@ const COLUMN_LABELS = {
   type: 'Type / Platform',
 };
 
+// Helper to get device serial number for a field or fallback to active device
+function getFieldDeviceSn(f) {
+  return (f?.device_sn || state.activeDevice?.serial_number || '').trim().toUpperCase();
+}
+
+// Check if a field is selected for Home Assistant (supports device-scoped and legacy global keys)
+function isFieldSelected(f) {
+  if (!f) return false;
+  const sn = getFieldDeviceSn(f);
+  if (sn) {
+    if (state.selectedHaKeys.has(`${sn}:${f.key}`)) return true;
+    if (f.mqtt_key && state.selectedHaKeys.has(`${sn}:${f.mqtt_key}`)) return true;
+  }
+  // Fall back to legacy global key
+  if (state.selectedHaKeys.has(f.key)) return true;
+  if (f.mqtt_key && state.selectedHaKeys.has(f.mqtt_key)) return true;
+  return false;
+}
+
+// Toggle Home Assistant Field Selection (scoped by device)
+function toggleHaSelection(f, isSelected) {
+  const sn = getFieldDeviceSn(f);
+  if (sn) {
+    state.modifiedDeviceSerials.add(sn);
+  }
+  const scopedKey = sn ? `${sn}:${f.key}` : f.key;
+  const scopedMqttKey = (sn && f.mqtt_key) ? `${sn}:${f.mqtt_key}` : f.mqtt_key;
+
+  if (isSelected) {
+    state.selectedHaKeys.add(scopedKey);
+  } else {
+    state.selectedHaKeys.delete(scopedKey);
+    state.selectedHaKeys.delete(f.key);
+    if (scopedMqttKey) state.selectedHaKeys.delete(scopedMqttKey);
+    if (f.mqtt_key) state.selectedHaKeys.delete(f.mqtt_key);
+  }
+  updateHaCounter();
+  updateFilterCounts();
+}
+
 // Value extraction helpers for multi-column sorting
 function getHaSortValue(f) {
-  const isSelected = state.selectedHaKeys.has(f.key) || (f.mqtt_key && state.selectedHaKeys.has(f.mqtt_key));
-  return isSelected ? 1 : 0;
+  return isFieldSelected(f) ? 1 : 0;
 }
 
 function getModelSortValue(f) {
@@ -551,6 +689,11 @@ function renderFieldTable() {
       return false;
     }
 
+    // Hide raw MQTT / Modbus fields covered by combined telemetry
+    if (state.hideCombinedRaw && f.is_compound_raw && !state.searchQuery && state.activeFilter !== 'push' && state.activeFilter !== 'modbus' && state.activeFilter !== 'selected') {
+      return false;
+    }
+
     // Search query
     if (state.searchQuery) {
       const q = state.searchQuery.toLowerCase();
@@ -566,7 +709,7 @@ function renderFieldTable() {
       case 'compound':
         return f.is_compound;
       case 'selected':
-        return state.selectedHaKeys.has(f.key) || (f.mqtt_key && state.selectedHaKeys.has(f.mqtt_key));
+        return isFieldSelected(f);
       case 'sensor':
         return f.ha_platform === 'sensor';
       case 'writable':
@@ -605,7 +748,7 @@ function renderFieldTable() {
           : `<span class="badge-push-simple" title="Direct Push MQTT">Push</span>`);
 
     if (f.is_compound) {
-      const isChecked = state.selectedHaKeys.has(f.key) || (f.mqtt_key && state.selectedHaKeys.has(f.mqtt_key));
+      const isChecked = isFieldSelected(f);
       const latestVal = formatFieldValue(f.latest_value, f);
       const mqttVal = formatFieldValue(f.mqtt_value, f);
       const mbVal = formatFieldValue(f.modbus_value, f);
@@ -662,7 +805,7 @@ function renderFieldTable() {
         </td>
       `;
     } else {
-      const isChecked = state.selectedHaKeys.has(f.key);
+      const isChecked = isFieldSelected(f);
       const sourceClass = f.source === 'MQTT_PUSH' ? 'mqtt' : 'modbus';
       const sourceLabel = f.source === 'MQTT_PUSH' ? 'Push MQTT' : 'Modbus';
       const displayVal = formatFieldValue(f.value, f);
@@ -679,6 +822,7 @@ function renderFieldTable() {
             <div class="field-label-line">
               <span class="field-label" title="${f.description || ''}">${f.label}</span>
               ${f.mqtt_equivalent ? `<span class="badge-mqtt-linked" title="Direct Push MQTT equivalent: ${f.mqtt_equivalent}">⚡ Push MQTT</span>` : ''}
+              ${f.compound_key ? `<span class="badge-compound-linked" title="Represented by merged telemetry point: ${f.compound_key}">⚡ Merged</span>` : ''}
             </div>
             <span class="field-key">${f.key}</span>
           </div>
@@ -702,7 +846,7 @@ function renderFieldTable() {
     // Checkbox toggle
     const chk = tr.querySelector('.ha-checkbox');
     chk.addEventListener('change', (e) => {
-      toggleHaSelection(f.key, e.target.checked);
+      toggleHaSelection(f, e.target.checked);
     });
 
     // Edit button
@@ -921,23 +1065,12 @@ function updateFilterCounts() {
   if (el.counts.compound) {
     el.counts.compound.textContent = fields.filter(f => f.is_compound).length;
   }
-  el.counts.selected.textContent = fields.filter(f => state.selectedHaKeys.has(f.key) || (f.mqtt_key && state.selectedHaKeys.has(f.mqtt_key))).length;
+  el.counts.selected.textContent = fields.filter(f => isFieldSelected(f)).length;
   el.counts.sensor.textContent = fields.filter(f => f.ha_platform === 'sensor').length;
   el.counts.writable.textContent = fields.filter(f => f.is_writable).length;
   el.counts.push.textContent = fields.filter(f => f.source === 'MQTT_PUSH' && !f.is_compound).length;
   el.counts.modbus.textContent = fields.filter(f => (f.source === 'MODBUS_POLL' || f.source === 'MODBUS_CONFIG') && !f.is_compound).length;
   el.counts.scalefactor.textContent = fields.filter(f => f.is_scale_factor).length;
-}
-
-// Toggle Home Assistant Field Selection
-function toggleHaSelection(key, isSelected) {
-  if (isSelected) {
-    state.selectedHaKeys.add(key);
-  } else {
-    state.selectedHaKeys.delete(key);
-  }
-  updateHaCounter();
-  updateFilterCounts();
 }
 
 function updateHaCounter() {
@@ -1359,6 +1492,14 @@ function setupEventListeners() {
     });
   }
 
+  // Hide Combined Raw Checkbox
+  if (el.hideCombinedRaw) {
+    el.hideCombinedRaw.addEventListener('change', (e) => {
+      state.hideCombinedRaw = e.target.checked;
+      renderFieldTable();
+    });
+  }
+
   // Model Select Dropdown
   if (el.modelSelect) {
     el.modelSelect.addEventListener('change', (e) => {
@@ -1447,13 +1588,19 @@ function setupEventListeners() {
   // Select Recommended
   el.btnSelectRecommended.addEventListener('click', async () => {
     try {
-      const res = await fetch(apiPath('api/ha/recommended'));
+      const sn = state.activeDevice ? state.activeDevice.serial_number : '';
+      if (sn) {
+        state.modifiedDeviceSerials.add(sn.trim().toUpperCase());
+      }
+      const url = sn ? apiPath(`api/ha/recommended?serial_number=${encodeURIComponent(sn)}`) : apiPath('api/ha/recommended');
+      const res = await fetch(url);
       const data = await res.json();
-      (data.recommended_fields || []).forEach(k => state.selectedHaKeys.add(k));
+      const rec = data.recommended_fields || [];
+      rec.forEach(k => state.selectedHaKeys.add(k));
       updateHaCounter();
       updateFilterCounts();
       renderFieldTable();
-      showToast(`Selected ${data.recommended_fields.length} recommended entities`);
+      showToast(`Selected ${rec.length} recommended entities`);
     } catch (err) {
       console.error(err);
     }
@@ -1461,24 +1608,113 @@ function setupEventListeners() {
 
   // Deselect All on current device
   el.btnDeselectAll.addEventListener('click', () => {
-    state.activeFields.forEach(f => state.selectedHaKeys.delete(f.key));
+    if (!state.activeDevice) return;
+    const sn = (state.activeDevice.serial_number || '').trim().toUpperCase();
+    if (sn) {
+      state.modifiedDeviceSerials.add(sn);
+    }
+    state.activeFields.forEach(f => {
+      if (sn) {
+        state.selectedHaKeys.delete(`${sn}:${f.key}`);
+        if (f.mqtt_key) state.selectedHaKeys.delete(`${sn}:${f.mqtt_key}`);
+      }
+      state.selectedHaKeys.delete(f.key);
+      if (f.mqtt_key) state.selectedHaKeys.delete(f.mqtt_key);
+    });
     updateHaCounter();
     updateFilterCounts();
     renderFieldTable();
     showToast('Cleared selections on active device');
   });
 
+  // Apply selections to all devices of the same type
+  if (el.btnApplySameType) {
+    el.btnApplySameType.addEventListener('click', () => {
+      if (!state.activeDevice) return;
+      const activeDev = state.activeDevice;
+      const devType = activeDev.device_type;
+      const activeSn = (activeDev.serial_number || '').trim().toUpperCase();
+      const peerDevices = (state.devices || []).filter(d => d.device_type === devType);
+
+      if (peerDevices.length <= 1) {
+        showToast('No other devices of this type');
+        return;
+      }
+
+      // Collect all selected fields for the active device
+      const selectedFields = state.activeFields.filter(f => isFieldSelected(f));
+      const typeLabel = formatDeviceTypePlural(devType);
+
+      // Copy selections to all peer devices in state.selectedHaKeys
+      peerDevices.forEach(peer => {
+        const peerSn = (peer.serial_number || '').trim().toUpperCase();
+        if (peerSn) {
+          state.modifiedDeviceSerials.add(peerSn);
+        }
+
+        // Clear existing selections for this peer device
+        for (const k of Array.from(state.selectedHaKeys)) {
+          if (k.startsWith(`${peerSn}:`)) {
+            state.selectedHaKeys.delete(k);
+          }
+        }
+
+        // Apply selected fields to this peer device
+        selectedFields.forEach(f => {
+          state.selectedHaKeys.add(`${peerSn}:${f.key}`);
+          if (f.mqtt_key) {
+            state.selectedHaKeys.add(`${peerSn}:${f.mqtt_key}`);
+          }
+        });
+      });
+
+      // Clean up any legacy unqualified keys for this device type to prevent ambiguity
+      selectedFields.forEach(f => {
+        state.selectedHaKeys.delete(f.key);
+        if (f.mqtt_key) state.selectedHaKeys.delete(f.mqtt_key);
+      });
+
+      updateHaCounter();
+      updateFilterCounts();
+      renderFieldTable();
+
+      if (selectedFields.length === 0) {
+        showToast(`Cleared selections across all ${peerDevices.length} ${typeLabel}`);
+      } else {
+        showToast(`Applied ${selectedFields.length} selected field${selectedFields.length === 1 ? '' : 's'} to all ${peerDevices.length} ${typeLabel}`);
+      }
+    });
+  }
+
   // Save HA Config
   el.btnSaveHA.addEventListener('click', async () => {
     const keys = Array.from(state.selectedHaKeys);
+    const targetSerials = Array.from(state.modifiedDeviceSerials);
+    if (targetSerials.length === 0 && state.activeDevice) {
+      targetSerials.push(state.activeDevice.serial_number.trim().toUpperCase());
+    }
+    const activeSn = state.activeDevice ? state.activeDevice.serial_number.trim().toUpperCase() : undefined;
+
     try {
       const res = await fetch(apiPath('api/ha/config'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ selected_fields: keys }),
+        body: JSON.stringify({
+          selected_fields: keys,
+          device_serials: targetSerials,
+          device_serial: activeSn,
+          merge: true,
+        }),
       });
       const data = await res.json();
       if (data.success) {
+        state.modifiedDeviceSerials.clear();
+        if (Array.isArray(data.selected_fields)) {
+          state.selectedHaKeys = new Set(data.selected_fields);
+          updateHaCounter();
+          updateFilterCounts();
+          renderFieldTable();
+        }
         showToast(`Saved ${data.count} entities to ha_config.yaml!`);
       }
     } catch (err) {

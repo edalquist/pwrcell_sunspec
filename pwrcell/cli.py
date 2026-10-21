@@ -143,6 +143,17 @@ def cmd_compare(args, config: AppConfig):
             print("\nExiting comparison monitor.")
 
 
+def cmd_export_default_config(args):
+    from .ha import export_default_config
+    try:
+        keys = export_default_config(source_path=args.source, target_path=args.target)
+        target_name = args.target or "ha_default_config.yaml"
+        print(f"Successfully exported {len(keys)} generic field IDs to {target_name}")
+    except Exception as e:
+        print(f"Error exporting default config: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="pwrcell", description="Generac PWRcell v3 Client & Explorer")
     parser.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
@@ -189,6 +200,14 @@ def main():
     sub_status = subparsers.add_parser("status", help="Display live status summary")
     sub_status.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
 
+    # export-default-config
+    sub_export = subparsers.add_parser(
+        "export-default-config",
+        help="Convert ha_config.yaml to generic ha_default_config.yaml by stripping serial numbers",
+    )
+    sub_export.add_argument("--source", type=str, default=None, help="Source config path (default: ha_config.yaml)")
+    sub_export.add_argument("--target", type=str, default=None, help="Target default config path (default: ha_default_config.yaml)")
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -215,6 +234,8 @@ def main():
         cmd_set_mode(args, config)
     elif args.subcommand == "status":
         cmd_status(args, config)
+    elif args.subcommand == "export-default-config":
+        cmd_export_default_config(args)
 
 
 if __name__ == "__main__":

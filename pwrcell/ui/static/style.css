@@ -1090,6 +1090,17 @@ body {
   font-weight: 500;
 }
 
+.badge-compound-linked {
+  font-size: 10px;
+  color: #38bdf8;
+  background-color: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  padding: 1px 6px;
+  border-radius: 10px;
+  margin-left: 6px;
+  font-weight: 500;
+}
+
 .modal-header {
   padding: 16px 20px;
   border-bottom: 1px solid var(--border-color);

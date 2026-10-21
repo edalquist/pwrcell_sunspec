@@ -94,6 +94,7 @@
             <button class="btn btn-secondary" id="btnPollAllModels" title="Poll all SunSpec models supported by this device">🔄 Poll All Models</button>
             <button class="btn btn-secondary" id="btnSelectRecommended">Select Recommended</button>
             <button class="btn btn-secondary" id="btnDeselectAll">Deselect All</button>
+            <button class="btn btn-secondary" id="btnApplySameType" title="Apply this device's selected fields to all devices of the same type" style="display: none;">📋 Apply to All</button>
           </div>
         </section>
 
@@ -131,6 +132,10 @@
             <label class="toggle-label" title="Hide raw scale factor registers from standard views">
               <input type="checkbox" id="hideScaleFactors" checked />
               <span>Hide Scale Factors</span>
+            </label>
+            <label class="toggle-label" title="Hide raw MQTT/Modbus fields covered by combined telemetry points">
+              <input type="checkbox" id="hideCombinedRaw" checked />
+              <span>Hide Combined Raw</span>
             </label>
             <label class="toggle-label" title="Enable multi-column sorting without holding Shift">
               <input type="checkbox" id="multiSortToggle" />

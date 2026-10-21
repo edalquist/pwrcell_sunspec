@@ -6,9 +6,15 @@ from contextlib import contextmanager
 from typing import Generator, Optional
 
 try:
-    from sshtunnel import SSHTunnelForwarder
+    from sshtunnel import (
+        BaseSSHTunnelForwarderError,
+        HandlerSSHTunnelForwarderError,
+        SSHTunnelForwarder,
+    )
 except ImportError:
     SSHTunnelForwarder = None
+    BaseSSHTunnelForwarderError = Exception  # type: ignore
+    HandlerSSHTunnelForwarderError = Exception  # type: ignore
 
 try:
     from .config import AppConfig
@@ -42,9 +48,13 @@ class PwrCellTunnel:
 
     @property
     def is_active(self) -> bool:
-        """Return True if the underlying SSH transport is alive and connected."""
+        """Return True if the underlying SSH transport and forwarded tunnels are alive."""
         with self._lock:
-            return bool(self._server and self._server.is_active)
+            if not self._server or not self._server.is_active:
+                return False
+            if hasattr(self._server, "is_alive") and not self._server.is_alive:
+                return False
+            return True
 
     def start(self) -> TunnelConfig:
         """Start the SSH tunnel, establishing forwarded ports and launching the watchdog."""
@@ -82,38 +92,68 @@ class PwrCellTunnel:
                 manager=self,
             )
 
-    def _create_and_start_server(self, target_modbus_port: Optional[int], target_mqtt_port: Optional[int]):
+    def _create_and_start_server(
+        self,
+        target_modbus_port: Optional[int] = None,
+        target_mqtt_port: Optional[int] = None,
+    ):
         ssh_cfg = self.config.pwrcell.ssh_tunnel
         logger.info("Opening PWRcell SSH tunnel to %s:%s", ssh_cfg.host, ssh_cfg.port)
 
+        def _try_bind_and_start(mod_p: Optional[int], mqtt_p: Optional[int]):
+            if mod_p and mqtt_p:
+                local_binds = [
+                    (self.host, mod_p),
+                    (self.host, mqtt_p),
+                ]
+            else:
+                local_binds = [
+                    (self.host, ),  # Modbus - random free port
+                    (self.host, ),  # MQTT - random free port
+                ]
+
+            srv = SSHTunnelForwarder(
+                (ssh_cfg.host, ssh_cfg.port),
+                ssh_username=ssh_cfg.username,
+                ssh_pkey=ssh_cfg.identity_file,
+                local_bind_addresses=local_binds,
+                remote_bind_addresses=[
+                    ("127.0.0.1", 502),   # ModBus
+                    ("127.0.0.1", 1883),  # MQTT
+                ],
+                set_keepalive=15.0,
+                mute_exceptions=True,
+            )
+            try:
+                srv.start()
+                if not srv.is_alive or not getattr(srv, "local_bind_ports", None) or len(srv.local_bind_ports) < 2:
+                    raise HandlerSSHTunnelForwarderError("SSH tunnel failed to establish forwarders")
+                h = srv.local_bind_hosts[0]
+                mp = srv.local_bind_ports[0]
+                mqp = srv.local_bind_ports[1]
+                return srv, h, mp, mqp
+            except Exception:
+                try:
+                    srv.stop(force=True)
+                except Exception:
+                    pass
+                raise
+
+        # If specific target ports were requested, try them first; on failure (e.g. port in TIME_WAIT), fall back to fresh ephemeral ports
         if target_modbus_port and target_mqtt_port:
-            local_binds = [
-                (self.host, target_modbus_port),
-                (self.host, target_mqtt_port),
-            ]
+            try:
+                server, host, mod_port, mqtt_port = _try_bind_and_start(target_modbus_port, target_mqtt_port)
+            except Exception as e:
+                logger.debug(
+                    "Could not re-bind previous ports (%s, %s): %s; falling back to ephemeral ports",
+                    target_modbus_port,
+                    target_mqtt_port,
+                    e,
+                )
+                server, host, mod_port, mqtt_port = _try_bind_and_start(None, None)
         else:
-            local_binds = [
-                (self.host, ),  # Modbus - random free port
-                (self.host, ),  # MQTT - random free port
-            ]
+            server, host, mod_port, mqtt_port = _try_bind_and_start(None, None)
 
-        server = SSHTunnelForwarder(
-            (ssh_cfg.host, ssh_cfg.port),
-            ssh_username=ssh_cfg.username,
-            ssh_pkey=ssh_cfg.identity_file,
-            local_bind_addresses=local_binds,
-            remote_bind_addresses=[
-                ("127.0.0.1", 502),   # ModBus
-                ("127.0.0.1", 1883),  # MQTT
-            ],
-            set_keepalive=15.0,
-            mute_exceptions=True,
-        )
-        server.start()
-
-        host = server.local_bind_hosts[0]
-        mod_port = server.local_bind_ports[0]
-        mqtt_port = server.local_bind_ports[1]
         logger.info(
             "PWRcell tunnel listening: TunnelConfig(host=%r, mqtt_port=%s, modbus_port=%s)",
             host,
@@ -127,14 +167,14 @@ class PwrCellTunnel:
         with self._lock:
             if not self._running:
                 return False
-            if self._server and self._server.is_active:
+            if self.is_active:
                 return True
 
         with self._reconnect_lock:
             with self._lock:
                 if not self._running:
                     return False
-                if self._server and self._server.is_active:
+                if self.is_active:
                     return True
                 old_server = self._server
                 self._server = None
@@ -155,7 +195,9 @@ class PwrCellTunnel:
                     if not self._running:
                         return False
                 try:
-                    server, host, mod_port, mqtt_port = self._create_and_start_server(old_mod_port, old_mqtt_port)
+                    target_mod = old_mod_port if attempt == 1 else None
+                    target_mqtt = old_mqtt_port if attempt == 1 else None
+                    server, host, mod_port, mqtt_port = self._create_and_start_server(target_mod, target_mqtt)
                     with self._lock:
                         self._server = server
                         self.host = host
@@ -176,7 +218,7 @@ class PwrCellTunnel:
             with self._lock:
                 if not self._running:
                     break
-                is_down = not (self._server and self._server.is_active)
+                is_down = not self.is_active
             if is_down:
                 self.ensure_active()
 

@@ -221,6 +221,48 @@ class TestConfigurableMappingsAndCompoundViews(unittest.TestCase):
         finally:
             client.stop()
 
+    def test_battery_power_compound_view_negates_modbus(self):
+        """Verify battery_power compound view negates Modbus polarity to match MQTT discharge convention."""
+        # 1. Update Modbus battery power (-7956.0 W in SunSpec discharge polarity)
+        self.state.set_field(
+            device_sn=self.bat.serial_number,
+            name="W",
+            label="Battery Power",
+            description="Modbus battery power",
+            value=-7956.0,
+            raw_value=-7956.0,
+            units="W",
+            source=FieldSource.MODBUS_POLL,
+            sub_group="model_64252",
+        )
+
+        # 2. Update MQTT battery power (+7957.0 W in Generac MQTT discharge polarity)
+        self.state.set_field(
+            device_sn=self.bat.serial_number,
+            name="battery_power_w",
+            label="Battery Power",
+            description="MQTT battery power",
+            value=7957.0,
+            raw_value=7957.0,
+            units="W",
+            source=FieldSource.MQTT_PUSH,
+            sub_group="live",
+        )
+
+        c_view = self.state.get_compound_view("battery_power")
+        self.assertIsNotNone(c_view)
+
+        # Modbus raw is -7956, but transformed modbus_value is negated (+7956.0)
+        self.assertEqual(c_view.modbus_raw_value, -7956.0)
+        self.assertEqual(c_view.modbus_value, 7956.0)
+
+        # MQTT value is +7957.0
+        self.assertEqual(c_view.mqtt_value, 7957.0)
+
+        # Delta between transformed Modbus (+7956.0) and MQTT (+7957.0) should be 1.0 W
+        self.assertAlmostEqual(c_view.delta, 1.0, places=1)
+        self.assertGreater(c_view.match_pct, 99.9)
+
 
 if __name__ == "__main__":
     unittest.main()

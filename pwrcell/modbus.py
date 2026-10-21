@@ -244,6 +244,9 @@ class SerializedModbusClient:
                 ipport=self.port,
                 timeout=int(self.timeout),
             )
+            # Rebind all registered SunSpec device instances to the new client transport
+            for dev in self._devices.values():
+                dev.client = self._shared_client
         return self._shared_client
 
     def _ensure_device_connected(self, device: ss2_client.SunSpecModbusClientDeviceTCP):

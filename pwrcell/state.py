@@ -48,7 +48,23 @@ def get_active_modbus_to_mqtt_mapping() -> Dict[str, str]:
     return mapping
 
 
+def get_active_raw_to_compound_mapping() -> Dict[str, str]:
+    """Dynamically build raw field key to compound field key mapping from MappingRegistry."""
+    mapping: Dict[str, str] = {}
+    reg = MappingRegistry.get_instance()
+    for m in reg.get_all():
+        c_key = f"{m.device_type}.compound.{m.id}"
+        if m.mqtt_field:
+            mapping[m.mqtt_field] = c_key
+        if m.modbus_field:
+            mapping[m.modbus_field] = c_key
+        for alt in m.modbus_candidates:
+            mapping[alt] = c_key
+    return mapping
+
+
 MODBUS_TO_MQTT_MAPPING: Dict[str, str] = get_active_modbus_to_mqtt_mapping()
+RAW_TO_COMPOUND_MAPPING: Dict[str, str] = get_active_raw_to_compound_mapping()
 
 
 @dataclass
@@ -86,6 +102,7 @@ class CompoundFieldView:
 
     delta: Optional[float] = None
     match_pct: Optional[float] = None
+    modbus_candidates: List[str] = field(default_factory=list)
 
     ha_platform: str = "sensor"
     ha_device_class: Optional[str] = None
@@ -123,6 +140,7 @@ class CompoundFieldView:
             "modbus_raw_value": self.modbus_raw_value,
             "modbus_key": self.modbus_key,
             "modbus_updated": self.modbus_updated,
+            "modbus_candidates": self.modbus_candidates,
             "delta": round(self.delta, 2) if self.delta is not None else None,
             "match_pct": round(self.match_pct, 1) if self.match_pct is not None else None,
             "ha_platform": self.ha_platform,
@@ -160,6 +178,8 @@ class StateField:
     symbols: Optional[List[Any]] = None  # Enum/bitfield symbol defs or names
     is_scale_factor: bool = False
     mqtt_equivalent: Optional[str] = None
+    compound_key: Optional[str] = None
+    is_compound_raw: bool = False
     ha_hint: Optional[HomeAssistantHint] = None
     model_id: Optional[int] = None
     model_name: Optional[str] = None
@@ -251,6 +271,8 @@ class StateField:
             "is_writable": self.is_writable,
             "is_scale_factor": self.is_scale_factor,
             "mqtt_equivalent": self.mqtt_equivalent,
+            "compound_key": self.compound_key,
+            "is_compound_raw": self.is_compound_raw,
             "symbols": serialized_symbols,
             "ha_platform": self.ha_hint.platform if self.ha_hint else "sensor",
             "ha_device_class": self.ha_hint.device_class if self.ha_hint else None,
@@ -550,6 +572,7 @@ class StateStore:
             modbus_raw_value=mb_raw,
             modbus_key=mb_k,
             modbus_updated=mb_upd,
+            modbus_candidates=candidates,
             delta=delta,
             match_pct=match_pct,
             ha_platform=m.ha_platform,
@@ -661,6 +684,8 @@ class StateStore:
             group_prefix = f"{sub_group}." if sub_group else ""
             key = f"{dev.device_type}.{group_prefix}{name}"
             mqtt_eq = MODBUS_TO_MQTT_MAPPING.get(key)
+            c_key = RAW_TO_COMPOUND_MAPPING.get(key) or (RAW_TO_COMPOUND_MAPPING.get(mqtt_eq) if mqtt_eq else None)
+            is_comp_raw = bool(c_key)
 
             existing = dev.fields.get(key)
             if existing is not None:
@@ -695,6 +720,8 @@ class StateStore:
                     existing.model_label = model_label
                 existing.is_scale_factor = is_scale_factor
                 existing.mqtt_equivalent = mqtt_eq
+                existing.compound_key = c_key
+                existing.is_compound_raw = is_comp_raw
                 existing.last_updated = time.time()
                 field_obj = existing
             else:
@@ -717,6 +744,8 @@ class StateStore:
                     symbols=symbols,
                     is_scale_factor=is_scale_factor,
                     mqtt_equivalent=mqtt_eq,
+                    compound_key=c_key,
+                    is_compound_raw=is_comp_raw,
                     ha_hint=ha_hint,
                     model_id=model_id,
                     model_name=model_name,
@@ -892,7 +921,7 @@ class StateStore:
                 device_sn=bat.serial_number,
                 name="battery_power_w",
                 label="Battery Power",
-                description="Real-time battery charge (+) or discharge (-) power",
+                description="Real-time battery discharge (+) or charge (-) power",
                 value=round(snapshot.battery_power_w, 1),
                 raw_value=snapshot.battery_power_w,
                 units="W",

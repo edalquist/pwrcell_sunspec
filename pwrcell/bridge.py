@@ -22,7 +22,9 @@ from .config import AppConfig, MqttConfig
 from .ha import (
     generate_discovery_payload,
     get_recommended_field_keys,
+    is_field_selected,
     load_ha_config,
+    qualify_legacy_ha_config,
 )
 from .state import StateField
 
@@ -58,8 +60,9 @@ class HomeAssistantBridge:
                 return
             self._running = True
 
-            # Load selected entities from ha_config.yaml, fallback to recommended
-            self.selected_field_keys = load_ha_config()
+            # Load selected entities from ha_config.yaml (or default seed), fallback to recommended
+            raw_keys = load_ha_config()
+            self.selected_field_keys = qualify_legacy_ha_config(raw_keys, self.client.state)
             if not self.selected_field_keys:
                 logger.info("No ha_config.yaml found, using recommended default entities")
                 self.selected_field_keys = get_recommended_field_keys(self.client.state)
@@ -137,7 +140,8 @@ class HomeAssistantBridge:
 
     def reload_config_and_republish(self):
         """Reload selected entities from ha_config.yaml and republish discovery."""
-        self.selected_field_keys = load_ha_config()
+        raw_keys = load_ha_config()
+        self.selected_field_keys = qualify_legacy_ha_config(raw_keys, self.client.state)
         self._selected_set = set(self.selected_field_keys)
         self.publish_discovery()
 
@@ -156,7 +160,7 @@ class HomeAssistantBridge:
             for dev in self.client.state.devices.values():
                 # 1. Publish selected compound fields
                 for c_view in self.client.state.get_compound_views(dev.serial_number):
-                    if c_view.key in self.selected_field_keys:
+                    if is_field_selected(c_view.key, dev.serial_number, self.selected_field_keys, c_view.mqtt_key):
                         payload_info = generate_discovery_payload(
                             c_view,
                             dev,
@@ -180,7 +184,7 @@ class HomeAssistantBridge:
 
                 # 2. Publish selected raw fields
                 for f_key, field in dev.fields.items():
-                    if f_key in self.selected_field_keys:
+                    if is_field_selected(f_key, dev.serial_number, self.selected_field_keys):
                         payload_info = generate_discovery_payload(
                             field,
                             dev,
@@ -242,7 +246,9 @@ class HomeAssistantBridge:
 
     def _on_field_update(self, field: StateField):
         """Called when a field value updates in the StateStore."""
-        if not self._mqttc or field.value is None or field.key not in self._selected_set:
+        if not self._mqttc or field.value is None:
+            return
+        if not is_field_selected(field.key, field.device_sn, self.selected_field_keys):
             return
 
         dev = self.client.state.devices.get(field.device_sn)
@@ -261,22 +267,23 @@ class HomeAssistantBridge:
 
     def _on_compound_update(self, c_view: Any):
         """Called when a compound view updates from either MQTT push or Modbus poll."""
-        if not self._mqttc:
+        if not self._mqttc or c_view.latest_value is None:
             return
-        if c_view.key in self._selected_set and c_view.latest_value is not None:
-            dev = self.client.state.devices.get(c_view.device_sn)
-            if not dev:
-                return
-            gateway = self.client.state.get_beacon() or self.client.state.get_inverter()
-            payload_info = generate_discovery_payload(
-                c_view,
-                dev,
-                gateway_device=gateway,
-                base_topic=self.base_topic,
-                ha_prefix=self.discovery_prefix,
-            )
-            state_topic = payload_info["state_topic"]
-            self._mqttc.publish(state_topic, str(c_view.latest_value))
+        if not is_field_selected(c_view.key, c_view.device_sn, self.selected_field_keys, getattr(c_view, "mqtt_key", None)):
+            return
+        dev = self.client.state.devices.get(c_view.device_sn)
+        if not dev:
+            return
+        gateway = self.client.state.get_beacon() or self.client.state.get_inverter()
+        payload_info = generate_discovery_payload(
+            c_view,
+            dev,
+            gateway_device=gateway,
+            base_topic=self.base_topic,
+            ha_prefix=self.discovery_prefix,
+        )
+        state_topic = payload_info["state_topic"]
+        self._mqttc.publish(state_topic, str(c_view.latest_value))
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
         """Handle incoming command messages on subscribed command topics."""
