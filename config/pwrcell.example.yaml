@@ -22,7 +22,7 @@ mqtt:
   password: your-password
 
 # Optional:
-# telemetry_mappings_file: telemetry_mappings.yaml
+# telemetry_mappings_file: pwrcell/data/telemetry_mappings.yaml
 # sunspec_cache_dir: /path/to/models/cache
 
 # Optional: Unified path-based polling tier configuration

@@ -2,6 +2,10 @@ pwrcell.yaml
 local_config.yaml
 devices.yaml
 ha_config.yaml
+config/pwrcell.yaml
+config/local_config.yaml
+config/devices.yaml
+config/ha_config.yaml
 model_dump/
 model_dump_2/
 sunspec-models/

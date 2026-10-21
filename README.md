@@ -89,12 +89,12 @@ pip install -r requirements.txt
 ```
 
 #### 3. Configuration
-Copy the example configuration to `pwrcell.yaml` (or `config.yaml`):
+Copy the example configuration to `config/pwrcell.yaml`:
 ```bash
-cp config.example.yaml pwrcell.yaml
+cp config/pwrcell.example.yaml config/pwrcell.yaml
 ```
 
-Edit `pwrcell.yaml` with your parameters:
+Edit `config/pwrcell.yaml` with your parameters:
 ```yaml
 testing: false
 poll_rate: 12
@@ -204,7 +204,7 @@ sudo systemctl status pwrcell.service
 4. Click **Select Recommended** to auto-select standard home energy metrics (Solar Power, Grid Power, Home Load, Battery SOC/Power, System Mode).
 5. Click **Preview HA** to view the generated MQTT Discovery payload.
 6. Click **Save HA Config**:
-   - Selections are saved persistently to `ha_config.yaml` (or `/data/ha_config.yaml` inside the add-on).
+   - Selections are saved persistently to `config/ha_config.yaml` (or `/data/ha_config.yaml` inside the add-on).
    - The bridge dynamically updates Home Assistant over MQTT in real time without needing a service restart. Newly selected entities appear immediately in **Settings** > **Devices & Services** > **MQTT**, and deselected entities are automatically removed.
 
 ---

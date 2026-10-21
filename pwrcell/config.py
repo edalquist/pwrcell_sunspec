@@ -25,7 +25,7 @@ def _getConfigPath(file: str) -> str:
         if data_f.exists():
             return str(data_f)
 
-    # 3. Standard paths: check pwrcell.yaml, local_config.yaml, then config.yaml
+    # 3. Standard paths: check config/pwrcell.yaml, pwrcell.yaml, local_config.yaml, then config.yaml
     repo_root = Path(__file__).resolve().parent.parent
     bases = [Path.cwd(), repo_root]
     if sys.path and sys.path[0]:
@@ -33,16 +33,25 @@ def _getConfigPath(file: str) -> str:
 
     if file in (_CONFIG_FILE, "config.yaml", "pwrcell.yaml"):
         for base in bases:
-            for candidate in ("pwrcell.yaml", "local_config.yaml", "config.yaml"):
+            for candidate in (
+                "config/pwrcell.yaml",
+                "config/local_config.yaml",
+                "config/config.yaml",
+                "pwrcell.yaml",
+                "local_config.yaml",
+                "config.yaml",
+            ):
                 p = base / candidate
                 if p.exists():
                     return str(p)
 
     for base in bases:
-        p = base / file
-        if p.exists():
-            return str(p)
+        for p in (base / "config" / file, base / file):
+            if p.exists():
+                return str(p)
 
+    if (repo_root / "config").is_dir():
+        return str(repo_root / "config" / file)
     return str(repo_root / file)
 
 

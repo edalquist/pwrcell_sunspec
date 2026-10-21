@@ -37,6 +37,8 @@ ORIGIN_INFO: Dict[str, str] = {
 
 def get_default_seed_config_path() -> Path:
     repo_root = Path(__file__).resolve().parent.parent
+    if (repo_root / "config" / DEFAULT_HA_DEFAULT_CONFIG_FILE).exists():
+        return repo_root / "config" / DEFAULT_HA_DEFAULT_CONFIG_FILE
     return repo_root / DEFAULT_HA_DEFAULT_CONFIG_FILE
 
 
@@ -45,6 +47,12 @@ def get_default_ha_config_path() -> Path:
     if Path("/data").is_dir() and Path("/data/options.json").exists():
         return Path("/data/ha_config.yaml")
     repo_root = Path(__file__).resolve().parent.parent
+    if (repo_root / "config" / DEFAULT_HA_CONFIG_FILE).exists():
+        return repo_root / "config" / DEFAULT_HA_CONFIG_FILE
+    if (repo_root / DEFAULT_HA_CONFIG_FILE).exists():
+        return repo_root / DEFAULT_HA_CONFIG_FILE
+    if (repo_root / "config").is_dir():
+        return repo_root / "config" / DEFAULT_HA_CONFIG_FILE
     return repo_root / DEFAULT_HA_CONFIG_FILE
 
 

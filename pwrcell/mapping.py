@@ -333,10 +333,23 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
     ]
 
 
+def _resolve_mappings_path(config_path: Optional[Path | str] = None) -> Path:
+    if config_path:
+        return Path(config_path)
+    pkg_dir = Path(__file__).resolve().parent
+    data_path = pkg_dir / "data" / DEFAULT_MAPPINGS_FILE
+    if data_path.exists():
+        return data_path
+    repo_root = pkg_dir.parent
+    root_path = repo_root / DEFAULT_MAPPINGS_FILE
+    if root_path.exists():
+        return root_path
+    return data_path
+
+
 def load_mappings(config_path: Optional[Path | str] = None) -> List[TelemetryMappingDef]:
     """Load telemetry mappings from yaml file, falling back to defaults and saving file if missing."""
-    repo_root = Path(__file__).resolve().parent.parent
-    path = Path(config_path) if config_path else (repo_root / DEFAULT_MAPPINGS_FILE)
+    path = _resolve_mappings_path(config_path)
 
     if not path.exists():
         logger.info("Mappings configuration %s not found. Creating default configuration file.", path)
@@ -358,8 +371,7 @@ def load_mappings(config_path: Optional[Path | str] = None) -> List[TelemetryMap
 
 def save_mappings(mappings: List[TelemetryMappingDef], config_path: Optional[Path | str] = None):
     """Save telemetry mappings list to YAML."""
-    repo_root = Path(__file__).resolve().parent.parent
-    path = Path(config_path) if config_path else (repo_root / DEFAULT_MAPPINGS_FILE)
+    path = _resolve_mappings_path(config_path)
     try:
         data = {
             "version": "1.0",
