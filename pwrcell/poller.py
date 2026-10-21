@@ -33,6 +33,75 @@ class PollingTier(str, Enum):
     SLOW = "slow"
 
 
+# PWRcell device type to model name/ID dictionary fallback
+PWRCELL_DEVICE_MODEL_MAP: Dict[str, Dict[str, int]] = {
+    "inverter": {
+        "inverter": 102,
+        "REbus_status": 64207,
+        "inverter_status": 64208,
+        "REbus_exp": 64208,
+        "EIconfig": 64206,
+        "REbus_arb": 64202,
+        "reconnect": 64203,
+        "nameplate": 120,
+        "controls": 123,
+        "volt_var": 126,
+        "volt_watt": 132,
+        "common": 1,
+    },
+    "battery": {
+        "battery": 802,
+        "model_64252": 64252,
+        "DCB105_warranty": 64252,
+        "battery_status": 64209,
+        "model_64209": 64209,
+        "REbus_status": 64207,
+        "lithium_ion_string": 804,
+        "common": 1,
+    },
+    "pv_link": {
+        "string_combiner": 404,
+        "REbus_status": 64207,
+        "pvlink_status": 64251,
+        "flash_reader": 64258,
+        "pvrss_config": 64263,
+        "pvrss_telemetry": 64264,
+        "common": 1,
+    },
+    "rebus_beacon": {
+        "REbus_dir": 64200,
+        "tz_config": 64260,
+        "schedule": 133,
+        "ip_settings": 16,
+        "common": 1,
+    },
+    "icm": {
+        "common": 1,
+    },
+}
+
+# Default paths for each tier using unified ha_config path notation
+DEFAULT_FAST_PATHS: List[str] = [
+    "inverter.inverter",
+    "inverter.REbus_status",
+    "inverter.inverter_status",
+    "battery.battery",
+    "battery.model_64252",
+    "pv_link.REbus_status",
+]
+
+DEFAULT_CONFIG_PATHS: List[str] = [
+    "rebus_beacon.REbus_dir",
+    "inverter.inverter",
+]
+
+DEFAULT_SLOW_PATHS: List[str] = [
+    "battery.battery_status",
+    "inverter.inverter_status",
+    "pv_link.string_combiner",
+]
+
+
 # Default SunSpec models by device type for each polling tier
 DEFAULT_FAST_MODELS: Dict[str, List[int]] = {
     "inverter": [102, 64208, 64207],
@@ -52,6 +121,110 @@ DEFAULT_SLOW_MODELS: Dict[str, List[int]] = {
 }
 
 
+def resolve_paths_to_models(
+    paths: List[str],
+    catalog: Optional[Any] = None,
+    state_store: Optional[Any] = None,
+) -> Dict[str, List[int]]:
+    """Resolve unified path strings to SunSpec model IDs per device type.
+
+    Accepts:
+    - Model prefixes: 'pv_link.string_combiner', 'inverter.REbus_status'
+    - Specific points: 'pv_link.string_combiner.DCW', 'inverter.inverter.A'
+    - Compound views: 'inverter.compound.grid_power', 'battery.compound.battery_power'
+    - Qualified paths with serials: '000100034AC7:pv_link.string_combiner.DCW'
+    - Numeric models: 'pv_link.404', 'battery.model_64252'
+    - Wildcards: 'pv_link.*', 'battery'
+    """
+    from .mapping import MappingRegistry
+
+    result: Dict[str, Set[int]] = {}
+
+    for raw_p in paths:
+        if not raw_p or not isinstance(raw_p, str):
+            continue
+        p = raw_p.strip()
+        if not p:
+            continue
+
+        # Strip device serial prefix if qualified (<SERIAL>:<PATH>)
+        if ":" in p:
+            _, p = p.split(":", 1)
+            p = p.strip()
+
+        parts = p.split(".")
+        dev_type = parts[0].strip().lower()
+
+        if len(parts) == 1 or parts[1].strip() == "*":
+            # Wildcard: include all supported/known models for this device type
+            models_to_add: Set[int] = set()
+            if state_store and hasattr(state_store, "devices"):
+                for dev in state_store.devices.values():
+                    if dev.device_type == dev_type and dev.supported_models:
+                        models_to_add.update(dev.supported_models)
+            if not models_to_add and dev_type in PWRCELL_DEVICE_MODEL_MAP:
+                models_to_add.update(PWRCELL_DEVICE_MODEL_MAP[dev_type].values())
+            if models_to_add:
+                result.setdefault(dev_type, set()).update(models_to_add)
+            continue
+
+        sub_group = parts[1].strip()
+
+        # Handle compound field paths (e.g. 'battery.compound.battery_power')
+        if sub_group == "compound" and len(parts) >= 3:
+            comp_id = parts[2].strip()
+            reg = MappingRegistry.get_instance()
+            mapping = reg.get_by_id(comp_id)
+            if mapping:
+                candidates = list(mapping.modbus_candidates)
+                if mapping.modbus_field:
+                    candidates.append(mapping.modbus_field)
+                if candidates:
+                    sub_resolved = resolve_paths_to_models(candidates, catalog, state_store)
+                    for d_t, mids in sub_resolved.items():
+                        result.setdefault(d_t, set()).update(mids)
+            continue
+
+        # Check numeric model ID (e.g. '404' or 'model_404')
+        if sub_group.isdigit():
+            result.setdefault(dev_type, set()).add(int(sub_group))
+            continue
+        if sub_group.startswith("model_") and sub_group[6:].isdigit():
+            result.setdefault(dev_type, set()).add(int(sub_group[6:]))
+            continue
+
+        # Check state_store for existing fields matching this path or sub_group
+        found_in_state = False
+        if state_store and hasattr(state_store, "devices"):
+            for dev in state_store.devices.values():
+                if dev.device_type == dev_type:
+                    for f in dev.fields.values():
+                        if f.model_id and (
+                            f.model_name == sub_group
+                            or f.key.startswith(f"{dev_type}.{sub_group}.")
+                            or f.key.startswith(p)
+                        ):
+                            result.setdefault(dev_type, set()).add(f.model_id)
+                            found_in_state = True
+        if found_in_state:
+            continue
+
+        # Check PWRCELL_DEVICE_MODEL_MAP
+        dev_map = PWRCELL_DEVICE_MODEL_MAP.get(dev_type, {})
+        if sub_group in dev_map:
+            result.setdefault(dev_type, set()).add(dev_map[sub_group])
+            continue
+
+        # Check Catalog
+        if catalog and hasattr(catalog, "get_model_by_name"):
+            m_def = catalog.get_model_by_name(sub_group)
+            if m_def:
+                result.setdefault(dev_type, set()).add(m_def.model_id)
+                continue
+
+    return {d: sorted(list(mids)) for d, mids in result.items() if mids}
+
+
 class TieredModbusPoller:
     """Background daemon scheduling Modbus reads across tiered intervals."""
 
@@ -65,6 +238,9 @@ class TieredModbusPoller:
         fast_models: Optional[Dict[str, List[int]]] = None,
         config_models: Optional[Dict[str, List[int]]] = None,
         slow_models: Optional[Dict[str, List[int]]] = None,
+        fast_paths: Optional[List[str]] = None,
+        config_paths: Optional[List[str]] = None,
+        slow_paths: Optional[List[str]] = None,
     ):
         self.client = client
         self.fast_interval = max(1.0, float(fast_interval))
@@ -72,9 +248,37 @@ class TieredModbusPoller:
         self.slow_interval = max(10.0, float(slow_interval))
         self.enabled = enabled
 
-        self.fast_models = dict(fast_models or DEFAULT_FAST_MODELS)
-        self.config_models = dict(config_models or DEFAULT_CONFIG_MODELS)
-        self.slow_models = dict(slow_models or DEFAULT_SLOW_MODELS)
+        self.fast_paths = list(fast_paths) if fast_paths is not None else list(DEFAULT_FAST_PATHS)
+        self.config_paths = list(config_paths) if config_paths is not None else list(DEFAULT_CONFIG_PATHS)
+        self.slow_paths = list(slow_paths) if slow_paths is not None else list(DEFAULT_SLOW_PATHS)
+
+        # Resolve models from paths if explicit model dictionaries were not supplied
+        if fast_models is not None:
+            self.fast_models = dict(fast_models)
+        else:
+            self.fast_models = resolve_paths_to_models(
+                self.fast_paths,
+                catalog=client.catalog if client else None,
+                state_store=client.state if client else None,
+            )
+
+        if config_models is not None:
+            self.config_models = dict(config_models)
+        else:
+            self.config_models = resolve_paths_to_models(
+                self.config_paths,
+                catalog=client.catalog if client else None,
+                state_store=client.state if client else None,
+            )
+
+        if slow_models is not None:
+            self.slow_models = dict(slow_models)
+        else:
+            self.slow_models = resolve_paths_to_models(
+                self.slow_paths,
+                catalog=client.catalog if client else None,
+                state_store=client.state if client else None,
+            )
 
         self.last_poll: Dict[str, float] = {
             PollingTier.FAST.value: 0.0,
@@ -228,6 +432,55 @@ class TieredModbusPoller:
         self.poll_counts["all"] = self.poll_counts.get("all", 0) + 1
         return total
 
+    def refresh_model_resolutions(self):
+        """Re-resolve model assignments against discovered devices in StateStore."""
+        resolved_fast = resolve_paths_to_models(
+            self.fast_paths,
+            catalog=self.client.catalog if self.client else None,
+            state_store=self.client.state if self.client else None,
+        )
+        for dev_type, mids in resolved_fast.items():
+            self.fast_models[dev_type] = sorted(list(set(self.fast_models.get(dev_type, [])) | set(mids)))
+
+        resolved_config = resolve_paths_to_models(
+            self.config_paths,
+            catalog=self.client.catalog if self.client else None,
+            state_store=self.client.state if self.client else None,
+        )
+        for dev_type, mids in resolved_config.items():
+            self.config_models[dev_type] = sorted(list(set(self.config_models.get(dev_type, [])) | set(mids)))
+
+        resolved_slow = resolve_paths_to_models(
+            self.slow_paths,
+            catalog=self.client.catalog if self.client else None,
+            state_store=self.client.state if self.client else None,
+        )
+        for dev_type, mids in resolved_slow.items():
+            self.slow_models[dev_type] = sorted(list(set(self.slow_models.get(dev_type, [])) | set(mids)))
+
+    def sync_ha_selected_fields(self, selected_keys: List[str]):
+        """Ensure all SunSpec models backing selected Home Assistant entities are polled."""
+        ha_models = resolve_paths_to_models(
+            selected_keys,
+            catalog=self.client.catalog if self.client else None,
+            state_store=self.client.state if self.client else None,
+        )
+        for dev_type, model_ids in ha_models.items():
+            current_active = (
+                set(self.fast_models.get(dev_type, []))
+                | set(self.config_models.get(dev_type, []))
+                | set(self.slow_models.get(dev_type, []))
+            )
+            for mid in model_ids:
+                if mid not in current_active:
+                    self.slow_models.setdefault(dev_type, []).append(mid)
+                    self.slow_models[dev_type] = sorted(list(set(self.slow_models[dev_type])))
+                    logger.info(
+                        "Auto-registered model %s on %s to slow polling tier for selected Home Assistant entity",
+                        mid,
+                        dev_type,
+                    )
+
     def to_dict(self) -> Dict[str, Any]:
         """Return JSON-serializable status dictionary for Web UI and REST API."""
         return {
@@ -244,6 +497,11 @@ class TieredModbusPoller:
                 "slow": self.last_poll.get(PollingTier.SLOW.value, 0.0),
             },
             "poll_counts": dict(self.poll_counts),
+            "paths": {
+                "fast": self.fast_paths,
+                "config": self.config_paths,
+                "slow": self.slow_paths,
+            },
             "models": {
                 "fast": self.fast_models,
                 "config": self.config_models,

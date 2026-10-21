@@ -24,3 +24,26 @@ mqtt:
 # Optional:
 # telemetry_mappings_file: telemetry_mappings.yaml
 # sunspec_cache_dir: /path/to/models/cache
+
+# Optional: Unified path-based polling tier configuration
+# Uses the same path notation as ha_config.yaml (e.g. <device_type>.<model_name>[.<point>])
+# polling_tiers:
+#   fast:
+#     interval: 12
+#     paths:
+#       - inverter.inverter
+#       - inverter.REbus_status
+#       - battery.battery
+#       - battery.model_64252
+#       - pv_link.REbus_status
+#   config:
+#     interval: 45
+#     paths:
+#       - rebus_beacon.REbus_dir
+#       - inverter.inverter
+#   slow:
+#     interval: 300
+#     paths:
+#       - battery.battery_status
+#       - inverter.inverter_status
+#       - pv_link.string_combiner

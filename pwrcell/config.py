@@ -3,7 +3,7 @@ import logging
 import sys
 from dataclasses import field
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
 import dataconf
 
@@ -82,6 +82,7 @@ class AppConfig:
   mqtt: MqttConfig | None = None
   sunspec_cache_dir: str | None = None
   telemetry_mappings_file: str = "telemetry_mappings.yaml"
+  polling_tiers: Dict[str, Any] | None = None  # Path-based tier configuration (fast, config, slow)
 
   @classmethod
   def read(cls) -> 'AppConfig':

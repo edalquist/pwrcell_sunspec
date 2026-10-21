@@ -100,6 +100,104 @@ class TestTieredModbusPoller(unittest.TestCase):
             mock_trigger.assert_called_once_with("config")
             self.assertEqual(self.client._last_known_sys_mode, 2)
 
+    def test_resolve_paths_to_models(self):
+        """Verify resolve_paths_to_models converts path strings into device model mappings."""
+        from pwrcell.poller import resolve_paths_to_models
+
+        paths = [
+            "inverter.inverter",
+            "inverter.REbus_status",
+            "pv_link.string_combiner.DCW",
+            "000100034AC7:pv_link.REbus_status.P",
+            "battery.model_64252.W",
+            "battery.compound.battery_power",
+            "rebus_beacon.REbus_dir.SysMd",
+            "pv_link.404",
+        ]
+        resolved = resolve_paths_to_models(
+            paths,
+            catalog=self.client.catalog,
+            state_store=self.client.state,
+        )
+
+        self.assertIn("inverter", resolved)
+        self.assertIn(102, resolved["inverter"])
+        self.assertIn(64207, resolved["inverter"])
+
+        self.assertIn("pv_link", resolved)
+        self.assertIn(404, resolved["pv_link"])
+        self.assertIn(64207, resolved["pv_link"])
+
+        self.assertIn("battery", resolved)
+        self.assertIn(64252, resolved["battery"])
+        self.assertIn(802, resolved["battery"])  # From compound battery_power
+
+        self.assertIn("rebus_beacon", resolved)
+        self.assertIn(64200, resolved["rebus_beacon"])
+
+    def test_client_init_with_polling_tiers_config(self):
+        """Verify PwrcellClient properly configures poller when polling_tiers is set in AppConfig."""
+        config = AppConfig(
+            polling_tiers={
+                "fast": {
+                    "interval": 8,
+                    "paths": [
+                        "inverter.inverter",
+                        "pv_link.string_combiner",
+                    ],
+                },
+                "config": {
+                    "interval": 30,
+                    "paths": [
+                        "rebus_beacon.REbus_dir",
+                    ],
+                },
+                "slow": [
+                    "battery.battery_status",
+                ],
+            }
+        )
+        client = PwrcellClient(config=config, is_mock=True)
+        try:
+            poller = client.poller
+            self.assertEqual(poller.fast_interval, 8.0)
+            self.assertEqual(poller.config_interval, 30.0)
+            self.assertEqual(poller.slow_interval, 300.0)  # default slow
+
+            self.assertIn("inverter.inverter", poller.fast_paths)
+            self.assertIn("pv_link.string_combiner", poller.fast_paths)
+            self.assertIn(102, poller.fast_models["inverter"])
+            self.assertIn(404, poller.fast_models["pv_link"])
+
+            self.assertIn("rebus_beacon.REbus_dir", poller.config_paths)
+            self.assertIn(64200, poller.config_models["rebus_beacon"])
+
+            self.assertIn("battery.battery_status", poller.slow_paths)
+            self.assertIn(64209, poller.slow_models["battery"])
+
+            d = poller.to_dict()
+            self.assertIn("paths", d)
+            self.assertEqual(d["paths"]["fast"], poller.fast_paths)
+            self.assertEqual(d["paths"]["config"], poller.config_paths)
+            self.assertEqual(d["paths"]["slow"], poller.slow_paths)
+        finally:
+            client.stop()
+
+    def test_sync_ha_selected_fields(self):
+        """Verify selecting a field in Home Assistant auto-promotes its model to the slow poller tier."""
+        poller = self.client.poller
+        # Initially, pv_link 404 is in slow_models
+        self.assertIn(404, poller.slow_models.get("pv_link", []))
+
+        # Clear slow_models for pv_link
+        poller.slow_models["pv_link"] = []
+
+        # Sync an HA entity that uses pv_link Model 404
+        poller.sync_ha_selected_fields(["000100034AC7:pv_link.string_combiner.DCW"])
+
+        # Model 404 should now be auto-registered in slow_models
+        self.assertIn(404, poller.slow_models["pv_link"])
+
 
 if __name__ == "__main__":
     unittest.main()

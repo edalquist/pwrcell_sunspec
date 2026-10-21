@@ -44,12 +44,51 @@ class PwrcellClient:
         self.is_mock = is_mock
         self._mock_generator: Optional[MockTelemetryGenerator] = None
         self._sim_thread: Optional[threading.Thread] = None
+        fast_interval = float(self.config.poll_rate)
+        config_interval = float(self.config.config_poll_interval)
+        slow_interval = float(self.config.slow_poll_interval)
+        fast_paths: Optional[List[str]] = None
+        config_paths: Optional[List[str]] = None
+        slow_paths: Optional[List[str]] = None
+
+        if self.config.polling_tiers:
+            pt = self.config.polling_tiers
+            fast_cfg = pt.get("fast")
+            if isinstance(fast_cfg, dict):
+                if "interval" in fast_cfg:
+                    fast_interval = float(fast_cfg["interval"])
+                if "paths" in fast_cfg and isinstance(fast_cfg["paths"], list):
+                    fast_paths = fast_cfg["paths"]
+            elif isinstance(fast_cfg, list):
+                fast_paths = fast_cfg
+
+            config_cfg = pt.get("config")
+            if isinstance(config_cfg, dict):
+                if "interval" in config_cfg:
+                    config_interval = float(config_cfg["interval"])
+                if "paths" in config_cfg and isinstance(config_cfg["paths"], list):
+                    config_paths = config_cfg["paths"]
+            elif isinstance(config_cfg, list):
+                config_paths = config_cfg
+
+            slow_cfg = pt.get("slow")
+            if isinstance(slow_cfg, dict):
+                if "interval" in slow_cfg:
+                    slow_interval = float(slow_cfg["interval"])
+                if "paths" in slow_cfg and isinstance(slow_cfg["paths"], list):
+                    slow_paths = slow_cfg["paths"]
+            elif isinstance(slow_cfg, list):
+                slow_paths = slow_cfg
+
         self.poller = TieredModbusPoller(
             client=self,
-            fast_interval=float(self.config.poll_rate),
-            config_interval=float(self.config.config_poll_interval),
-            slow_interval=float(self.config.slow_poll_interval),
+            fast_interval=fast_interval,
+            config_interval=config_interval,
+            slow_interval=slow_interval,
             enabled=self.config.enable_polling,
+            fast_paths=fast_paths,
+            config_paths=config_paths,
+            slow_paths=slow_paths,
         )
         self._last_known_sys_mode: Optional[int] = None
         self._init_poll_thread: Optional[threading.Thread] = None
@@ -125,6 +164,9 @@ class PwrcellClient:
                     raw_pts = {p.name: p.raw_value for p in model_inst.points.values()}
                     comp_pts = {p.name: p.scaled_value for p in model_inst.points.values()}
                     self.state.update_from_modbus_points(sn, model_id, raw_values=raw_pts, computed_values=comp_pts)
+
+        # Refresh model assignments with discovered mock device state
+        self.poller.refresh_model_resolutions()
 
         # Start simulated telemetry ticker thread
         self._mock_generator = MockTelemetryGenerator()
@@ -307,6 +349,7 @@ class PwrcellClient:
                 logger.warning("Failed polling device %s (slave %d): %s", dev.serial_number, dev.slave_id, e)
 
         logger.info("Completed background initial SunSpec model poll across devices")
+        self.poller.refresh_model_resolutions()
 
     def poll_telemetry_models_live(self):
         """Quickly read ONLY the models relevant to live power, energy, and telemetry comparisons."""
