@@ -21,6 +21,10 @@ if [ -f "$OPTIONS_FILE" ]; then
     MQTT_PORT=$(jq -r '.mqtt_port // 1883' "$OPTIONS_FILE")
     MQTT_USER=$(jq -r '.mqtt_username // ""' "$OPTIONS_FILE")
     MQTT_PASS=$(jq -r '.mqtt_password // ""' "$OPTIONS_FILE")
+    MQTT_CLIENT_NAME=$(jq -r '.mqtt_client_name // ""' "$OPTIONS_FILE")
+    if [ -z "$MQTT_CLIENT_NAME" ] || [ "$MQTT_CLIENT_NAME" = "null" ]; then
+        MQTT_CLIENT_NAME="${HOSTNAME:-pwrcell-ha}"
+    fi
 
     POLL_RATE=$(jq -r '.poll_rate // 12' "$OPTIONS_FILE")
     CONFIG_POLL_INTERVAL=$(jq -r '.config_poll_interval // 45' "$OPTIONS_FILE")
@@ -64,7 +68,7 @@ pwrcell:
     password: "$BEACON_PASS"
     key_passphrase: "$SSH_PASSPHRASE"
 mqtt:
-  client_name: "pwrcell-ha"
+  client_name: "$MQTT_CLIENT_NAME"
   host: "$MQTT_HOST"
   port: $MQTT_PORT
   username: "$MQTT_USER"

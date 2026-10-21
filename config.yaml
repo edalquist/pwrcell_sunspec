@@ -1,5 +1,5 @@
 name: "Generac PWRcell"
-version: "3.0.4"
+version: "3.0.5"
 slug: "pwrcell"
 description: "Generac PWRcell SunSpec Gateway, Home Assistant MQTT Bridge & Web Explorer"
 url: "https://github.com/edalquist/pwrcell_sunspec"
@@ -35,6 +35,7 @@ schema:
   mqtt_port: int?
   mqtt_username: str?
   mqtt_password: password?
+  mqtt_client_name: str?
   poll_rate: int?
   config_poll_interval: int?
   slow_poll_interval: int?
@@ -54,6 +55,7 @@ options:
   mqtt_port: 1883
   mqtt_username: ""
   mqtt_password: ""
+  mqtt_client_name: ""
   poll_rate: 12
   config_poll_interval: 45
   slow_poll_interval: 300

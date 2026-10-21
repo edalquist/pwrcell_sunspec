@@ -119,7 +119,7 @@ class HomeAssistantBridge:
                 logger.warning("No Home Assistant MQTT broker configured in config.yaml")
                 return
 
-            client_id = self.mqtt_config.client_name or "pwrcell_ha_bridge"
+            client_id = self.mqtt_config.client_name or os.environ.get("HOSTNAME") or "pwrcell_ha_bridge"
             self._mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
             if self.mqtt_config.username:
                 self._mqttc.username_pw_set(self.mqtt_config.username, self.mqtt_config.password)
@@ -132,7 +132,7 @@ class HomeAssistantBridge:
             self._mqttc.on_message = self._on_message
             self._mqttc.on_disconnect = self._on_disconnect
 
-            logger.info("Connecting to Home Assistant MQTT broker on %s:%d", self.mqtt_config.host, self.mqtt_config.port)
+            logger.info("Connecting to Home Assistant MQTT broker on %s:%d as client '%s'", self.mqtt_config.host, self.mqtt_config.port, client_id)
             self._mqttc.loop_start()
             try:
                 self._mqttc.connect(self.mqtt_config.host, self.mqtt_config.port)
