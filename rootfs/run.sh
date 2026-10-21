@@ -86,4 +86,4 @@ if [ "$ENABLE_UI" = "false" ]; then
 fi
 
 echo "[INFO] Launching Generac PWRcell Service (Bridge + Web Explorer Ingress)..."
-exec python3 /app/main.py service $MOCK_ARG $UI_ARG --host 0.0.0.0 --port 5555 --log-level "${LOG_LEVEL:-INFO}"
+exec python3 /app/main.py --log-level "${LOG_LEVEL:-INFO}" $MOCK_ARG service $UI_ARG --host 0.0.0.0 --port 5555

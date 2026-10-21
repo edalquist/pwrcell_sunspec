@@ -221,6 +221,7 @@ def main():
     sub_service.add_argument("--no-ui", action="store_true", default=False, help="Disable Web Explorer UI")
     sub_service.add_argument("--debug", action="store_true", default=False, help="Enable Flask debug")
     sub_service.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
+    sub_service.add_argument("--log-level", dest="sub_log_level", type=str, default=None, help="Logging level (DEBUG, INFO, WARNING, ERROR)")
 
     # scan
     sub_scan = subparsers.add_parser("scan", help="Scan Modbus slave IDs")
@@ -271,9 +272,10 @@ def main():
 
     args = parser.parse_args()
 
+    effective_log_level = getattr(args, "sub_log_level", None) or getattr(args, "log_level", "INFO")
     logging.basicConfig(
         format="%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
-        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        level=getattr(logging, effective_log_level.upper(), logging.INFO),
     )
 
     try:
