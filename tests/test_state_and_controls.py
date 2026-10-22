@@ -350,6 +350,94 @@ class TestStateAndControls(unittest.TestCase):
             stop_threads = True
             t.join()
 
+    def test_validate_field_value_bounds(self):
+        """Test physical plausibility validation across voltage, frequency, power, etc."""
+        from pwrcell.state import validate_field_value
+
+        # Voltage
+        self.assertIsNone(validate_field_value(8225.0, units="V", name="PhVphA"))
+        self.assertIsNone(validate_field_value(-10.0, units="V", name="PhVphA"))
+        self.assertIsNone(validate_field_value(1500.0, units="V", name="DCV"))
+        self.assertEqual(validate_field_value(121.1, units="V", name="PhVphA"), 121.1)
+        self.assertEqual(validate_field_value(240.2, units="V", name="PPVphAB"), 240.2)
+        self.assertEqual(validate_field_value(381.7, units="V", name="V"), 381.7)
+        self.assertEqual(validate_field_value(0.0, units="V", name="PhVphA"), 0.0)
+
+        # Frequency
+        self.assertIsNone(validate_field_value(5998.0, units="Hz", name="Hz"))
+        self.assertIsNone(validate_field_value(10.0, units="Hz", name="Hz"))
+        self.assertIsNone(validate_field_value(95.0, units="Hz", name="Hz"))
+        self.assertEqual(validate_field_value(60.0, units="Hz", name="Hz"), 60.0)
+        self.assertEqual(validate_field_value(0.0, units="Hz", name="Hz"), 0.0)
+
+        # Percentage / Battery
+        self.assertIsNone(validate_field_value(655.35, units="%", name="SoC"))
+        self.assertIsNone(validate_field_value(-5.0, units="%", name="SoC"))
+        self.assertIsNone(validate_field_value(120.0, units="%", name="state_of_charge"))
+        self.assertEqual(validate_field_value(85.0, units="%", name="SoC"), 85.0)
+        self.assertEqual(validate_field_value(100.0, units="%", name="SoH"), 100.0)
+
+        # Temperature
+        self.assertIsNone(validate_field_value(250.0, units="°C", name="TmpSnk"))
+        self.assertIsNone(validate_field_value(-70.0, units="C", name="TmpCab"))
+        self.assertEqual(validate_field_value(45.6, units="°C", name="TmpSnk"), 45.6)
+        self.assertEqual(validate_field_value(-15.0, units="°C", name="TmpCab"), -15.0)
+
+        # Power
+        self.assertIsNone(validate_field_value(100000.0, units="W", name="grid_power_w"))
+        self.assertIsNone(validate_field_value(-80000.0, units="W", name="W"))
+        self.assertEqual(validate_field_value(7600.0, units="W", name="W"), 7600.0)
+        self.assertEqual(validate_field_value(-3500.0, units="W", name="grid_power_w"), -3500.0)
+
+        # Current
+        self.assertIsNone(validate_field_value(400.0, units="A", name="A"))
+        self.assertEqual(validate_field_value(25.5, units="A", name="AphA"), 25.5)
+
+    def test_total_increasing_monotonicity_drop_protection(self):
+        """Verify that total_increasing cumulative energy counters reject corrupt drops to zero."""
+        from pwrcell.catalog import HomeAssistantHint
+
+        hint = HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh")
+        # Establish initial high cumulative energy
+        f = self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="WhIn",
+            value=23491891,
+            units="Wh",
+            ha_hint=hint,
+        )
+        self.assertEqual(f.value, 23491891)
+
+        # Modbus glitch or reboot returns 0 -> should be suppressed
+        f2 = self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="WhIn",
+            value=0,
+            units="Wh",
+            ha_hint=hint,
+        )
+        self.assertEqual(f2.value, 23491891)
+
+        # Negative value -> should be suppressed
+        f3 = self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="WhIn",
+            value=-500,
+            units="Wh",
+            ha_hint=hint,
+        )
+        self.assertEqual(f3.value, 23491891)
+
+        # Small valid increase -> should be accepted
+        f4 = self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="WhIn",
+            value=23492000,
+            units="Wh",
+            ha_hint=hint,
+        )
+        self.assertEqual(f4.value, 23492000)
+
 
 if __name__ == "__main__":
     unittest.main()

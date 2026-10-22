@@ -36,6 +36,79 @@ from .mqtt import LiveTelemetrySnapshot
 logger = logging.getLogger(__name__)
 
 
+def validate_field_value(
+    value: Any,
+    units: Optional[str] = None,
+    device_class: Optional[str] = None,
+    name: Optional[str] = None,
+) -> Optional[Any]:
+    """Validate a parsed/scaled field value against SunSpec sentinels and physical plausibility bounds.
+
+    Returns None if the value is invalid, sentinel, or physically implausible for PWRcell systems.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        if math.isnan(value) or math.isinf(value):
+            return None
+
+        # Check sentinel integer values
+        int_val = int(value) if (-1e15 < value < 1e15) else None
+        if int_val is not None and int_val in SUNSPEC_SENTINELS:
+            return None
+
+        # Check astronomical scale/overflow
+        if abs(value) > 1e12:
+            return None
+
+        clean_units = (units or "").strip().upper()
+        clean_name = (name or "").strip().lower()
+        clean_dc = (device_class or "").strip().lower()
+
+        # 1. Voltage validation: residential systems operate at 120V/240V AC and ~380V DC (REbus)
+        if clean_units == "V" or clean_dc == "voltage" or clean_name.endswith(("_v", ".v")) or "phv" in clean_name:
+            if value < -5.0 or value > 1200.0:
+                logger.warning("Rejected out-of-bounds voltage reading %s for %s (%s)", value, name, units)
+                return None
+
+        # 2. Frequency validation: North American grid 60Hz nominal (acceptable 40Hz - 75Hz, or 0 when off)
+        elif clean_units == "HZ" or clean_dc == "frequency" or clean_name.endswith(("_hz", ".hz")):
+            if value < 0.0 or (0.0 < value < 35.0) or value > 80.0:
+                logger.warning("Rejected out-of-bounds frequency reading %s for %s (%s)", value, name, units)
+                return None
+
+        # 3. Percentage / Battery SoC / SoH: strictly 0% to 100%
+        elif clean_units == "%" or clean_dc == "battery" or clean_name in ("state_of_charge", "state_of_health", "soc", "soh"):
+            if value < 0.0 or value > 105.0:
+                logger.warning("Rejected out-of-bounds percentage reading %s for %s (%s)", value, name, units)
+                return None
+
+        # 4. Temperature validation: -50°C to 150°C
+        elif clean_units in ("°C", "C", "DEG C", "DEGC") or clean_dc == "temperature" or "tmp" in clean_name or "temp" in clean_name:
+            if value < -50.0 or value > 150.0:
+                logger.warning("Rejected out-of-bounds temperature reading %s for %s (%s)", value, name, units)
+                return None
+
+        # 5. Power validation: PWRcell inverters rated up to 12kW (peak ~20kW); limits at +/-60kW
+        elif clean_units == "W" or clean_dc == "power" or clean_name.endswith(("_w", ".w")):
+            if abs(value) > 60000.0:
+                logger.warning("Rejected out-of-bounds power reading %s for %s (%s)", value, name, units)
+                return None
+        elif clean_units == "KW":
+            if abs(value) > 60.0:
+                logger.warning("Rejected out-of-bounds power reading %s for %s (%s)", value, name, units)
+                return None
+
+        # 6. Current validation: residential PV Link / battery / inverter currents <= 200A
+        elif clean_units == "A" or clean_dc == "current" or clean_name.endswith(("_a", ".a")):
+            if abs(value) > 250.0:
+                logger.warning("Rejected out-of-bounds current reading %s for %s (%s)", value, name, units)
+                return None
+
+    return value
+
+
 class FieldSource(str, Enum):
     MQTT_PUSH = "MQTT_PUSH"
     MODBUS_POLL = "MODBUS_POLL"
@@ -712,6 +785,15 @@ class StateStore:
             if raw_value is None and value is not None:
                 raw_value = value
 
+            # Validate value against physical plausibility and sentinels
+            if value is not None:
+                value = validate_field_value(
+                    value,
+                    units=units,
+                    device_class=ha_hint.device_class if ha_hint else None,
+                    name=name,
+                )
+
             # Resolve model metadata if not explicitly provided
             if model_id is None and sub_group:
                 if sub_group == "live":
@@ -743,6 +825,17 @@ class StateStore:
 
             existing = dev.fields.get(key)
             if existing is not None:
+                # Monotonicity protection for total_increasing energy counters
+                is_total_inc = (ha_hint and ha_hint.state_class == "total_increasing") or (units in ("Wh", "kWh") and not name.endswith("_w"))
+                if is_total_inc and isinstance(existing.value, (int, float)) and existing.value > 100.0:
+                    if isinstance(value, (int, float)) and value < existing.value:
+                        if value <= 0 or (existing.value - value) > (0.1 * existing.value):
+                            logger.warning(
+                                "Suppressed anomalous drop in cumulative energy counter %s (%s -> %s)",
+                                key, existing.value, value
+                            )
+                            return existing
+
                 if (
                     isinstance(existing.value, float)
                     and isinstance(value, float)
@@ -1408,10 +1501,9 @@ class StateStore:
                     scale_factors[pt_name.upper()] = int_val
 
         for pt_name, raw_val in raw_values.items():
-            if pt_name in ("ID", "L", "Pad") or pt_name.startswith("Pad"):
-                continue
-
             pt_def = model_def.points.get(pt_name) if model_def else None
+            if pt_name in ("ID", "L", "Pad") or pt_name.startswith("Pad") or (pt_def and pt_def.type == "pad"):
+                continue
             label = pt_def.label if pt_def else pt_name
             desc = pt_def.desc if pt_def else ""
             units = pt_def.units if pt_def else None
