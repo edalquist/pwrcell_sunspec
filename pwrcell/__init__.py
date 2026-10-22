@@ -4,7 +4,7 @@ from .client import PwrcellClient, create_client
 from .config import AppConfig, DeviceConfig
 from .state import FieldSource, StateField, StateStore, UnifiedDevice
 
-__version__ = "3.0.7"
+__version__ = "3.0.8"
 
 __all__ = [
     "PwrcellClient",

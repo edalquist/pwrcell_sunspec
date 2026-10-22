@@ -66,43 +66,43 @@ def validate_field_value(
         clean_name = (name or "").strip().lower()
         clean_dc = (device_class or "").strip().lower()
 
-        # 1. Voltage validation: residential systems operate at 120V/240V AC and ~380V DC (REbus)
+        # 1. Voltage validation: residential & commercial PV/battery systems operate up to 1500V DC
         if clean_units == "V" or clean_dc == "voltage" or clean_name.endswith(("_v", ".v")) or "phv" in clean_name:
-            if value < -5.0 or value > 1200.0:
+            if value < -10.0 or value > 2000.0:
                 logger.warning("Rejected out-of-bounds voltage reading %s for %s (%s)", value, name, units)
                 return None
 
-        # 2. Frequency validation: North American grid 60Hz nominal (acceptable 40Hz - 75Hz, or 0 when off)
+        # 2. Frequency validation: North American grid 60Hz nominal, allowing generator startup ramps (0Hz to 100Hz)
         elif clean_units == "HZ" or clean_dc == "frequency" or clean_name.endswith(("_hz", ".hz")):
-            if value < 0.0 or (0.0 < value < 35.0) or value > 80.0:
+            if value < 0.0 or value > 100.0:
                 logger.warning("Rejected out-of-bounds frequency reading %s for %s (%s)", value, name, units)
                 return None
 
-        # 3. Percentage / Battery SoC / SoH: strictly 0% to 100%
+        # 3. Percentage / Battery SoC / SoH: strictly 0% to 100% (allowing small float headroom up to 110%)
         elif clean_units == "%" or clean_dc == "battery" or clean_name in ("state_of_charge", "state_of_health", "soc", "soh"):
-            if value < 0.0 or value > 105.0:
+            if value < 0.0 or value > 110.0:
                 logger.warning("Rejected out-of-bounds percentage reading %s for %s (%s)", value, name, units)
                 return None
 
-        # 4. Temperature validation: -50°C to 150°C
+        # 4. Temperature validation: -60°C to 250°C (allowing high semiconductor junction / heat sink temps)
         elif clean_units in ("°C", "C", "DEG C", "DEGC") or clean_dc == "temperature" or "tmp" in clean_name or "temp" in clean_name:
-            if value < -50.0 or value > 150.0:
+            if value < -60.0 or value > 250.0:
                 logger.warning("Rejected out-of-bounds temperature reading %s for %s (%s)", value, name, units)
                 return None
 
-        # 5. Power validation: PWRcell inverters rated up to 12kW (peak ~20kW); limits at +/-60kW
+        # 5. Power validation: residential & multi-unit commercial clean energy systems up to 1 MW (1,000,000 W)
         elif clean_units == "W" or clean_dc == "power" or clean_name.endswith(("_w", ".w")):
-            if abs(value) > 60000.0:
+            if abs(value) > 1000000.0:
                 logger.warning("Rejected out-of-bounds power reading %s for %s (%s)", value, name, units)
                 return None
         elif clean_units == "KW":
-            if abs(value) > 60.0:
+            if abs(value) > 1000.0:
                 logger.warning("Rejected out-of-bounds power reading %s for %s (%s)", value, name, units)
                 return None
 
-        # 6. Current validation: residential PV Link / battery / inverter currents <= 200A
+        # 6. Current validation: residential & whole-home commercial CT services up to 1,000A
         elif clean_units == "A" or clean_dc == "current" or clean_name.endswith(("_a", ".a")):
-            if abs(value) > 250.0:
+            if abs(value) > 1000.0:
                 logger.warning("Rejected out-of-bounds current reading %s for %s (%s)", value, name, units)
                 return None
 
