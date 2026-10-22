@@ -442,6 +442,60 @@ class TestStateAndControls(unittest.TestCase):
         )
         self.assertEqual(f4.value, 23492000)
 
+    def test_pvlink_daily_energy_reset_allowed(self):
+        """Verify that PV link daily/session energy counters are allowed to reset at sunrise."""
+        from pwrcell.catalog import HomeAssistantHint
+
+        pv_link = self.state.register_device(
+            serial_number="000100034AC7",
+            slave_id=3,
+            device_type="pv_link",
+            model_name="PV Link",
+        )
+        hint = HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh")
+        # Yesterday's energy reaches 4456 Wh
+        f = self.state.set_field(
+            device_sn=pv_link.serial_number,
+            name="E",
+            value=4456,
+            units="Wh",
+            ha_hint=hint,
+            sub_group="REbus_status",
+        )
+        self.assertEqual(f.value, 4456)
+
+        # Morning reset: PV link wakes up and reports 0 or session start 658 Wh
+        f_reset = self.state.set_field(
+            device_sn=pv_link.serial_number,
+            name="E",
+            value=658,
+            units="Wh",
+            ha_hint=hint,
+            sub_group="REbus_status",
+        )
+        self.assertEqual(f_reset.value, 658)
+
+        # Model 404 DCWh also resets
+        f_dcwh = self.state.set_field(
+            device_sn=pv_link.serial_number,
+            name="DCWh",
+            value=4454,
+            units="Wh",
+            ha_hint=hint,
+            sub_group="string_combiner",
+        )
+        self.assertEqual(f_dcwh.value, 4454)
+
+        f_dcwh_reset = self.state.set_field(
+            device_sn=pv_link.serial_number,
+            name="DCWh",
+            value=698,
+            units="Wh",
+            ha_hint=hint,
+            sub_group="string_combiner",
+        )
+        self.assertEqual(f_dcwh_reset.value, 698)
+
 
 if __name__ == "__main__":
     unittest.main()

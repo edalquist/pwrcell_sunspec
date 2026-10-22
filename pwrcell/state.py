@@ -825,14 +825,20 @@ class StateStore:
 
             existing = dev.fields.get(key)
             if existing is not None:
-                # Monotonicity protection for total_increasing energy counters
-                is_total_inc = (ha_hint and ha_hint.state_class == "total_increasing") or (units in ("Wh", "kWh") and not name.endswith("_w"))
+                # Monotonicity protection for lifetime total_increasing energy counters
+                # Note: PV Link counters (e.g. REbus_status.E, string_combiner.DCWh) are volatile daily/session counters that reset when de-energized
+                is_pvlink = (dev.device_type == "pv_link")
+                is_total_inc = (
+                    not is_pvlink
+                    and ((ha_hint and ha_hint.state_class == "total_increasing") or (units in ("Wh", "kWh") and not name.endswith("_w")))
+                )
                 if is_total_inc and isinstance(existing.value, (int, float)) and existing.value > 100.0:
                     if isinstance(value, (int, float)) and value < existing.value:
                         if value <= 0 or (existing.value - value) > (0.1 * existing.value):
+                            dev_info = f" on {dev.serial_number}" + (f" (slave {dev.slave_id})" if dev.slave_id is not None else "")
                             logger.warning(
-                                "Suppressed anomalous drop in cumulative energy counter %s (%s -> %s)",
-                                key, existing.value, value
+                                "Suppressed anomalous drop in cumulative energy counter %s%s (%s -> %s)",
+                                key, dev_info, existing.value, value
                             )
                             return existing
 
