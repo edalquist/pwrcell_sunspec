@@ -249,6 +249,25 @@ class SerializedModbusClient:
                 dev.client = self._shared_client
         return self._shared_client
 
+    def _drain_stale_socket_bytes(self, client: mb.ModbusClientTCP):
+        """Drain leftover unread bytes from socket buffer to prevent packet desynchronization."""
+        if not client or not getattr(client, "socket", None):
+            return
+        sock = client.socket
+        try:
+            sock.setblocking(False)
+            while True:
+                data = sock.recv(4096)
+                if not data:
+                    break
+        except Exception:
+            pass
+        finally:
+            try:
+                sock.settimeout(float(self.timeout))
+            except Exception:
+                pass
+
     def _ensure_device_connected(self, device: ss2_client.SunSpecModbusClientDeviceTCP):
         """Ensure SSH tunnel is healthy, point shared client to slave_id, and connect socket."""
         if self.tunnel:
@@ -257,34 +276,22 @@ class SerializedModbusClient:
         shared.slave_id = device.slave_id
         if not shared.is_connected():
             shared.connect()
+        else:
+            self._drain_stale_socket_bytes(shared)
 
     def _handle_socket_error(self, exc: Exception):
-        """Disconnect dead socket on broken pipe or network drop so next retry starts fresh."""
-        err_str = str(exc)
-        is_sock_err = any(
-            x in err_str
-            for x in (
-                "Broken pipe",
-                "Socket write error",
-                "Connection reset",
-                "Connection refused",
-                "Response timeout",
-                "Bad file descriptor",
-            )
-        ) or isinstance(exc, (OSError, socket.error))
-
-        if is_sock_err:
-            logger.debug("Socket error encountered (%s); closing Modbus socket and verifying tunnel", exc)
-            if self._shared_client:
-                try:
-                    self._shared_client.disconnect()
-                except Exception:
-                    pass
-            if self.tunnel:
-                try:
-                    self.tunnel.ensure_active()
-                except Exception as te:
-                    logger.debug("Error checking tunnel on socket error: %s", te)
+        """Disconnect dead or desynchronized socket on any communication failure so next retry starts fresh."""
+        logger.debug("Modbus communication error encountered (%s); closing socket to reset stream", exc)
+        if self._shared_client:
+            try:
+                self._shared_client.disconnect()
+            except Exception:
+                pass
+        if self.tunnel:
+            try:
+                self.tunnel.ensure_active()
+            except Exception as te:
+                logger.debug("Error checking tunnel on socket error: %s", te)
 
     def get_or_create_device(self, slave_id: int) -> ss2_client.SunSpecModbusClientDeviceTCP:
         with self._lock:

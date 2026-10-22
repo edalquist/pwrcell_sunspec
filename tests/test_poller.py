@@ -198,6 +198,92 @@ class TestTieredModbusPoller(unittest.TestCase):
         # Model 404 should now be auto-registered in slow_models
         self.assertIn(404, poller.slow_models["pv_link"])
 
+    def test_safe_point_cvalue_sentinel_scale_factors(self):
+        """Verify safe_point_cvalue protects against math range error when scale factor is a sentinel."""
+        from pwrcell.poller import safe_point_cvalue
+
+        # Mock point with sentinel scale factor
+        sf_pt = MagicMock()
+        sf_pt.value = 32767  # Sentinel int16 overflow
+
+        p = MagicMock()
+        p.sf_required = True
+        p.sf = "VT_sf"
+        p.group = MagicMock()
+        p.group.points = {"VT_sf": sf_pt}
+        p.model = MagicMock()
+        p.model.points = {"VT_sf": sf_pt}
+
+        # Should return None without raising OverflowError
+        res = safe_point_cvalue(p)
+        self.assertIsNone(res)
+
+        # Scale factor is 65535 (uint16 sentinel)
+        sf_pt.value = 65535
+        self.assertIsNone(safe_point_cvalue(p))
+
+        # Scale factor is -32768 (unimplemented sentinel)
+        sf_pt.value = -32768
+        self.assertIsNone(safe_point_cvalue(p))
+
+        # Scale factor out of [-10, 10] range
+        sf_pt.value = 50
+        self.assertIsNone(safe_point_cvalue(p))
+
+        # Scale factor is None
+        sf_pt.value = None
+        self.assertIsNone(safe_point_cvalue(p))
+
+        # Valid scale factor -1
+        sf_pt.value = -1
+        p.cvalue = 381.6
+        self.assertEqual(safe_point_cvalue(p), 381.6)
+
+    def test_safe_point_cvalue_catches_overflow_error(self):
+        """Verify safe_point_cvalue catches OverflowError: math range error from pysunspec2."""
+        from pwrcell.poller import safe_point_cvalue
+
+        p = MagicMock()
+        p.sf_required = False
+        type(p).cvalue = unittest.mock.PropertyMock(side_effect=OverflowError("math range error"))
+
+        self.assertIsNone(safe_point_cvalue(p))
+
+    def test_model_64207_sentinel_scale_factors_in_state(self):
+        """Verify model 64207 points with sentinel scale factors are handled safely in StateStore."""
+        state = self.client.state
+        dev = state.register_device("000100034AC7", 3, "pv_link", "PV Link")
+
+        # Simulate polling Model 64207 with invalid scale factor registers (32767)
+        raw_values = {
+            "P": 0,
+            "E": 2153252067,
+            "V": 3816,
+            "I": 0,
+            "T": 154,
+            "St": 12546,
+            "Ev": 34048,
+            "RB": 8225,
+            "VT_sf": 32767,  # Sentinel!
+            "I_sf": -2,
+        }
+        state.update_from_modbus_points("000100034AC7", 64207, raw_values=raw_values)
+
+        # Points V and T depend on VT_sf which was 32767. Their value MUST be None, not 3816 * 10^32767!
+        v_field = dev.fields.get("pv_link.REbus_status.V")
+        self.assertIsNotNone(v_field)
+        self.assertIsNone(v_field.value)
+
+        # Point I depends on I_sf which was -2. It should be scaled normally: 0 * 10^-2 = 0.0
+        i_field = dev.fields.get("pv_link.REbus_status.I")
+        self.assertIsNotNone(i_field)
+        self.assertEqual(i_field.value, 0.0)
+
+        # Bitfield RB should be properly decoded into symbols
+        rb_field = dev.fields.get("pv_link.REbus_status.RB")
+        self.assertIsNotNone(rb_field)
+        self.assertIn("HEARTBEAT_GOOD", rb_field.active_flags)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -28,7 +28,7 @@ from .ha import (
     load_ha_config,
     qualify_legacy_ha_config,
 )
-from .state import StateField
+from .state import StateField, SUNSPEC_SENTINELS
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,8 @@ def format_state_value(value: Any, precision: Optional[int] = None) -> str:
         import math
         if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
             return "nan"
+        if abs(value) > 1e12 or int(value) in SUNSPEC_SENTINELS:
+            return ""
         if precision is not None:
             if precision == 0:
                 return str(int(round(value)))

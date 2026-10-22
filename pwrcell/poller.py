@@ -14,16 +14,50 @@ Also supports:
 from __future__ import annotations
 
 import logging
+import math
 import queue
 import threading
 import time
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
+from .state import SUNSPEC_SENTINELS
+
 if TYPE_CHECKING:
     from .client import PwrcellClient
 
 logger = logging.getLogger(__name__)
+
+
+def safe_point_cvalue(point: Any) -> Any:
+    """Safely obtain computed point value from SunSpec point, preventing math range errors and sentinel corruption."""
+    try:
+        # Check scale factor beforehand if point requires one
+        if getattr(point, "sf_required", False):
+            sf_name = getattr(point, "sf", None)
+            sf_pt = None
+            if sf_name:
+                grp = getattr(point, "group", None)
+                if grp and hasattr(grp, "points"):
+                    sf_pt = grp.points.get(sf_name)
+                if sf_pt is None and hasattr(point, "model") and hasattr(point.model, "points"):
+                    sf_pt = point.model.points.get(sf_name)
+            if sf_pt is not None:
+                sf_val = getattr(sf_pt, "value", None)
+                if sf_val is None or sf_val in SUNSPEC_SENTINELS or not (-10 <= sf_val <= 10):
+                    return None
+            elif getattr(point, "sf_value", None) is not None:
+                sf_v = point.sf_value
+                if sf_v in SUNSPEC_SENTINELS or not (-10 <= sf_v <= 10):
+                    return None
+
+        val = point.cvalue
+        if val is not None and isinstance(val, (int, float)):
+            if math.isnan(val) or math.isinf(val) or abs(val) > 1e12 or int(val) in SUNSPEC_SENTINELS:
+                return None
+        return val
+    except (OverflowError, ValueError, Exception):
+        return None
 
 
 class PollingTier(str, Enum):
@@ -386,7 +420,7 @@ class TieredModbusPoller:
                 model_inst = self.client.modbus.read_model_block(tcp_dev, model_id)
                 if model_inst:
                     raw_pts = {p_name: p.value for p_name, p in model_inst.points.items()}
-                    comp_pts = {p_name: p.cvalue for p_name, p in model_inst.points.items()}
+                    comp_pts = {p_name: safe_point_cvalue(p) for p_name, p in model_inst.points.items()}
                     self.client.state.update_from_modbus_points(
                         serial_number,
                         model_id,

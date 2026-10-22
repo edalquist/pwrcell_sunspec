@@ -17,10 +17,16 @@ from typing import Any, Callable, Dict, List, Optional
 
 # Standard SunSpec unimplemented / null sentinel register values
 SUNSPEC_SENTINELS = {
-    0x8000, -32768,          # int16 / sunssf
-    0xFFFF, 65535,           # uint16
-    0x80000000, -2147483648, # int32
-    0xFFFFFFFF, 4294967295,  # uint32
+    0x8000, -32768,           # int16 / sunssf unimpl
+    0x7FFF, 32767,            # int16 invalid / overflow
+    0x7FFE, 32766,            # int16 out of bounds
+    0xFFFF, 65535,            # uint16 unimpl
+    0xFFFE, 65534,            # uint16 invalid / overflow
+    0x80000000, -2147483648,  # int32 unimpl
+    0x7FFFFFFF, 2147483647,   # int32 invalid / overflow
+    0x7FFFFFFE, 2147483646,   # int32 out of bounds
+    0xFFFFFFFF, 4294967295,   # uint32 unimpl
+    0xFFFFFFFE, 4294967294,   # uint32 invalid / overflow
 }
 
 from .catalog import HomeAssistantHint, ModelCatalog, SunspecPointDef, get_catalog
@@ -1384,13 +1390,22 @@ class StateStore:
         model_name = model_def.name if model_def else f"model_{model_id}"
         model_label = model_def.label if (model_def and model_def.label) else model_name
 
-        # Collect all scale factor point values in this block
+        # Collect all valid scale factor point values in this block.
+        # SunSpec scale factors MUST be in range [-10, 10] and must not be sentinels.
         scale_factors: Dict[str, int] = {}
         for pt_name, val in raw_values.items():
-            if isinstance(val, (int, float)) and (pt_name.endswith("_sf") or pt_name.endswith("_SF")):
-                scale_factors[pt_name] = int(val)
-                scale_factors[pt_name.lower()] = int(val)
-                scale_factors[pt_name.upper()] = int(val)
+            pt_d = model_def.points.get(pt_name) if model_def else None
+            is_sf_point = (
+                (pt_d and (pt_d.is_scale_factor or pt_d.type == "sunssf"))
+                or pt_name.endswith(("_sf", "_SF"))
+                or pt_name.startswith(("sf_", "SF_"))
+            )
+            if is_sf_point and isinstance(val, (int, float)):
+                if val not in SUNSPEC_SENTINELS and -10 <= val <= 10:
+                    int_val = int(val)
+                    scale_factors[pt_name] = int_val
+                    scale_factors[pt_name.lower()] = int_val
+                    scale_factors[pt_name.upper()] = int_val
 
         for pt_name, raw_val in raw_values.items():
             if pt_name in ("ID", "L", "Pad") or pt_name.startswith("Pad"):
@@ -1407,26 +1422,34 @@ class StateStore:
             if raw_val is None or (isinstance(raw_val, (int, float)) and raw_val in SUNSPEC_SENTINELS):
                 raw_val = None
                 scaled_val = None
-            # Case 2: Pre-computed value provided (e.g. from pysunspec2 point.cvalue or MockPointValue.scaled_value)
+            # Case 2: Pre-computed value provided (e.g. from safe_point_cvalue or MockPointValue.scaled_value)
             elif computed_values is not None and pt_name in computed_values:
-                scaled_val = computed_values[pt_name]
-                if scaled_val is not None and isinstance(scaled_val, (int, float)) and scaled_val in SUNSPEC_SENTINELS:
-                    scaled_val = None
-                    raw_val = None
-                elif scaled_val is None:
-                    raw_val = None
-            # Case 2: Defined scale factor from SunSpec model definition (e.g. AMax_SF, VT_sf)
+                cand = computed_values[pt_name]
+                if cand is not None and isinstance(cand, (int, float)):
+                    if math.isnan(cand) or math.isinf(cand) or abs(cand) > 1e12 or int(cand) in SUNSPEC_SENTINELS:
+                        scaled_val = None
+                        raw_val = None
+                    else:
+                        scaled_val = cand
+                else:
+                    scaled_val = cand
+                    if cand is None:
+                        raw_val = None
+            # Case 3: Defined scale factor from SunSpec model definition (e.g. AMax_SF, VT_sf)
             elif isinstance(raw_val, (int, float)) and pt_def and pt_def.sf:
                 sf_name = pt_def.sf
                 sf = scale_factors.get(sf_name) or scale_factors.get(sf_name.lower()) or scale_factors.get(sf_name.upper())
-                if sf is not None:
+                if sf is not None and -10 <= sf <= 10:
                     scaled_val = round(raw_val * (10 ** sf), abs(sf) if sf < 0 else 0)
                 else:
-                    scaled_val = raw_val
-            # Case 3: Standard convention <name>_sf
+                    scaled_val = None
+            # Case 4: Standard convention <name>_sf
             elif isinstance(raw_val, (int, float)) and (f"{pt_name}_sf" in scale_factors or f"{pt_name}_SF" in scale_factors):
                 sf = scale_factors.get(f"{pt_name}_sf", scale_factors.get(f"{pt_name}_SF"))
-                scaled_val = round(raw_val * (10 ** sf), abs(sf) if sf < 0 else 0)
+                if sf is not None and -10 <= sf <= 10:
+                    scaled_val = round(raw_val * (10 ** sf), abs(sf) if sf < 0 else 0)
+                else:
+                    scaled_val = None
             else:
                 scaled_val = raw_val
 

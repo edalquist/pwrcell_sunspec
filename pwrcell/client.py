@@ -18,7 +18,7 @@ from .controls import ControlDispatcher
 from .fixtures import MockFixtureLoader, MockTelemetryGenerator
 from .modbus import SerializedModbusClient
 from .mqtt import LiveTelemetrySnapshot, MqttClient
-from .poller import PollingTier, TieredModbusPoller
+from .poller import PollingTier, TieredModbusPoller, safe_point_cvalue
 from .state import FieldSource, StateStore
 from .tunnel import TunnelConfig, pwrcell_tunnel
 
@@ -335,7 +335,7 @@ class PwrcellClient:
                         dev.model_name = str(tcp_dev.common[0].Md.value).strip() or dev.model_name
                         dev.version = str(tcp_dev.common[0].Vr.value).strip() or dev.version
                         raw_pts = {p_name: p.value for p_name, p in model_inst.points.items()}
-                        comp_pts = {p_name: p.cvalue for p_name, p in model_inst.points.items()}
+                        comp_pts = {p_name: safe_point_cvalue(p) for p_name, p in model_inst.points.items()}
                         self.state.update_from_modbus_points(dev.serial_number, 1, raw_values=raw_pts, computed_values=comp_pts)
 
                 # Poll all remaining supported models on initial startup so state and Web UI are fully populated
