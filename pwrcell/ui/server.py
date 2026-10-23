@@ -152,7 +152,7 @@ def create_app(client: PwrcellClient) -> Flask:
                 for mid in target_models:
                     client.poller.poll_device_model(dev.slave_id, dev.serial_number, mid)
 
-        fields_dict = {f_key: f.to_dict() for f_key, f in dev.fields.items()}
+        fields_dict = dev.serialize_fields()
         compound_views = [c.to_dict() for c in client.state.get_compound_views(serial_number)]
 
         return jsonify({
@@ -160,6 +160,17 @@ def create_app(client: PwrcellClient) -> Flask:
             "fields": fields_dict,
             "compound_fields": compound_views,
         })
+
+    @app.route("/api/devices/<serial_number>/field_details")
+    @app.route("/api/devices/<serial_number>/fields/<path:field_key>/modbus_details")
+    def get_field_modbus_details(serial_number: str, field_key: Optional[str] = None):
+        target_key = field_key or request.args.get("field_key")
+        if not target_key:
+            return jsonify({"error": "field_key parameter is required"}), 400
+        details = client.state.get_field_modbus_details(serial_number, target_key)
+        if not details:
+            return jsonify({"error": f"Field '{target_key}' not found on device '{serial_number}'"}), 404
+        return jsonify(details)
 
     @app.route("/api/devices/<serial_number>/poll_all", methods=["POST"])
     def poll_all_device_models(serial_number: str):
@@ -176,8 +187,7 @@ def create_app(client: PwrcellClient) -> Flask:
     def get_all_fields():
         all_fields = []
         for dev in client.state.devices.values():
-            for f in dev.fields.values():
-                all_fields.append(f.to_dict())
+            all_fields.extend(dev.serialize_fields().values())
             for c in client.state.get_compound_views(dev.serial_number):
                 all_fields.append(c.to_dict())
         return jsonify(all_fields)

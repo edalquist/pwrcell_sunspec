@@ -194,6 +194,33 @@ class CompoundFieldView:
     model_name: str = "compound"
     model_label: str = "Merged Telemetry"
 
+    def get_bounds(self) -> Dict[str, Any]:
+        if self.ha_options:
+            return {
+                "category": "enum",
+                "point_type": "enum16",
+                "raw_min": 0,
+                "raw_max": len(self.ha_options) - 1,
+                "min_value": 0,
+                "max_value": len(self.ha_options) - 1,
+                "step": 1,
+                "units": self.units,
+                "valid_values": list(range(len(self.ha_options))),
+                "valid_names": list(self.ha_options),
+                "symbols": [{"value": i, "name": opt, "label": opt} for i, opt in enumerate(self.ha_options)],
+                "sentinel": None,
+                "description": f"{len(self.ha_options)} options: " + ", ".join(self.ha_options),
+            }
+        return {
+            "category": "other",
+            "point_type": None,
+            "units": self.units,
+            "sf": None,
+            "sf_value": None,
+            "sentinel": None,
+            "description": f"Compound field {self.label}",
+        }
+
     def to_dict(self) -> dict:
         return {
             "key": self.key,
@@ -206,6 +233,7 @@ class CompoundFieldView:
             "units": self.units,
             "access": self.access,
             "is_writable": self.is_writable,
+            "bounds": self.get_bounds(),
             # The 3 values:
             "latest_value": self.latest_value,
             "latest_source": self.latest_source,
@@ -257,6 +285,9 @@ class StateField:
     access: str = "R"  # "R" or "RW"
     symbols: Optional[List[Any]] = None  # Enum/bitfield symbol defs or names
     is_scale_factor: bool = False
+    scale_factor_point: Optional[str] = None
+    offset: Optional[int] = None
+    size: int = 1
     mqtt_equivalent: Optional[str] = None
     compound_key: Optional[str] = None
     is_compound_raw: bool = False
@@ -312,7 +343,182 @@ class StateField:
                 res[s_name] = is_active
         return res
 
-    def to_dict(self) -> dict:
+    def get_bounds(self, sf_value: Optional[int] = None) -> Dict[str, Any]:
+        """Calculate SunSpec bounds restrictions for this field."""
+        raw_bounds = {
+            "uint16": (0, 65535),
+            "int16": (-32768, 32767),
+            "uint32": (0, 4294967295),
+            "int32": (-2147483648, 2147483647),
+            "uint64": (0, 18446744073709551615),
+            "int64": (-9223372036854775808, 9223372036854775807),
+            "acc16": (0, 65535),
+            "acc32": (0, 4294967295),
+            "acc64": (0, 18446744073709551615),
+            "count": (0, 65535),
+            "sunssf": (-10, 10),
+        }
+
+        sentinels = {
+            "uint16": 0xFFFF,
+            "int16": -0x8000,
+            "uint32": 0xFFFFFFFF,
+            "int32": -0x80000000,
+            "sunssf": -0x8000,
+            "acc16": 0x0000,
+            "acc32": 0x00000000,
+        }
+
+        p_type = self.point_type or "uint16"
+
+        # 1. Enums
+        if self.is_enum or (self.symbols and not self.is_bitfield):
+            symbols_list = []
+            valid_vals = []
+            valid_names = []
+            if self.symbols:
+                for s in self.symbols:
+                    s_name = s.get("name") if isinstance(s, dict) else getattr(s, "name", str(s))
+                    s_val = s.get("value") if isinstance(s, dict) else getattr(s, "value", None)
+                    s_lbl = s.get("label") if isinstance(s, dict) else getattr(s, "label", s_name)
+                    if s_val is not None:
+                        valid_vals.append(s_val)
+                    if s_name:
+                        valid_names.append(s_name)
+                    symbols_list.append({"name": s_name, "value": s_val, "label": s_lbl})
+            min_v = min(valid_vals) if valid_vals else 0
+            max_v = max(valid_vals) if valid_vals else 65535
+            desc = (
+                f"{len(valid_names)} options: " + ", ".join(f"{s['name']}" + (f" ({s['value']})" if s['value'] is not None else "") for s in symbols_list)
+                if symbols_list else f"Enum values: {min_v} to {max_v}"
+            )
+            return {
+                "category": "enum",
+                "point_type": p_type,
+                "raw_min": min_v,
+                "raw_max": max_v,
+                "min_value": min_v,
+                "max_value": max_v,
+                "step": 1,
+                "units": self.units,
+                "symbols": symbols_list,
+                "valid_values": valid_vals,
+                "valid_names": valid_names,
+                "sentinel": None,
+                "description": desc,
+            }
+
+        # 2. Bitfields
+        if self.is_bitfield:
+            max_bits = self.size * 16
+            max_mask = (1 << max_bits) - 1
+            symbols_list = []
+            if self.symbols:
+                for s in self.symbols:
+                    s_name = s.get("name") if isinstance(s, dict) else getattr(s, "name", str(s))
+                    s_val = s.get("value") if isinstance(s, dict) else getattr(s, "value", 0)
+                    s_lbl = s.get("label") if isinstance(s, dict) else getattr(s, "label", s_name)
+                    symbols_list.append({"name": s_name, "value": s_val, "label": s_lbl})
+            hex_mask = f"0x{max_mask:04X}" if max_bits == 16 else f"0x{max_mask:08X}"
+            desc = f"Bitmask 0x0000 to {hex_mask} ({max_bits} bits, {len(symbols_list)} flags)"
+            return {
+                "category": "bitfield",
+                "point_type": p_type,
+                "raw_min": 0,
+                "raw_max": max_mask,
+                "min_value": 0,
+                "max_value": max_mask,
+                "step": 1,
+                "max_bits": max_bits,
+                "mask_hex": hex_mask,
+                "units": self.units,
+                "symbols": symbols_list,
+                "sentinel": None,
+                "description": desc,
+            }
+
+        # 3. Numeric types
+        if p_type in raw_bounds:
+            raw_min, raw_max = raw_bounds[p_type]
+            scaled_min = None
+            scaled_max = None
+            step = 1
+            if sf_value is not None and -10 <= sf_value <= 10:
+                multiplier = 10.0 ** sf_value
+                step = multiplier
+                scaled_min = round(raw_min * multiplier, 6)
+                scaled_max = round(raw_max * multiplier, 6)
+                if step >= 1:
+                    step = int(step)
+                    scaled_min = int(scaled_min)
+                    scaled_max = int(scaled_max)
+                unit_str = f" {self.units}" if self.units else ""
+                desc = f"{scaled_min} to {scaled_max}{unit_str} (raw: {raw_min:,} to {raw_max:,}, step: {step})"
+            else:
+                unit_str = f" {self.units}" if self.units else ""
+                desc = f"{raw_min:,} to {raw_max:,}{unit_str}"
+
+            return {
+                "category": "numeric",
+                "point_type": p_type,
+                "raw_min": raw_min,
+                "raw_max": raw_max,
+                "scaled_min": scaled_min,
+                "scaled_max": scaled_max,
+                "min_value": scaled_min if scaled_min is not None else raw_min,
+                "max_value": scaled_max if scaled_max is not None else raw_max,
+                "step": step,
+                "units": self.units,
+                "sf": self.scale_factor_point,
+                "sf_value": sf_value,
+                "sentinel": sentinels.get(p_type),
+                "description": desc,
+            }
+
+        # 4. Floats
+        if p_type in ("float32", "float64"):
+            return {
+                "category": "float",
+                "point_type": p_type,
+                "raw_min": None,
+                "raw_max": None,
+                "min_value": None,
+                "max_value": None,
+                "step": "any",
+                "units": self.units,
+                "sf": None,
+                "sf_value": None,
+                "sentinel": None,
+                "description": f"IEEE 754 {p_type} floating point" + (f" ({self.units})" if self.units else ""),
+            }
+
+        # 5. Strings
+        if p_type == "string":
+            max_len = self.size * 2
+            return {
+                "category": "string",
+                "point_type": p_type,
+                "max_length": max_len,
+                "size_words": self.size,
+                "units": None,
+                "sf": None,
+                "sf_value": None,
+                "sentinel": None,
+                "description": f"Max {max_len} characters ({self.size} registers)",
+            }
+
+        return {
+            "category": "other",
+            "point_type": p_type,
+            "size_words": self.size,
+            "units": self.units,
+            "sf": self.scale_factor_point,
+            "sf_value": None,
+            "sentinel": None,
+            "description": f"Type: {p_type}",
+        }
+
+    def to_dict(self, sf_value: Optional[int] = None) -> dict:
         serialized_symbols = None
         if self.symbols:
             serialized_symbols = []
@@ -331,6 +537,20 @@ class StateField:
                 elif isinstance(s, str):
                     serialized_symbols.append({"name": s, "value": None, "label": s})
 
+        raw_hex_str = None
+        raw_bin_str = None
+        if isinstance(self.raw_value, int) and -0x80000000 <= self.raw_value <= 0xFFFFFFFF:
+            if self.size == 1:
+                raw_hex_str = f"0x{self.raw_value & 0xFFFF:04X}"
+                b = f"{self.raw_value & 0xFFFF:016b}"
+                raw_bin_str = f"{b[0:4]} {b[4:8]} {b[8:12]} {b[12:16]}"
+            elif self.size == 2:
+                raw_hex_str = f"0x{self.raw_value & 0xFFFFFFFF:08X}"
+                b = f"{self.raw_value & 0xFFFFFFFF:032b}"
+                raw_bin_str = f"{b[0:4]} {b[4:8]} {b[8:12]} {b[12:16]} {b[16:20]} {b[20:24]} {b[24:28]} {b[28:32]}"
+            else:
+                raw_hex_str = f"0x{self.raw_value:X}"
+
         return {
             "key": self.key,
             "device_sn": self.device_sn,
@@ -340,6 +560,8 @@ class StateField:
             "description": self.description,
             "value": self.value,
             "raw_value": self.raw_value,
+            "raw_hex": raw_hex_str,
+            "raw_bin": raw_bin_str,
             "units": self.units,
             "point_type": self.point_type,
             "is_enum": self.is_enum,
@@ -349,7 +571,12 @@ class StateField:
             "source": self.source.value,
             "access": self.access,
             "is_writable": self.is_writable,
+            "bounds": self.get_bounds(sf_value=sf_value),
             "is_scale_factor": self.is_scale_factor,
+            "scale_factor_point": self.scale_factor_point,
+            "sf": self.scale_factor_point,
+            "offset": self.offset,
+            "size": self.size,
             "mqtt_equivalent": self.mqtt_equivalent,
             "compound_key": self.compound_key,
             "is_compound_raw": self.is_compound_raw,
@@ -380,6 +607,28 @@ class UnifiedDevice:
     fields: Dict[str, StateField] = field(default_factory=dict)
     online: bool = True
     last_seen: float = field(default_factory=time.time)
+
+    def get_scale_factor_value(self, field: StateField) -> Optional[int]:
+        if not field.scale_factor_point:
+            return None
+        parts = field.key.split(".")
+        if len(parts) >= 2:
+            group = parts[1]
+            sf_key = f"{self.device_type}.{group}.{field.scale_factor_point}"
+            if sf_key in self.fields:
+                val = self.fields[sf_key].value
+                if isinstance(val, (int, float)):
+                    return int(val)
+        for f in self.fields.values():
+            if f.name == field.scale_factor_point and isinstance(f.value, (int, float)):
+                return int(f.value)
+        return None
+
+    def serialize_fields(self) -> Dict[str, dict]:
+        return {
+            f_key: f.to_dict(sf_value=self.get_scale_factor_value(f))
+            for f_key, f in self.fields.items()
+        }
 
     def get_models_summary(self, catalog: Optional[ModelCatalog] = None) -> List[Dict[str, Any]]:
         cat = catalog or get_catalog()
@@ -429,7 +678,7 @@ class StateStore:
         self.devices_by_slave_id: Dict[int, UnifiedDevice] = {}
         self._listeners: List[Callable[[StateField], None]] = []
         self._compound_listeners: List[Callable[[CompoundFieldView], None]] = []
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def register_device(
         self,
@@ -768,6 +1017,9 @@ class StateStore:
         is_bitfield: Optional[bool] = None,
         bitmask_flags: Optional[List[str]] = None,
         is_scale_factor: bool = False,
+        scale_factor_point: Optional[str] = None,
+        offset: Optional[int] = None,
+        size: int = 1,
         ha_hint: Optional[HomeAssistantHint] = None,
         sub_group: Optional[str] = None,
         model_id: Optional[int] = None,
@@ -884,6 +1136,12 @@ class StateStore:
                 if model_label is not None:
                     existing.model_label = model_label
                 existing.is_scale_factor = is_scale_factor
+                if scale_factor_point is not None:
+                    existing.scale_factor_point = scale_factor_point
+                if offset is not None:
+                    existing.offset = offset
+                if size != 1 or existing.size == 1:
+                    existing.size = size
                 existing.mqtt_equivalent = mqtt_eq
                 existing.compound_key = c_key
                 existing.is_compound_raw = is_comp_raw
@@ -908,6 +1166,9 @@ class StateStore:
                     access=access,
                     symbols=symbols,
                     is_scale_factor=is_scale_factor,
+                    scale_factor_point=scale_factor_point,
+                    offset=offset,
+                    size=size,
                     mqtt_equivalent=mqtt_eq,
                     compound_key=c_key,
                     is_compound_raw=is_comp_raw,
@@ -985,6 +1246,10 @@ class StateStore:
         model_label = sub_group
 
         source = FieldSource.MODBUS_POLL
+        scale_factor_point = None
+        offset = None
+        size = 1
+        is_scale_factor = False
         if sub_group == "live":
             label = name.replace("_", " ").title()
             model_name = "live"
@@ -1034,6 +1299,10 @@ class StateStore:
                     is_enum = cat_point.is_enum
                     is_bitfield = cat_point.is_bitfield
                     symbols = cat_point.symbols
+                    is_scale_factor = cat_point.is_scale_factor
+                    scale_factor_point = cat_point.sf
+                    offset = cat_point.offset
+                    size = cat_point.size
                     ha_hint = self.catalog.derive_ha_metadata(cat_point, model_id)
 
         return self.set_field(
@@ -1049,6 +1318,10 @@ class StateStore:
             is_enum=is_enum,
             is_bitfield=is_bitfield,
             symbols=symbols,
+            is_scale_factor=is_scale_factor,
+            scale_factor_point=scale_factor_point,
+            offset=offset,
+            size=size,
             ha_hint=ha_hint,
             sub_group=sub_group,
             model_id=model_id,
@@ -1603,6 +1876,9 @@ class StateStore:
                 is_bitfield=pt_def.is_bitfield if pt_def else False,
                 bitmask_flags=bitmask_flags,
                 is_scale_factor=is_sf,
+                scale_factor_point=pt_def.sf if pt_def else None,
+                offset=pt_def.offset if pt_def else None,
+                size=pt_def.size if pt_def else 1,
                 ha_hint=ha_hint,
                 sub_group=model_name,
                 model_id=model_id,
@@ -1621,13 +1897,269 @@ class StateStore:
             if listener in self._listeners:
                 self._listeners.remove(listener)
 
+    def get_field_modbus_details(self, device_sn: str, field_key: str) -> Optional[Dict[str, Any]]:
+        """Retrieve comprehensive Modbus register details, scale factor definitions, and associated registers."""
+        with self._lock:
+            dev = self.devices.get(device_sn)
+            if not dev:
+                clean_sn = device_sn.strip().upper()
+                for d in self.devices.values():
+                    if d.serial_number.strip().upper() == clean_sn:
+                        dev = d
+                        break
+            if not dev:
+                return None
+
+            # Check if requested key is a compound view
+            c_view = None
+            for cv in self.get_compound_views(dev.serial_number):
+                if cv.key == field_key or cv.mapping_id == field_key:
+                    c_view = cv
+                    break
+
+            underlying_mb_field = None
+            if c_view:
+                if c_view.modbus_key and c_view.modbus_key in dev.fields:
+                    underlying_mb_field = dev.fields[c_view.modbus_key]
+                else:
+                    for cand in c_view.modbus_candidates:
+                        if cand in dev.fields:
+                            underlying_mb_field = dev.fields[cand]
+                            break
+                    if not underlying_mb_field and c_view.modbus_key:
+                        underlying_mb_field = self.ensure_field_definition(dev.serial_number, c_view.modbus_key)
+
+            target_field = underlying_mb_field if c_view else dev.fields.get(field_key)
+            if not target_field:
+                target_field = self.ensure_field_definition(dev.serial_number, field_key)
+
+            if not target_field and not c_view:
+                return None
+
+            # Point and model definition from catalog
+            pt_def = None
+            model_def = None
+            if target_field:
+                if target_field.model_id:
+                    model_def = self.catalog.get_model(target_field.model_id)
+                    if model_def:
+                        pt_def = model_def.points.get(target_field.name)
+                if not pt_def:
+                    pt_def = self.catalog.get_point_for_field(target_field.key)
+                    if pt_def and not model_def:
+                        for m in self.catalog.models.values():
+                            if target_field.name in m.points:
+                                model_def = m
+                                break
+
+            # If target_field lacks offset or size, sync from pt_def
+            if target_field and pt_def:
+                if target_field.offset is None and pt_def.offset is not None:
+                    target_field.offset = pt_def.offset
+                if target_field.scale_factor_point is None and pt_def.sf:
+                    target_field.scale_factor_point = pt_def.sf
+                if target_field.size == 1 and pt_def.size != 1:
+                    target_field.size = pt_def.size
+
+            # Scale factor info
+            sf_info = None
+            sf_name = pt_def.sf if pt_def else (target_field.scale_factor_point if target_field else None)
+            if sf_name and model_def:
+                sf_pt_def = model_def.points.get(sf_name)
+                sf_key = f"{dev.device_type}.{model_def.name}.{sf_name}"
+                sf_field = dev.fields.get(sf_key)
+                if not sf_field:
+                    for f in dev.fields.values():
+                        if f.model_id == model_def.model_id and f.name == sf_name:
+                            sf_field = f
+                            break
+                if not sf_field:
+                    sf_field = self.ensure_field_definition(dev.serial_number, sf_key)
+
+                sf_val = sf_field.value if sf_field else None
+                sf_raw = sf_field.raw_value if sf_field else None
+                multiplier = None
+                formula = None
+                if sf_val is not None and isinstance(sf_val, (int, float)) and -10 <= sf_val <= 10:
+                    multiplier = 10 ** int(sf_val)
+                    if target_field and target_field.raw_value is not None:
+                        formula = f"{target_field.raw_value} × 10^({int(sf_val)}) = {target_field.value} {target_field.units or ''}".strip()
+                    else:
+                        formula = f"Value = Raw × 10^({int(sf_val)})"
+
+                sf_info = {
+                    "name": sf_name,
+                    "key": sf_field.key if sf_field else sf_key,
+                    "label": sf_pt_def.label if sf_pt_def else (sf_field.label if sf_field else sf_name),
+                    "description": sf_pt_def.desc if sf_pt_def else (sf_field.description if sf_field else ""),
+                    "type": "sunssf",
+                    "offset": sf_pt_def.offset if sf_pt_def else (sf_field.offset if sf_field else None),
+                    "size": sf_pt_def.size if sf_pt_def else 1,
+                    "value": sf_val,
+                    "raw_value": sf_raw,
+                    "raw_hex": f"0x{sf_raw & 0xFFFF:04X}" if isinstance(sf_raw, int) else None,
+                    "multiplier": multiplier,
+                    "formula": formula,
+                }
+
+            # Scaled points (if this field is a scale factor, or for the associated scale factor)
+            scaled_points = []
+            is_sf = target_field.is_scale_factor if target_field else False
+            query_sf_name = target_field.name if is_sf else sf_name
+            if query_sf_name and model_def:
+                for p_name, p_d in model_def.points.items():
+                    if p_d.sf == query_sf_name:
+                        p_key = f"{dev.device_type}.{model_def.name}.{p_name}"
+                        pf = dev.fields.get(p_key)
+                        raw_v = pf.raw_value if pf else None
+                        raw_h = None
+                        if isinstance(raw_v, int):
+                            raw_h = f"0x{raw_v & 0xFFFF:04X}" if p_d.size == 1 else f"0x{raw_v & 0xFFFFFFFF:08X}"
+                        scaled_points.append({
+                            "name": p_name,
+                            "key": pf.key if pf else p_key,
+                            "label": p_d.label or (pf.label if pf else p_name),
+                            "description": p_d.desc or (pf.description if pf else ""),
+                            "offset": p_d.offset,
+                            "size": p_d.size,
+                            "type": p_d.type,
+                            "raw_value": raw_v,
+                            "raw_hex": raw_h,
+                            "value": pf.value if pf else None,
+                            "units": p_d.units or (pf.units if pf else None),
+                            "is_writable": p_d.is_writable,
+                        })
+
+            # Associated registers
+            associated_registers = []
+            if model_def and target_field:
+                assoc_defs = model_def.get_associated_points(target_field.name)
+                for item in assoc_defs:
+                    p_d = item["point_def"]
+                    p_key = f"{dev.device_type}.{model_def.name}.{p_d.name}"
+                    pf = dev.fields.get(p_key)
+                    raw_v = pf.raw_value if pf else None
+                    raw_h = None
+                    if isinstance(raw_v, int):
+                        raw_h = f"0x{raw_v & 0xFFFF:04X}" if p_d.size == 1 else f"0x{raw_v & 0xFFFFFFFF:08X}"
+                    associated_registers.append({
+                        "name": p_d.name,
+                        "key": pf.key if pf else p_key,
+                        "label": p_d.label or (pf.label if pf else p_d.name),
+                        "description": p_d.desc or (pf.description if pf else ""),
+                        "relationship": item["relationship"],
+                        "offset": p_d.offset,
+                        "size": p_d.size,
+                        "type": p_d.type,
+                        "raw_value": raw_v,
+                        "raw_hex": raw_h,
+                        "value": pf.value if pf else None,
+                        "units": p_d.units or (pf.units if pf else None),
+                        "is_writable": p_d.is_writable,
+                    })
+
+            # Bitfield breakdown
+            bitfield_flags = None
+            if target_field and target_field.is_bitfield and pt_def and pt_def.symbols:
+                raw_int = target_field.raw_value if isinstance(target_field.raw_value, int) else None
+                bitfield_flags = []
+                for s in sorted(pt_def.symbols, key=lambda x: x.value):
+                    is_set = bool(raw_int & (1 << s.value)) if raw_int is not None else False
+                    bitfield_flags.append({
+                        "bit": s.value,
+                        "mask": f"0x{(1 << s.value):04X}",
+                        "name": s.name,
+                        "label": s.label or s.name,
+                        "desc": s.desc or "",
+                        "is_set": is_set,
+                    })
+
+            # Enum symbols
+            enum_symbols = None
+            if target_field and target_field.is_enum and pt_def and pt_def.symbols:
+                enum_symbols = []
+                for s in sorted(pt_def.symbols, key=lambda x: x.value):
+                    is_active = (s.name == target_field.value or s.value == target_field.raw_value)
+                    enum_symbols.append({
+                        "name": s.name,
+                        "value": s.value,
+                        "label": s.label or s.name,
+                        "desc": s.desc or "",
+                        "is_active": is_active,
+                    })
+
+            # Compound Link
+            compound_link = None
+            if c_view:
+                compound_link = {
+                    "is_compound": True,
+                    "key": c_view.key,
+                    "mapping_id": c_view.mapping_id,
+                    "label": c_view.label,
+                    "latest_value": c_view.latest_value,
+                    "latest_source": c_view.latest_source,
+                    "mqtt_value": c_view.mqtt_value,
+                    "mqtt_key": c_view.mqtt_key,
+                    "modbus_value": c_view.modbus_value,
+                    "modbus_key": c_view.modbus_key,
+                    "delta": c_view.delta,
+                    "match_pct": c_view.match_pct,
+                }
+            elif target_field and target_field.compound_key:
+                matched_cv = self.get_compound_view(target_field.compound_key.split(".")[-1])
+                if matched_cv:
+                    compound_link = {
+                        "is_compound": False,
+                        "key": matched_cv.key,
+                        "mapping_id": matched_cv.mapping_id,
+                        "label": matched_cv.label,
+                        "latest_value": matched_cv.latest_value,
+                        "latest_source": matched_cv.latest_source,
+                        "mqtt_value": matched_cv.mqtt_value,
+                        "mqtt_key": matched_cv.mqtt_key,
+                        "modbus_value": matched_cv.modbus_value,
+                        "modbus_key": matched_cv.modbus_key,
+                        "delta": matched_cv.delta,
+                        "match_pct": matched_cv.match_pct,
+                    }
+
+            sf_val_num = sf_info["value"] if (sf_info and isinstance(sf_info.get("value"), (int, float))) else None
+            bounds_info = pt_def.get_bounds(sf_val_num) if pt_def else (target_field.get_bounds(sf_val_num) if target_field else (c_view.get_bounds() if c_view else None))
+
+            return {
+                "device": {
+                    "serial_number": dev.serial_number,
+                    "slave_id": dev.slave_id,
+                    "model_name": dev.model_name,
+                    "manufacturer": dev.manufacturer,
+                    "version": dev.version,
+                    "device_type": dev.device_type,
+                },
+                "field": target_field.to_dict(sf_value=sf_val_num) if target_field else c_view.to_dict(),
+                "model": {
+                    "model_id": model_def.model_id if model_def else (target_field.model_id if target_field else None),
+                    "name": model_def.name if model_def else (target_field.model_name if target_field else None),
+                    "label": model_def.label if model_def else (target_field.model_label if target_field else None),
+                    "desc": model_def.desc if model_def else "",
+                    "total_points": len(model_def.points) if model_def else 0,
+                } if (model_def or (target_field and target_field.model_id)) else None,
+                "point_def": pt_def.to_dict(sf_value=sf_val_num) if pt_def else None,
+                "bounds": bounds_info,
+                "scale_factor": sf_info,
+                "scaled_points": scaled_points,
+                "associated_registers": associated_registers,
+                "bitfield_flags": bitfield_flags,
+                "enum_symbols": enum_symbols,
+                "compound_link": compound_link,
+            }
+
     def to_dict(self) -> dict:
         """Full serializable dictionary of all devices and fields."""
         with self._lock:
             return {
                 sn: {
                     **dev.to_dict(self.catalog),
-                    "fields": {f_key: f.to_dict() for f_key, f in dev.fields.items()},
+                    "fields": dev.serialize_fields(),
                 }
                 for sn, dev in self.devices.items()
             }

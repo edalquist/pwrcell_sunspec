@@ -59,6 +59,7 @@ class SunspecPointDef:
     desc: str
     type: str  # 'uint16', 'int16', 'enum16', 'bitfield16', 'sunssf', 'acc32', etc.
     size: int = 1
+    offset: int = 0  # Register offset within model
     units: Optional[str] = None
     sf: Optional[str] = None  # Name of scale-factor point in same model
     access: str = "R"  # "R" or "RW"
@@ -179,13 +180,14 @@ class SunspecPointDef:
             "acc16", "acc32", "acc64",
         )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self, sf_value: Optional[int] = None) -> Dict[str, Any]:
         return {
             "name": self.name,
             "label": self.label,
             "desc": self.desc,
             "type": self.type,
             "size": self.size,
+            "offset": self.offset,
             "units": self.units,
             "sf": self.sf,
             "access": self.access,
@@ -195,7 +197,167 @@ class SunspecPointDef:
             "is_enum": self.is_enum,
             "is_bitfield": self.is_bitfield,
             "is_numeric": self.is_numeric,
+            "is_scale_factor": self.is_scale_factor,
             "symbols": [s.to_dict() for s in self.symbols],
+            "bounds": self.get_bounds(sf_value=sf_value),
+        }
+
+    def get_bounds(self, sf_value: Optional[int] = None) -> Dict[str, Any]:
+        """Compute the SunSpec bounds restrictions for this point."""
+        raw_bounds = {
+            "uint16": (0, 65535),
+            "int16": (-32768, 32767),
+            "uint32": (0, 4294967295),
+            "int32": (-2147483648, 2147483647),
+            "uint64": (0, 18446744073709551615),
+            "int64": (-9223372036854775808, 9223372036854775807),
+            "acc16": (0, 65535),
+            "acc32": (0, 4294967295),
+            "acc64": (0, 18446744073709551615),
+            "count": (0, 65535),
+            "sunssf": (-10, 10),
+        }
+
+        sentinels = {
+            "uint16": 0xFFFF,
+            "int16": -0x8000,
+            "uint32": 0xFFFFFFFF,
+            "int32": -0x80000000,
+            "sunssf": -0x8000,
+            "acc16": 0x0000,
+            "acc32": 0x00000000,
+        }
+
+        # 1. Enums
+        if self.is_enum:
+            symbols_list = [s.to_dict() for s in self.symbols]
+            valid_vals = [s.value for s in self.symbols] if self.symbols else []
+            valid_names = [s.name for s in self.symbols] if self.symbols else []
+            min_v = min(valid_vals) if valid_vals else 0
+            max_v = max(valid_vals) if valid_vals else (65535 if self.type == "enum16" else 4294967295)
+            desc = (
+                f"{len(self.symbols)} options: " + ", ".join(f"{s.name} ({s.value})" for s in self.symbols)
+                if self.symbols else f"Enum values: {min_v} to {max_v}"
+            )
+            return {
+                "category": "enum",
+                "point_type": self.type,
+                "raw_min": min_v,
+                "raw_max": max_v,
+                "min_value": min_v,
+                "max_value": max_v,
+                "step": 1,
+                "units": self.units,
+                "symbols": symbols_list,
+                "valid_values": valid_vals,
+                "valid_names": valid_names,
+                "sentinel": None,
+                "description": desc,
+            }
+
+        # 2. Bitfields
+        if self.is_bitfield:
+            max_bits = self.size * 16
+            max_mask = (1 << max_bits) - 1
+            symbols_list = [s.to_dict() for s in self.symbols]
+            hex_mask = f"0x{max_mask:04X}" if max_bits == 16 else f"0x{max_mask:08X}"
+            desc = f"Bitmask 0x0000 to {hex_mask} ({max_bits} bits, {len(self.symbols)} flags)"
+            return {
+                "category": "bitfield",
+                "point_type": self.type,
+                "raw_min": 0,
+                "raw_max": max_mask,
+                "min_value": 0,
+                "max_value": max_mask,
+                "step": 1,
+                "max_bits": max_bits,
+                "mask_hex": hex_mask,
+                "units": self.units,
+                "symbols": symbols_list,
+                "sentinel": None,
+                "description": desc,
+            }
+
+        # 3. Numeric types
+        if self.type in raw_bounds:
+            raw_min, raw_max = raw_bounds[self.type]
+            scaled_min = None
+            scaled_max = None
+            step = 1
+            if sf_value is not None and -10 <= sf_value <= 10:
+                multiplier = 10.0 ** sf_value
+                step = multiplier
+                scaled_min = round(raw_min * multiplier, 6)
+                scaled_max = round(raw_max * multiplier, 6)
+                if step >= 1:
+                    step = int(step)
+                    scaled_min = int(scaled_min)
+                    scaled_max = int(scaled_max)
+                unit_str = f" {self.units}" if self.units else ""
+                desc = f"{scaled_min} to {scaled_max}{unit_str} (raw: {raw_min:,} to {raw_max:,}, step: {step})"
+            else:
+                unit_str = f" {self.units}" if self.units else ""
+                desc = f"{raw_min:,} to {raw_max:,}{unit_str}"
+
+            return {
+                "category": "numeric",
+                "point_type": self.type,
+                "raw_min": raw_min,
+                "raw_max": raw_max,
+                "scaled_min": scaled_min,
+                "scaled_max": scaled_max,
+                "min_value": scaled_min if scaled_min is not None else raw_min,
+                "max_value": scaled_max if scaled_max is not None else raw_max,
+                "step": step,
+                "units": self.units,
+                "sf": self.sf,
+                "sf_value": sf_value,
+                "sentinel": sentinels.get(self.type),
+                "description": desc,
+            }
+
+        # 4. Floats
+        if self.type in ("float32", "float64"):
+            return {
+                "category": "float",
+                "point_type": self.type,
+                "raw_min": None,
+                "raw_max": None,
+                "min_value": None,
+                "max_value": None,
+                "step": "any",
+                "units": self.units,
+                "sf": None,
+                "sf_value": None,
+                "sentinel": None,
+                "description": f"IEEE 754 {self.type} floating point" + (f" ({self.units})" if self.units else ""),
+            }
+
+        # 5. Strings
+        if self.type == "string":
+            max_len = self.size * 2
+            return {
+                "category": "string",
+                "point_type": self.type,
+                "max_length": max_len,
+                "size_words": self.size,
+                "units": None,
+                "sf": None,
+                "sf_value": None,
+                "sentinel": None,
+                "description": f"Max {max_len} characters ({self.size} registers)",
+            }
+
+        # 6. Fallback
+        return {
+            "category": "other",
+            "point_type": self.type,
+            "size_words": self.size,
+            "units": self.units,
+            "sf": self.sf,
+            "sf_value": None,
+            "sentinel": None,
+            "description": f"Type: {self.type}",
         }
 
     def validate_and_convert(self, input_val: Any, ignore_access: bool = False) -> tuple[Any, Any]:
@@ -315,6 +477,90 @@ class SunspecModelDef:
     label: str
     desc: str
     points: Dict[str, SunspecPointDef] = field(default_factory=dict)
+
+    def get_associated_points(self, point_name: str) -> List[Dict[str, Any]]:
+        """Identify associated registers (scale factors, shared SF siblings, phase siblings, counters)."""
+        target = self.points.get(point_name)
+        if not target:
+            return []
+
+        results: List[Dict[str, Any]] = []
+        seen = {point_name}
+
+        # 1. Scale factor register (if target is scaled by another point)
+        if target.sf and target.sf in self.points and target.sf not in seen:
+            sf_pt = self.points[target.sf]
+            results.append({
+                "name": sf_pt.name,
+                "label": sf_pt.label,
+                "relationship": "Scale Factor",
+                "point_def": sf_pt,
+            })
+            seen.add(target.sf)
+
+        # 2. If target IS a scale factor, include all points it scales
+        if target.is_scale_factor:
+            for p_name, p_def in self.points.items():
+                if p_def.sf == target.name and p_name not in seen:
+                    results.append({
+                        "name": p_def.name,
+                        "label": p_def.label,
+                        "relationship": "Scaled by this register",
+                        "point_def": p_def,
+                    })
+                    seen.add(p_name)
+
+        # 3. Sibling registers that share the exact same scale factor
+        if target.sf:
+            for p_name, p_def in self.points.items():
+                if p_def.sf == target.sf and p_name not in seen:
+                    results.append({
+                        "name": p_def.name,
+                        "label": p_def.label,
+                        "relationship": f"Shared Scale Factor ({target.sf})",
+                        "point_def": p_def,
+                    })
+                    seen.add(p_name)
+
+        # 4. Phase / vector siblings (e.g. AphA -> AphB, AphC; PhVphA -> PhVphB, PhVphC)
+        phase_stems = ["Aph", "PPVph", "PhV", "Px", "PFph", "VArph", "VAph", "Wph"]
+        for stem in phase_stems:
+            if stem in point_name:
+                for p_name, p_def in self.points.items():
+                    if p_name != point_name and stem in p_name and p_name not in seen:
+                        results.append({
+                            "name": p_def.name,
+                            "label": p_def.label,
+                            "relationship": "Phase Sibling",
+                            "point_def": p_def,
+                        })
+                        seen.add(p_name)
+
+        # 5. Paired energy counters (WhIn <-> WhOut)
+        if "WhIn" in point_name:
+            out_name = point_name.replace("WhIn", "WhOut")
+            if out_name in self.points and out_name not in seen:
+                p_def = self.points[out_name]
+                results.append({
+                    "name": p_def.name,
+                    "label": p_def.label,
+                    "relationship": "Paired Energy Counter",
+                    "point_def": p_def,
+                })
+                seen.add(out_name)
+        elif "WhOut" in point_name:
+            in_name = point_name.replace("WhOut", "WhIn")
+            if in_name in self.points and in_name not in seen:
+                p_def = self.points[in_name]
+                results.append({
+                    "name": p_def.name,
+                    "label": p_def.label,
+                    "relationship": "Paired Energy Counter",
+                    "point_def": p_def,
+                })
+                seen.add(in_name)
+
+        return results
 
 
 class ModelCatalog:
@@ -468,62 +714,72 @@ class ModelCatalog:
             "W": "Total DC Power",
         }
 
-        for p_raw in group.get("points", []):
-            pt_name = p_raw.get("name")
-            if not pt_name:
-                continue
+        def _parse_points_list(points_list: list, start_offset: int) -> int:
+            running_offset = start_offset
+            for p_raw in points_list:
+                pt_name = p_raw.get("name")
+                if not pt_name:
+                    continue
 
-            symbols: List[SunspecSymbol] = []
-            symbols_val: Dict[int, SunspecSymbol] = {}
-            symbols_name: Dict[str, SunspecSymbol] = {}
+                symbols: List[SunspecSymbol] = []
+                symbols_val: Dict[int, SunspecSymbol] = {}
+                symbols_name: Dict[str, SunspecSymbol] = {}
 
-            for s_raw in p_raw.get("symbols", []):
-                sym = SunspecSymbol(
-                    name=s_raw.get("name", ""),
-                    value=int(s_raw.get("value", 0)),
-                    label=s_raw.get("label"),
-                    desc=s_raw.get("desc"),
-                )
-                symbols.append(sym)
-                symbols_val[sym.value] = sym
-                symbols_name[sym.name] = sym
+                for s_raw in p_raw.get("symbols", []):
+                    sym = SunspecSymbol(
+                        name=s_raw.get("name", ""),
+                        value=int(s_raw.get("value", 0)),
+                        label=s_raw.get("label"),
+                        desc=s_raw.get("desc"),
+                    )
+                    symbols.append(sym)
+                    symbols_val[sym.value] = sym
+                    symbols_name[sym.name] = sym
 
-            raw_label = p_raw.get("label")
-            desc = p_raw.get("desc", "").strip()
-            pt_type = p_raw.get("type", "uint16")
+                raw_label = p_raw.get("label")
+                desc = p_raw.get("desc", "").strip()
+                pt_type = p_raw.get("type", "uint16")
+                pt_size = p_raw.get("size", 1)
 
-            # Infer human-friendly label if missing or equal to identifier
-            label = raw_label
-            if not label or label == pt_name or label.startswith("Model "):
-                if pt_name in COMMON_ABBREVIATIONS:
-                    label = COMMON_ABBREVIATIONS[pt_name]
-                elif desc and len(desc) < 45 and not desc.lower().startswith(("an ", "the ", "this ", "miscellaneous ")):
-                    clean_d = desc.rstrip(".")
-                    if clean_d.lower().startswith("scale factor for "):
-                        label = f"Scale Factor: {clean_d[17:].title()}"
-                    elif clean_d.lower().endswith(" scale factor"):
-                        label = f"Scale Factor: {clean_d[:-13].title()}"
+                # Infer human-friendly label if missing or equal to identifier
+                label = raw_label
+                if not label or label == pt_name or label.startswith("Model "):
+                    if pt_name in COMMON_ABBREVIATIONS:
+                        label = COMMON_ABBREVIATIONS[pt_name]
+                    elif desc and len(desc) < 45 and not desc.lower().startswith(("an ", "the ", "this ", "miscellaneous ")):
+                        clean_d = desc.rstrip(".")
+                        if clean_d.lower().startswith("scale factor for "):
+                            label = f"Scale Factor: {clean_d[17:].title()}"
+                        elif clean_d.lower().endswith(" scale factor"):
+                            label = f"Scale Factor: {clean_d[:-13].title()}"
+                        else:
+                            label = clean_d.title()
                     else:
-                        label = clean_d.title()
-                else:
-                    label = pt_name
+                        label = pt_name
 
-            pt_def = SunspecPointDef(
-                name=pt_name,
-                label=label,
-                desc=desc,
-                type=pt_type,
-                size=p_raw.get("size", 1),
-                units=p_raw.get("units"),
-                sf=p_raw.get("sf"),
-                access=p_raw.get("access", "R"),
-                mandatory=p_raw.get("mandatory") == "M",
-                static=p_raw.get("static") == "S",
-                symbols=symbols,
-                symbols_by_value=symbols_val,
-                symbols_by_name=symbols_name,
-            )
-            model_def.points[pt_name] = pt_def
+                pt_def = SunspecPointDef(
+                    name=pt_name,
+                    label=label,
+                    desc=desc,
+                    type=pt_type,
+                    size=pt_size,
+                    offset=running_offset,
+                    units=p_raw.get("units"),
+                    sf=p_raw.get("sf"),
+                    access=p_raw.get("access", "R"),
+                    mandatory=p_raw.get("mandatory") == "M",
+                    static=p_raw.get("static") == "S",
+                    symbols=symbols,
+                    symbols_by_value=symbols_val,
+                    symbols_by_name=symbols_name,
+                )
+                model_def.points[pt_name] = pt_def
+                running_offset += pt_size
+            return running_offset
+
+        cur_offset = _parse_points_list(group.get("points", []), 0)
+        for sub_grp in group.get("groups", []):
+            cur_offset = _parse_points_list(sub_grp.get("points", []), cur_offset)
 
         # Second pass: link scale factor points to the exact points they scale
         for pt_name, pt_def in model_def.points.items():

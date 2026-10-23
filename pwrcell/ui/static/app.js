@@ -72,6 +72,8 @@ const el = {
   writeModal: document.getElementById('writeModal'),
   writeModalTitle: document.getElementById('writeModalTitle'),
   writeModalDesc: document.getElementById('writeModalDesc'),
+  writeModalError: document.getElementById('writeModalError'),
+  writeModalBounds: document.getElementById('writeModalBounds'),
   writeInputContainer: document.getElementById('writeInputContainer'),
   btnCancelWrite: document.getElementById('btnCancelWrite'),
   btnCancelWriteModal: document.getElementById('btnCancelWriteModal'),
@@ -85,6 +87,15 @@ const el = {
   unrecCompareSection: document.getElementById('unrecCompareSection'),
   unrecCount: document.getElementById('unrecCount'),
   unrecTableBody: document.getElementById('unrecTableBody'),
+  modbusDetailsModal: document.getElementById('modbusDetailsModal'),
+  detailsModalTitle: document.getElementById('detailsModalTitle'),
+  detailsModalKey: document.getElementById('detailsModalKey'),
+  detailsModalBody: document.getElementById('detailsModalBody'),
+  detailsSourceBadge: document.getElementById('detailsSourceBadge'),
+  detailsDeviceLabel: document.getElementById('detailsDeviceLabel'),
+  btnCloseDetailsModal: document.getElementById('btnCloseDetailsModal'),
+  btnCloseDetailsFooter: document.getElementById('btnCloseDetailsFooter'),
+  btnCopyDetailsJson: document.getElementById('btnCopyDetailsJson'),
   toast: document.getElementById('toast'),
   counts: {
     all: document.getElementById('countAll'),
@@ -669,6 +680,145 @@ function updateSortUI() {
   }
 }
 
+// SunSpec Bounds Helpers
+function getFieldBounds(field) {
+  if (field && field.bounds) {
+    return field.bounds;
+  }
+  if (!field) return null;
+
+  const rawBounds = {
+    uint16: [0, 65535],
+    int16: [-32768, 32767],
+    uint32: [0, 4294967295],
+    int32: [-2147483648, 2147483647],
+    uint64: [0, 18446744073709551615],
+    int64: [-9223372036854775808, 9223372036854775807],
+    acc16: [0, 65535],
+    acc32: [0, 4294967295],
+    count: [0, 65535],
+    sunssf: [-10, 10],
+  };
+
+  const pType = field.point_type || 'uint16';
+  const isBf = field.is_bitfield || (pType && pType.startsWith('bitfield'));
+  const isEn = !isBf && (field.is_enum || (field.symbols && Array.isArray(field.symbols) && field.symbols.length > 0));
+
+  if (isEn && field.symbols && field.symbols.length > 0) {
+    const syms = field.symbols.map(s => typeof s === 'object' && s !== null ? s : { name: String(s), value: null });
+    const vals = syms.map(s => s.value).filter(v => v !== null && v !== undefined);
+    const names = syms.map(s => s.name);
+    return {
+      category: 'enum',
+      point_type: pType,
+      raw_min: vals.length ? Math.min(...vals) : 0,
+      raw_max: vals.length ? Math.max(...vals) : 65535,
+      min_value: vals.length ? Math.min(...vals) : 0,
+      max_value: vals.length ? Math.max(...vals) : 65535,
+      step: 1,
+      units: field.units || null,
+      symbols: syms,
+      valid_values: vals,
+      valid_names: names,
+      description: `${names.length} options: ${names.join(', ')}`,
+    };
+  }
+
+  if (isBf) {
+    const maxBits = (field.size || 1) * 16;
+    const maxMask = (1 << maxBits) - 1;
+    const hex = `0x${(maxMask >>> 0).toString(16).toUpperCase()}`;
+    return {
+      category: 'bitfield',
+      point_type: pType,
+      raw_min: 0,
+      raw_max: maxMask,
+      min_value: 0,
+      max_value: maxMask,
+      step: 1,
+      max_bits: maxBits,
+      mask_hex: hex,
+      units: field.units || null,
+      symbols: field.symbols || [],
+      description: `Bitmask 0x0000 to ${hex} (${maxBits} bits)`,
+    };
+  }
+
+  if (rawBounds[pType]) {
+    const [rawMin, rawMax] = rawBounds[pType];
+    return {
+      category: 'numeric',
+      point_type: pType,
+      raw_min: rawMin,
+      raw_max: rawMax,
+      min_value: rawMin,
+      max_value: rawMax,
+      step: 1,
+      units: field.units || null,
+      sf: field.scale_factor_point || field.sf || null,
+      description: `${rawMin.toLocaleString()} to ${rawMax.toLocaleString()}${field.units ? ' ' + field.units : ''}`,
+    };
+  }
+
+  if (pType === 'string') {
+    const maxLen = (field.size || 1) * 2;
+    return {
+      category: 'string',
+      point_type: pType,
+      max_length: maxLen,
+      description: `Max ${maxLen} characters (${field.size || 1} registers)`,
+    };
+  }
+
+  return {
+    category: 'other',
+    point_type: pType,
+    units: field.units || null,
+    description: `Type: ${pType}`,
+  };
+}
+
+function formatBoundsBadge(field) {
+  if (!field.is_writable) return '';
+  const b = getFieldBounds(field);
+  if (!b) return '';
+
+  let text = '';
+  let fullDesc = b.description || 'SunSpec Bounds Restriction';
+
+  if (b.category === 'numeric') {
+    if (b.scaled_min !== null && b.scaled_min !== undefined && b.scaled_max !== null && b.scaled_max !== undefined) {
+      text = `${b.scaled_min} .. ${b.scaled_max}${b.units ? ' ' + b.units : ''}`;
+    } else if (b.raw_min !== null && b.raw_min !== undefined) {
+      text = `${b.raw_min.toLocaleString()} .. ${b.raw_max.toLocaleString()}${b.units ? ' ' + b.units : ''}`;
+    }
+  } else if (b.category === 'enum') {
+    if (b.valid_names && b.valid_names.length > 0) {
+      text = b.valid_names.length <= 2 
+        ? b.valid_names.join(', ')
+        : `${b.valid_names.slice(0, 2).join(', ')}... (+${b.valid_names.length - 2})`;
+    } else if (b.raw_min !== null && b.raw_min !== undefined) {
+      text = `${b.raw_min} .. ${b.raw_max}`;
+    }
+  } else if (b.category === 'bitfield') {
+    text = `Mask: 0x0000 .. ${b.mask_hex || '0xFFFF'}`;
+  } else if (b.category === 'string') {
+    text = `Max ${b.max_length || ((field.size || 1) * 2)} chars`;
+  } else if (b.category === 'float') {
+    text = `Float (${b.units || 'any'})`;
+  }
+
+  if (!text) return '';
+  return `
+    <div class="field-bounds-line">
+      <span class="field-bounds-badge" title="SunSpec Bounds: ${escapeHtml(fullDesc)}">
+        <span class="bounds-icon">📏</span>
+        <span class="bounds-text">${escapeHtml(text)}</span>
+      </span>
+    </div>
+  `;
+}
+
 // Render Field Table with Search, Filter & Multi-Column Sorting
 function renderFieldTable() {
   const filtered = state.activeFields.filter(f => {
@@ -770,8 +920,10 @@ function renderFieldTable() {
           <div class="field-cell-main">
             <div class="field-label-line">
               <span class="field-label" title="${f.description || ''}">${f.label}</span>
+              ${f.is_writable ? '<span class="badge-writable" title="Settable SunSpec register (Read/Write)">RW</span>' : ''}
             </div>
             <span class="field-key">${f.key}</span>
+            ${formatBoundsBadge(f)}
           </div>
         </td>
         <td>
@@ -801,7 +953,18 @@ function renderFieldTable() {
           <span class="type-tag">${f.ha_platform}${f.ha_device_class ? ': ' + f.ha_device_class : ''}</span>
         </td>
         <td class="text-right">
-          ${f.is_writable ? `<button class="btn btn-secondary btn-sm btn-edit" data-key="${f.key}">Set</button>` : ''}
+          <div class="action-cell-container">
+            ${f.is_writable ? `<button class="btn btn-secondary btn-sm btn-edit" data-key="${f.key}">Set</button>` : ''}
+            <button class="btn btn-secondary btn-sm btn-details" data-key="${f.key}" title="Explore Modbus register definition &amp; associated registers">Details</button>
+            <div class="action-menu-wrapper">
+              <button class="btn btn-secondary btn-sm btn-icon-more" data-key="${f.key}" title="More Actions">⋮</button>
+              <div class="action-dropdown-menu">
+                <button class="action-menu-item item-details" data-key="${f.key}">📋 Modbus Details</button>
+                ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${f.key}">✏️ Edit Value</button>` : ''}
+                <button class="action-menu-item item-copy" data-key="${f.key}">📄 Copy Key</button>
+              </div>
+            </div>
+          </div>
         </td>
       `;
     } else {
@@ -821,10 +984,12 @@ function renderFieldTable() {
           <div class="field-cell-main">
             <div class="field-label-line">
               <span class="field-label" title="${f.description || ''}">${f.label}</span>
+              ${f.is_writable ? '<span class="badge-writable" title="Settable SunSpec register (Read/Write)">RW</span>' : ''}
               ${f.mqtt_equivalent ? `<span class="badge-mqtt-linked" title="Direct Push MQTT equivalent: ${f.mqtt_equivalent}">⚡ Push MQTT</span>` : ''}
               ${f.compound_key ? `<span class="badge-compound-linked" title="Represented by merged telemetry point: ${f.compound_key}">⚡ Merged</span>` : ''}
             </div>
             <span class="field-key">${f.key}</span>
+            ${formatBoundsBadge(f)}
           </div>
         </td>
         <td>
@@ -838,7 +1003,18 @@ function renderFieldTable() {
           <span class="type-tag">${f.ha_platform}${f.ha_device_class ? ': ' + f.ha_device_class : ''}</span>
         </td>
         <td class="text-right">
-          ${f.is_writable ? `<button class="btn btn-secondary btn-sm btn-edit" data-key="${f.key}">Set</button>` : ''}
+          <div class="action-cell-container">
+            ${f.is_writable ? `<button class="btn btn-secondary btn-sm btn-edit" data-key="${f.key}">Set</button>` : ''}
+            <button class="btn btn-secondary btn-sm btn-details" data-key="${f.key}" title="Explore Modbus register definition &amp; associated registers">Details</button>
+            <div class="action-menu-wrapper">
+              <button class="btn btn-secondary btn-sm btn-icon-more" data-key="${f.key}" title="More Actions">⋮</button>
+              <div class="action-dropdown-menu">
+                <button class="action-menu-item item-details" data-key="${f.key}">📋 Modbus Details</button>
+                ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${f.key}">✏️ Edit Value</button>` : ''}
+                <button class="action-menu-item item-copy" data-key="${f.key}">📄 Copy Key</button>
+              </div>
+            </div>
+          </div>
         </td>
       `;
     }
@@ -849,10 +1025,71 @@ function renderFieldTable() {
       toggleHaSelection(f, e.target.checked);
     });
 
+    // Details button
+    const detailsBtn = tr.querySelector('.btn-details');
+    if (detailsBtn) {
+      detailsBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openFieldDetails(f);
+      });
+    }
+
+    // Label click to open details
+    const labelSpan = tr.querySelector('.field-label');
+    if (labelSpan) {
+      labelSpan.style.cursor = 'pointer';
+      labelSpan.title = (f.description ? `${f.description}\n` : '') + 'Click to view Modbus register details';
+      labelSpan.addEventListener('click', () => openFieldDetails(f));
+    }
+
+    // Actions dropdown menu
+    const moreBtn = tr.querySelector('.btn-icon-more');
+    const dropdownMenu = tr.querySelector('.action-dropdown-menu');
+    if (moreBtn && dropdownMenu) {
+      moreBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        document.querySelectorAll('.action-dropdown-menu.show').forEach(m => {
+          if (m !== dropdownMenu) m.classList.remove('show');
+        });
+        dropdownMenu.classList.toggle('show');
+      });
+
+      const menuDetails = dropdownMenu.querySelector('.item-details');
+      if (menuDetails) {
+        menuDetails.addEventListener('click', (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          openFieldDetails(f);
+        });
+      }
+
+      const menuEdit = dropdownMenu.querySelector('.item-edit');
+      if (menuEdit) {
+        menuEdit.addEventListener('click', (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          openWriteModal(f);
+        });
+      }
+
+      const menuCopy = dropdownMenu.querySelector('.item-copy');
+      if (menuCopy) {
+        menuCopy.addEventListener('click', (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          copyToClipboard(f.key);
+          showToast(`Copied ${f.key} to clipboard`);
+        });
+      }
+    }
+
     // Edit button
     const editBtn = tr.querySelector('.btn-edit');
     if (editBtn) {
-      editBtn.addEventListener('click', () => openWriteModal(f));
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openWriteModal(f);
+      });
     }
 
     return tr;
@@ -1199,10 +1436,97 @@ function handleLiveFieldUpdate(field) {
 // Write Modal Handling
 let targetWriteField = null;
 
+function renderWriteModalBounds(field) {
+  if (!el.writeModalBounds) return;
+  const b = getFieldBounds(field);
+  if (!b) {
+    el.writeModalBounds.innerHTML = '';
+    return;
+  }
+
+  let rangeText = '--';
+  let rawText = '--';
+  let sfText = b.sf ? `${b.sf}${b.sf_value !== null && b.sf_value !== undefined ? ' (10^' + b.sf_value + ')' : ''}` : 'Direct (No Scale Factor)';
+  let stepText = b.step !== undefined ? String(b.step) : '1';
+  let typeDesc = b.point_type || 'uint16';
+  let sentinelText = b.sentinel ? `0x${b.sentinel.toString(16).toUpperCase()}` : 'None';
+
+  if (b.category === 'numeric') {
+    if (b.scaled_min !== null && b.scaled_min !== undefined && b.scaled_max !== null && b.scaled_max !== undefined) {
+      rangeText = `${b.scaled_min} to ${b.scaled_max} ${b.units || ''}`.trim();
+      rawText = `${b.raw_min.toLocaleString()} to ${b.raw_max.toLocaleString()}`;
+    } else if (b.raw_min !== null && b.raw_min !== undefined) {
+      rangeText = `${b.raw_min.toLocaleString()} to ${b.raw_max.toLocaleString()} ${b.units || ''}`.trim();
+      rawText = rangeText;
+    }
+  } else if (b.category === 'enum') {
+    rangeText = `${b.valid_values?.length || 0} discrete symbols`;
+    rawText = b.raw_min !== null && b.raw_min !== undefined ? `${b.raw_min} to ${b.raw_max}` : 'Discrete symbols';
+  } else if (b.category === 'bitfield') {
+    rangeText = `Bitmask 0x0000 to ${b.mask_hex || '0xFFFF'}`;
+    rawText = `0 to ${b.raw_max}`;
+  } else if (b.category === 'string') {
+    rangeText = `Max ${b.max_length} characters`;
+    rawText = `${field.size || 1} register(s)`;
+  } else if (b.category === 'float') {
+    rangeText = `IEEE 754 Float ${b.units || ''}`.trim();
+    rawText = '32-bit float';
+  }
+
+  el.writeModalBounds.innerHTML = `
+    <div class="write-bounds-card">
+      <div class="write-bounds-header">
+        <span class="write-bounds-title">📏 SunSpec Bounds &amp; Restrictions</span>
+        <span class="badge-writable">Read/Write (RW)</span>
+      </div>
+      <div class="write-bounds-grid">
+        <div class="write-bounds-item">
+          <span class="write-bounds-lbl">Allowed Range</span>
+          <span class="write-bounds-val">${escapeHtml(rangeText)}</span>
+        </div>
+        <div class="write-bounds-item">
+          <span class="write-bounds-lbl">Data Type</span>
+          <span class="write-bounds-val">${escapeHtml(typeDesc)}</span>
+        </div>
+        ${b.category === 'numeric' ? `
+        <div class="write-bounds-item">
+          <span class="write-bounds-lbl">Raw Modbus Range</span>
+          <span class="write-bounds-val">${escapeHtml(rawText)}</span>
+        </div>
+        <div class="write-bounds-item">
+          <span class="write-bounds-lbl">Resolution / Step</span>
+          <span class="write-bounds-val">${escapeHtml(stepText)}</span>
+        </div>
+        ` : ''}
+        ${b.sf ? `
+        <div class="write-bounds-item">
+          <span class="write-bounds-lbl">Scale Factor</span>
+          <span class="write-bounds-val">${escapeHtml(sfText)}</span>
+        </div>
+        ` : ''}
+        ${b.sentinel ? `
+        <div class="write-bounds-item">
+          <span class="write-bounds-lbl">Reserved Sentinel</span>
+          <span class="write-bounds-val">${escapeHtml(sentinelText)}</span>
+        </div>
+        ` : ''}
+      </div>
+      ${b.description ? `<div class="write-bounds-desc">ℹ️ <strong>SunSpec Specification:</strong> ${escapeHtml(b.description)}</div>` : ''}
+    </div>
+  `;
+}
+
 function openWriteModal(field) {
   targetWriteField = field;
   el.writeModalTitle.textContent = `Set ${field.label}`;
   
+  if (el.writeModalError) {
+    el.writeModalError.style.display = 'none';
+    el.writeModalError.textContent = '';
+  }
+
+  renderWriteModalBounds(field);
+
   let desc = field.description || `Write new value for register ${field.name}`;
   if (field.point_type) {
     desc += ` (Type: ${field.point_type}${field.units ? ', Unit: ' + field.units : ''})`;
@@ -1324,37 +1648,52 @@ function openWriteModal(field) {
       sel.appendChild(opt);
     });
     el.writeInputContainer.appendChild(sel);
-  } else if (field.point_type && ['uint16', 'int16', 'uint32', 'int32', 'uint64', 'int64', 'acc16', 'acc32'].includes(field.point_type)) {
-    // Numeric input restricted to integer bounds
+  } else if (field.point_type && ['uint16', 'int16', 'uint32', 'int32', 'uint64', 'int64', 'acc16', 'acc32', 'count', 'sunssf'].includes(field.point_type)) {
+    // Numeric input restricted to bounds
     const input = document.createElement('input');
     input.type = 'number';
-    input.step = '1';
     input.className = 'text-input';
     input.id = 'writeTextInput';
 
-    const bounds = {
-      uint16: [0, 65535],
-      int16: [-32768, 32767],
-      uint32: [0, 4294967295],
-      int32: [-2147483648, 2147483647],
-      acc16: [0, 65535],
-      acc32: [0, 4294967295],
-    };
-    if (bounds[field.point_type]) {
-      input.min = bounds[field.point_type][0];
-      input.max = bounds[field.point_type][1];
-      const hint = document.createElement('small');
-      hint.className = 'field-input-hint';
-      hint.style.display = 'block';
-      hint.style.marginTop = '4px';
-      hint.style.color = 'var(--text-muted)';
-      hint.textContent = `Allowed range: ${input.min} to ${input.max}`;
-      el.writeInputContainer.appendChild(input);
-      el.writeInputContainer.appendChild(hint);
-    } else {
-      el.writeInputContainer.appendChild(input);
-    }
-    input.value = field.raw_value !== null && field.raw_value !== undefined ? field.raw_value : (field.value !== null ? field.value : '');
+    const b = getFieldBounds(field);
+    const minVal = b.scaled_min !== null && b.scaled_min !== undefined ? b.scaled_min : b.raw_min;
+    const maxVal = b.scaled_max !== null && b.scaled_max !== undefined ? b.scaled_max : b.raw_max;
+    if (minVal !== null && minVal !== undefined) input.min = minVal;
+    if (maxVal !== null && maxVal !== undefined) input.max = maxVal;
+    input.step = b.step !== null && b.step !== undefined ? b.step : 1;
+
+    const hint = document.createElement('small');
+    hint.className = 'field-input-hint';
+    hint.style.display = 'block';
+    hint.style.marginTop = '6px';
+    hint.style.color = 'var(--text-muted)';
+    hint.textContent = `SunSpec allowed range: ${minVal} to ${maxVal}${b.units ? ' ' + b.units : ''} (step: ${input.step})`;
+
+    input.value = field.value !== null && field.value !== undefined ? field.value : (field.raw_value !== null ? field.raw_value : '');
+    el.writeInputContainer.appendChild(input);
+    el.writeInputContainer.appendChild(hint);
+  } else if (field.point_type === 'string') {
+    // String input with max length
+    const b = getFieldBounds(field);
+    const maxLen = b.max_length || ((field.size || 1) * 2);
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.maxLength = maxLen;
+    input.className = 'text-input';
+    input.id = 'writeTextInput';
+    input.value = field.value !== null && field.value !== undefined ? field.value : '';
+
+    const counter = document.createElement('div');
+    counter.className = 'write-char-counter';
+    counter.id = 'writeCharCounter';
+    counter.textContent = `${input.value.length} / ${maxLen} characters`;
+
+    input.addEventListener('input', () => {
+      counter.textContent = `${input.value.length} / ${maxLen} characters`;
+    });
+
+    el.writeInputContainer.appendChild(input);
+    el.writeInputContainer.appendChild(counter);
   } else if (field.point_type && ['float32', 'float64'].includes(field.point_type)) {
     // Float numeric input
     const input = document.createElement('input');
@@ -1380,6 +1719,15 @@ function openWriteModal(field) {
 async function submitWrite() {
   if (!targetWriteField) return;
 
+  function showWriteError(msg) {
+    if (el.writeModalError) {
+      el.writeModalError.innerHTML = `<span>⚠️ ${escapeHtml(msg)}</span>`;
+      el.writeModalError.style.display = 'flex';
+    } else {
+      alert(msg);
+    }
+  }
+
   const bitfieldContainer = document.getElementById('writeBitfieldContainer');
   const selectEl = document.getElementById('writeSelectInput');
   const textEl = document.getElementById('writeTextInput');
@@ -1398,30 +1746,42 @@ async function submitWrite() {
   }
 
   if (newVal === null || (typeof newVal === 'string' && newVal === '')) {
-    alert('Please enter a value');
+    showWriteError('Please enter a value');
     return;
   }
 
-  // Client-side restriction based on field descriptor
-  if (targetWriteField.point_type && ['uint16', 'int16', 'uint32', 'int32', 'acc16', 'acc32'].includes(targetWriteField.point_type)) {
-    const num = Number(newVal);
-    if (!Number.isInteger(num)) {
-      alert(`Value must be an integer for ${targetWriteField.point_type}`);
-      return;
-    }
-    const bounds = {
-      uint16: [0, 65535],
-      int16: [-32768, 32767],
-      uint32: [0, 4294967295],
-      int32: [-2147483648, 2147483647],
-      acc16: [0, 65535],
-      acc32: [0, 4294967295],
-    };
-    if (bounds[targetWriteField.point_type]) {
-      const [minB, maxB] = bounds[targetWriteField.point_type];
-      if (num < minB || num > maxB) {
-        alert(`Value ${num} is out of range for ${targetWriteField.point_type} (${minB} to ${maxB})`);
+  // Client-side validation against SunSpec bounds
+  const b = getFieldBounds(targetWriteField);
+  if (b) {
+    if (b.category === 'numeric') {
+      const num = Number(newVal);
+      if (isNaN(num)) {
+        showWriteError(`Value must be a valid number`);
         return;
+      }
+      const isIntegerType = ['uint16', 'int16', 'uint32', 'int32', 'acc16', 'acc32', 'count'].includes(targetWriteField.point_type);
+      if (isIntegerType && b.scaled_min === null && !Number.isInteger(num)) {
+        showWriteError(`Value must be an integer for ${targetWriteField.point_type}`);
+        return;
+      }
+      const minVal = b.scaled_min !== null && b.scaled_min !== undefined ? b.scaled_min : b.raw_min;
+      const maxVal = b.scaled_max !== null && b.scaled_max !== undefined ? b.scaled_max : b.raw_max;
+      if (minVal !== null && maxVal !== null && (num < minVal || num > maxVal)) {
+        showWriteError(`Value ${num} is out of SunSpec bounds (${minVal} to ${maxVal}${b.units ? ' ' + b.units : ''})`);
+        return;
+      }
+    } else if (b.category === 'string') {
+      if (b.max_length && newVal.length > b.max_length) {
+        showWriteError(`Value exceeds maximum SunSpec character length of ${b.max_length}`);
+        return;
+      }
+    } else if (b.category === 'enum') {
+      if (b.valid_names && b.valid_names.length > 0) {
+        const isValid = b.valid_names.includes(newVal) || (b.valid_values && b.valid_values.includes(Number(newVal)));
+        if (!isValid) {
+          showWriteError(`Invalid enum symbol '${newVal}'. Allowed: ${b.valid_names.join(', ')}`);
+          return;
+        }
       }
     }
   }
@@ -1451,11 +1811,603 @@ async function submitWrite() {
 
       el.writeModal.classList.remove('open');
     } else {
-      alert(`Error writing value: ${data.error}`);
+      showWriteError(data.error || 'Failed writing value');
     }
   } catch (err) {
-    alert(`Failed sending write request: ${err}`);
+    showWriteError(`Failed sending write request: ${err}`);
   }
+}
+
+// Utilities
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text);
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+  }
+}
+
+let currentDetailsData = null;
+
+function closeFieldDetails() {
+  if (el.modbusDetailsModal) {
+    el.modbusDetailsModal.classList.remove('open');
+  }
+}
+
+async function openFieldDetails(fieldOrKey, optSerial) {
+  const fieldKey = typeof fieldOrKey === 'string' ? fieldOrKey : fieldOrKey.key;
+  const devSerial = optSerial || (typeof fieldOrKey === 'object' && fieldOrKey.device_sn) || (state.activeDevice ? state.activeDevice.serial_number : '');
+
+  if (!devSerial) {
+    showToast('Select a device to view Modbus details');
+    return;
+  }
+
+  if (el.modbusDetailsModal) {
+    el.modbusDetailsModal.classList.add('open');
+    if (el.detailsModalTitle) {
+      el.detailsModalTitle.textContent = (typeof fieldOrKey === 'object' && fieldOrKey.label) ? fieldOrKey.label : fieldKey;
+    }
+    if (el.detailsModalKey) {
+      el.detailsModalKey.textContent = fieldKey;
+    }
+    if (el.detailsModalBody) {
+      el.detailsModalBody.innerHTML = '<div class="loading-spinner">Loading Modbus details...</div>';
+    }
+  }
+
+  try {
+    const url = apiPath(`api/devices/${encodeURIComponent(devSerial)}/field_details?field_key=${encodeURIComponent(fieldKey)}`);
+    const res = await fetch(url);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    currentDetailsData = data;
+    renderFieldDetailsModal(data);
+  } catch (err) {
+    console.error('Failed loading field details:', err);
+    if (el.detailsModalBody) {
+      el.detailsModalBody.innerHTML = `
+        <div class="empty-state">
+          <p style="color: #ef4444; font-weight: 600; margin-bottom: 8px;">Failed to load Modbus details</p>
+          <p class="text-muted">${escapeHtml(err.message)}</p>
+        </div>
+      `;
+    }
+  }
+}
+
+function renderFieldDetailsModal(data) {
+  if (!el.detailsModalBody) return;
+
+  const f = data.field || {};
+  const pt = data.point_def || {};
+  const model = data.model || {};
+  const sf = data.scale_factor;
+  const dev = data.device || {};
+
+  // Update header badges
+  if (el.detailsModalTitle) {
+    el.detailsModalTitle.textContent = f.label || pt.label || f.name || f.key;
+  }
+  if (el.detailsModalKey) {
+    el.detailsModalKey.textContent = f.key || pt.name;
+  }
+  if (el.detailsSourceBadge) {
+    const src = f.source || 'MODBUS';
+    el.detailsSourceBadge.textContent = src === 'MQTT_PUSH' ? '⚡ PUSH MQTT' : (f.is_compound ? '⚡ COMPOUND' : 'MODBUS REGISTER');
+    el.detailsSourceBadge.className = `source-tag ${src === 'MQTT_PUSH' ? 'mqtt' : (f.is_compound ? 'compound' : 'modbus')}`;
+  }
+  if (el.detailsDeviceLabel) {
+    el.detailsDeviceLabel.textContent = `Device: ${dev.model_name || dev.device_type} (SN: ${dev.serial_number}${dev.slave_id !== null && dev.slave_id !== undefined ? `, Slave ID: ${dev.slave_id}` : ''})`;
+  }
+
+  let html = '';
+
+  // 1. Top Summary Cards (Current Value, Raw Register, Addressing, Access & Type)
+  const displayVal = formatFieldValue(f.value, f);
+  const offsetStr = (f.offset !== null && f.offset !== undefined) ? `+${f.offset}` : ((pt.offset !== null && pt.offset !== undefined) ? `+${pt.offset}` : '--');
+  const sizeStr = f.size || pt.size || 1;
+  const bitsStr = `${sizeStr * 16}-bit`;
+  const accessStr = f.access === 'RW' || pt.access === 'RW' ? 'Read-Write (RW)' : 'Read-Only (R)';
+  const fcStr = f.access === 'RW' || pt.access === 'RW' ? 'FC03 / FC06, FC16' : 'FC03 (Read)';
+  const modelTag = model.model_id ? `Model ${model.model_id} (${model.name})` : (f.model_name || 'N/A');
+
+  html += `
+    <div class="details-summary-grid">
+      <div class="details-card">
+        <span class="details-card-lbl">Current Processed Value</span>
+        <div class="details-card-val">
+          <span>${displayVal}</span>
+          ${f.units ? `<span class="unit-text">${f.units}</span>` : ''}
+        </div>
+        <span class="details-card-sub">Interpreted physical engineering value</span>
+      </div>
+
+      <div class="details-card">
+        <span class="details-card-lbl">Raw Modbus Register Content</span>
+        <div class="details-card-val">
+          <span>${f.raw_value !== null && f.raw_value !== undefined ? f.raw_value : '--'}</span>
+          ${f.raw_hex ? `<span class="raw-hex-badge">${f.raw_hex}</span>` : ''}
+        </div>
+        ${f.raw_bin ? `<span class="details-card-sub" style="font-family: var(--font-mono); font-size: 10px;">BIN: ${f.raw_bin}</span>` : '<span class="details-card-sub">Unscaled holding register word(s)</span>'}
+      </div>
+
+      <div class="details-card">
+        <span class="details-card-lbl">Modbus Addressing</span>
+        <div class="details-card-val">
+          <span>Offset ${offsetStr}</span>
+        </div>
+        <span class="details-card-sub">${modelTag} • ${sizeStr} word (${bitsStr}, ${fcStr})</span>
+      </div>
+
+      <div class="details-card">
+        <span class="details-card-lbl">SunSpec Metamodel &amp; Access</span>
+        <div class="details-card-val">
+          <span style="font-size: 15px;">${f.point_type || pt.type || 'uint16'}</span>
+        </div>
+        <span class="details-card-sub">${accessStr} • Big-Endian</span>
+      </div>
+    </div>
+  `;
+
+  // 2. SunSpec Bounds & Restrictions Card
+  const bounds = data.bounds || pt.bounds || f.bounds || getFieldBounds(f);
+  if (bounds) {
+    const isSettable = f.is_writable || pt.is_writable || false;
+    let bRange = '--';
+    let bRaw = '--';
+    let bStep = bounds.step !== undefined ? String(bounds.step) : '1';
+    let bType = bounds.point_type || pt.type || f.point_type || 'uint16';
+    let bSentinel = bounds.sentinel ? `0x${bounds.sentinel.toString(16).toUpperCase()} (Invalid / Unsupported)` : 'None';
+    let bSf = bounds.sf ? `${bounds.sf}${bounds.sf_value !== null && bounds.sf_value !== undefined ? ' (10^' + bounds.sf_value + ')' : ''}` : 'Direct (No Scale Factor)';
+
+    if (bounds.category === 'numeric') {
+      if (bounds.scaled_min !== null && bounds.scaled_min !== undefined && bounds.scaled_max !== null && bounds.scaled_max !== undefined) {
+        bRange = `${bounds.scaled_min} to ${bounds.scaled_max} ${bounds.units || ''}`.trim();
+        bRaw = `${bounds.raw_min.toLocaleString()} to ${bounds.raw_max.toLocaleString()}`;
+      } else if (bounds.raw_min !== null && bounds.raw_min !== undefined) {
+        bRange = `${bounds.raw_min.toLocaleString()} to ${bounds.raw_max.toLocaleString()} ${bounds.units || ''}`.trim();
+        bRaw = bRange;
+      }
+    } else if (bounds.category === 'enum') {
+      bRange = `${bounds.valid_values?.length || 0} discrete symbols`;
+      bRaw = bounds.raw_min !== null && bounds.raw_min !== undefined ? `${bounds.raw_min} to ${bounds.raw_max}` : 'Discrete symbols';
+    } else if (bounds.category === 'bitfield') {
+      bRange = `Bitmask 0x0000 to ${bounds.mask_hex || '0xFFFF'}`;
+      bRaw = `0 to ${bounds.raw_max}`;
+    } else if (bounds.category === 'string') {
+      bRange = `Max ${bounds.max_length} characters`;
+      bRaw = `${bounds.size_words || f.size || 1} register(s)`;
+    } else if (bounds.category === 'float') {
+      bRange = `IEEE 754 Float ${bounds.units || ''}`.trim();
+      bRaw = '32-bit float';
+    }
+
+    html += `
+      <div class="details-bounds-card">
+        <div class="details-bounds-header">
+          <div class="details-bounds-title">
+            <span>📏 SunSpec Bounds &amp; Restrictions</span>
+          </div>
+          <span class="${isSettable ? 'badge-writable' : 'source-tag'}">
+            ${isSettable ? 'RW (Settable)' : 'R (Read-Only)'}
+          </span>
+        </div>
+        <div class="details-bounds-grid">
+          <div class="write-bounds-item">
+            <span class="write-bounds-lbl">Settable Status</span>
+            <span class="write-bounds-val">${isSettable ? 'Read/Write (FC03/FC06/FC16)' : 'Read-Only (FC03)'}</span>
+          </div>
+          <div class="write-bounds-item">
+            <span class="write-bounds-lbl">Allowed Range</span>
+            <span class="write-bounds-val">${escapeHtml(bRange)}</span>
+          </div>
+          <div class="write-bounds-item">
+            <span class="write-bounds-lbl">Data Type Definition</span>
+            <span class="write-bounds-val">${escapeHtml(bType)}</span>
+          </div>
+          ${bounds.category === 'numeric' ? `
+          <div class="write-bounds-item">
+            <span class="write-bounds-lbl">Raw Modbus Range</span>
+            <span class="write-bounds-val">${escapeHtml(bRaw)}</span>
+          </div>
+          <div class="write-bounds-item">
+            <span class="write-bounds-lbl">Resolution / Step</span>
+            <span class="write-bounds-val">${escapeHtml(bStep)}</span>
+          </div>
+          ` : ''}
+          ${bounds.sf ? `
+          <div class="write-bounds-item">
+            <span class="write-bounds-lbl">Scale Factor Ref</span>
+            <span class="write-bounds-val">${escapeHtml(bSf)}</span>
+          </div>
+          ` : ''}
+          ${bounds.sentinel ? `
+          <div class="write-bounds-item">
+            <span class="write-bounds-lbl">Reserved Sentinel</span>
+            <span class="write-bounds-val">${escapeHtml(bSentinel)}</span>
+          </div>
+          ` : ''}
+        </div>
+        ${bounds.description ? `<div class="write-bounds-desc">ℹ️ <strong>SunSpec Specification:</strong> ${escapeHtml(bounds.description)}</div>` : ''}
+      </div>
+    `;
+  }
+
+  // 2. Scale Factor Section
+  if (sf) {
+    html += `
+      <div class="scale-factor-card">
+        <div class="sf-card-header">
+          <div class="sf-card-title">
+            <span>⚖️ Associated Scale Factor: <strong>${escapeHtml(sf.name)}</strong></span>
+            <span class="badge-model">Offset +${sf.offset !== null && sf.offset !== undefined ? sf.offset : '--'}</span>
+          </div>
+          <button class="btn btn-secondary btn-xs btn-inspect-sf" data-key="${escapeHtml(sf.key)}" data-serial="${escapeHtml(dev.serial_number)}" title="Explore Scale Factor Details">
+            Inspect ${escapeHtml(sf.name)} ➔
+          </button>
+        </div>
+        <div class="sf-card-content">
+          <div class="sf-item">
+            <span class="sf-item-lbl">Scale Factor Register</span>
+            <span class="sf-item-val">${escapeHtml(sf.label || sf.name)} (${escapeHtml(sf.key)})</span>
+            <span class="text-muted" style="font-size: 11px;">${escapeHtml(sf.description || 'SunSpec exponent factor')}</span>
+          </div>
+          <div class="sf-item">
+            <span class="sf-item-lbl">Multiplier &amp; Exponent</span>
+            <span class="sf-item-val">Raw Value: <strong>${sf.raw_value !== null ? sf.raw_value : '--'}</strong> ${sf.raw_hex ? `(${sf.raw_hex})` : ''} &bull; Multiplier: <strong>${sf.multiplier !== null ? sf.multiplier : '--'}</strong> (10<sup>${sf.value !== null ? sf.value : 0}</sup>)</span>
+          </div>
+        </div>
+        ${sf.formula ? `<div class="sf-formula-box">📐 ${escapeHtml(sf.formula)}</div>` : ''}
+      </div>
+    `;
+  } else if (f.is_scale_factor || pt.is_scale_factor) {
+    html += `
+      <div class="scale-factor-card" style="border-color: rgba(16, 185, 129, 0.35); background: linear-gradient(135deg, rgba(16, 185, 129, 0.08), rgba(56, 189, 248, 0.08));">
+        <div class="sf-card-header">
+          <div class="sf-card-title" style="color: #34d399;">
+            <span>⚖️ SunSpec Scale Factor Register (sunssf)</span>
+          </div>
+        </div>
+        <p style="font-size: 12px; color: var(--text-secondary);">
+          This register defines an integer base-10 exponent factor (<strong>10<sup>${f.value !== null ? f.value : 0}</sup> = ${f.value !== null && -10 <= f.value && f.value <= 10 ? (10 ** f.value) : '--'}</strong>) applied to scale other telemetry registers in Model ${model.model_id || ''}.
+        </p>
+      </div>
+    `;
+  }
+
+  // 3. Points Scaled by this Register (if this point is a scale factor)
+  if (data.scaled_points && data.scaled_points.length > 0) {
+    html += `
+      <div class="details-section">
+        <div class="details-section-header">
+          <div class="details-section-title">
+            <span>🎯 Registers Scaled by this Point</span>
+            <span class="details-count-pill">${data.scaled_points.length} registers</span>
+          </div>
+        </div>
+        <div class="table-container" style="max-height: 220px; overflow-y: auto;">
+          <table class="associated-regs-table">
+            <thead>
+              <tr>
+                <th>Register</th>
+                <th>Offset</th>
+                <th>Type</th>
+                <th>Raw Value</th>
+                <th>Scaled Value</th>
+                <th width="70" class="text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${data.scaled_points.map(sp => `
+                <tr>
+                  <td>
+                    <div><strong>${escapeHtml(sp.name)}</strong> <small class="text-muted">${escapeHtml(sp.label || '')}</small></div>
+                    <span class="field-key">${escapeHtml(sp.key)}</span>
+                  </td>
+                  <td>+${sp.offset !== null && sp.offset !== undefined ? sp.offset : '--'}</td>
+                  <td>${escapeHtml(sp.type || 'uint16')}</td>
+                  <td>${sp.raw_value !== null ? sp.raw_value : '--'} ${sp.raw_hex ? `<span class="raw-hex-badge">${sp.raw_hex}</span>` : ''}</td>
+                  <td><strong>${sp.value !== null ? sp.value : '--'}</strong> ${sp.units ? escapeHtml(sp.units) : ''}</td>
+                  <td class="text-right">
+                    <button class="btn btn-secondary btn-xs btn-inspect-reg" data-key="${escapeHtml(sp.key)}" data-serial="${escapeHtml(dev.serial_number)}">View</button>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  // 4. Associated & Sibling Registers Table
+  if (data.associated_registers && data.associated_registers.length > 0) {
+    html += `
+      <div class="details-section">
+        <div class="details-section-header">
+          <div class="details-section-title">
+            <span>🔗 Associated Registers</span>
+            <span class="details-count-pill">${data.associated_registers.length}</span>
+          </div>
+        </div>
+        <div class="table-container" style="max-height: 240px; overflow-y: auto;">
+          <table class="associated-regs-table">
+            <thead>
+              <tr>
+                <th>Register &amp; Label</th>
+                <th>Relationship</th>
+                <th>Offset</th>
+                <th>Type</th>
+                <th>Raw</th>
+                <th>Current Value</th>
+                <th width="70" class="text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${data.associated_registers.map(ar => {
+                let relClass = 'rel-shared-sf';
+                if (ar.relationship === 'Scale Factor') relClass = 'rel-scale-factor';
+                else if (ar.relationship.startsWith('Scaled by')) relClass = 'rel-scaled-by';
+                else if (ar.relationship === 'Phase Sibling') relClass = 'rel-sibling';
+
+                const dispVal = ar.value !== null && ar.value !== undefined ? `${ar.value} ${ar.units || ''}` : '--';
+                return `
+                  <tr>
+                    <td>
+                      <div><strong>${escapeHtml(ar.name)}</strong> <small class="text-muted">${escapeHtml(ar.label || '')}</small></div>
+                      <span class="field-key">${escapeHtml(ar.key)}</span>
+                    </td>
+                    <td><span class="rel-badge ${relClass}">${escapeHtml(ar.relationship)}</span></td>
+                    <td>+${ar.offset !== null && ar.offset !== undefined ? ar.offset : '--'}</td>
+                    <td>${escapeHtml(ar.type || 'uint16')}</td>
+                    <td>${ar.raw_value !== null ? ar.raw_value : '--'} ${ar.raw_hex ? `<span class="raw-hex-badge">${ar.raw_hex}</span>` : ''}</td>
+                    <td><strong>${escapeHtml(dispVal)}</strong></td>
+                    <td class="text-right">
+                      <button class="btn btn-secondary btn-xs btn-inspect-reg" data-key="${escapeHtml(ar.key)}" data-serial="${escapeHtml(dev.serial_number)}">View</button>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  // 5. Enum Symbols Table (if enum)
+  if (data.enum_symbols && data.enum_symbols.length > 0) {
+    html += `
+      <div class="details-section">
+        <div class="details-section-header">
+          <div class="details-section-title">
+            <span>🔢 Enum Option Symbols</span>
+            <span class="details-count-pill">${data.enum_symbols.length} symbols</span>
+          </div>
+        </div>
+        <div class="table-container" style="max-height: 200px; overflow-y: auto;">
+          <table class="modal-symbols-table">
+            <thead>
+              <tr>
+                <th width="60">Value</th>
+                <th>Symbol Name</th>
+                <th>Label / Description</th>
+                <th width="90" class="text-center">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${data.enum_symbols.map(sym => `
+                <tr class="${sym.is_active ? 'symbol-row-active' : ''}">
+                  <td><code>${sym.value}</code></td>
+                  <td><strong>${escapeHtml(sym.name)}</strong></td>
+                  <td>${escapeHtml(sym.label || '')} <small class="text-muted">${escapeHtml(sym.desc || '')}</small></td>
+                  <td class="text-center">
+                    ${sym.is_active ? '<span class="badge-active-sym">✓ ACTIVE</span>' : '<span class="text-muted">&mdash;</span>'}
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  // 6. Bitfield Flags Table (if bitfield)
+  if (data.bitfield_flags && data.bitfield_flags.length > 0) {
+    html += `
+      <div class="details-section">
+        <div class="details-section-header">
+          <div class="details-section-title">
+            <span>🚩 Bitfield Flag Definitions</span>
+            <span class="details-count-pill">${data.bitfield_flags.length} flags</span>
+          </div>
+        </div>
+        <div class="table-container" style="max-height: 220px; overflow-y: auto;">
+          <table class="modal-symbols-table">
+            <thead>
+              <tr>
+                <th width="50">Bit</th>
+                <th width="80">Mask</th>
+                <th>Flag Name</th>
+                <th>Description</th>
+                <th width="90" class="text-center">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${data.bitfield_flags.map(bf => `
+                <tr class="${bf.is_set ? 'symbol-row-active' : ''}">
+                  <td><code>${bf.bit}</code></td>
+                  <td><code>${bf.mask}</code></td>
+                  <td><strong>${escapeHtml(bf.name)}</strong></td>
+                  <td><span class="text-muted">${escapeHtml(bf.desc || bf.label || '')}</span></td>
+                  <td class="text-center">
+                    ${bf.is_set ? '<span class="badge-set-flag">SET (1)</span>' : '<span class="badge-clear-flag">CLEAR (0)</span>'}
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  // 7. Compound / Telemetry Link Card (if linked or compound)
+  if (data.compound_link) {
+    const cl = data.compound_link;
+    const matchStr = cl.match_pct !== null && cl.match_pct !== undefined ? `${cl.match_pct}% match` : '';
+    const deltaStr = cl.delta !== null && cl.delta !== undefined ? `Delta: ${cl.delta}` : '';
+    html += `
+      <div class="scale-factor-card" style="border-color: rgba(236, 72, 153, 0.35); background: linear-gradient(135deg, rgba(236, 72, 153, 0.08), rgba(99, 102, 241, 0.08));">
+        <div class="sf-card-header">
+          <div class="sf-card-title" style="color: #f472b6;">
+            <span>⚡ Unified Telemetry Link: <strong>${escapeHtml(cl.label || cl.mapping_id || cl.key)}</strong></span>
+          </div>
+          <span class="source-tag compound">Compound View</span>
+        </div>
+        <div class="sf-card-content" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
+          <div class="sf-item">
+            <span class="sf-item-lbl">Latest Combined Value</span>
+            <span class="sf-item-val" style="font-size: 15px; font-weight: 700;">${cl.latest_value !== null ? cl.latest_value : '--'}</span>
+            <span class="text-muted" style="font-size: 11px;">Source: ${cl.latest_source || 'NONE'}</span>
+          </div>
+          <div class="sf-item">
+            <span class="sf-item-lbl">Direct Push MQTT</span>
+            <span class="sf-item-val">${cl.mqtt_value !== null ? cl.mqtt_value : '--'}</span>
+            <span class="text-muted" style="font-size: 11px;">${cl.mqtt_key || '--'}</span>
+          </div>
+          <div class="sf-item">
+            <span class="sf-item-lbl">Polled Modbus Register</span>
+            <span class="sf-item-val">${cl.modbus_value !== null ? cl.modbus_value : '--'}</span>
+            <span class="text-muted" style="font-size: 11px;">${cl.modbus_key || '--'}</span>
+          </div>
+          <div class="sf-item">
+            <span class="sf-item-lbl">Correlation</span>
+            <span class="sf-item-val">${matchStr} ${deltaStr ? `(${deltaStr})` : ''}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // 8. Raw Specification Properties Grid
+  html += `
+    <div class="details-section">
+      <div class="details-section-header">
+        <div class="details-section-title">
+          <span>📋 SunSpec &amp; Modbus Register Definition Specification</span>
+        </div>
+      </div>
+      <table class="def-props-table">
+        <tbody>
+          <tr>
+            <td class="def-prop-key">Point Identifier</td>
+            <td class="def-prop-val"><strong>${escapeHtml(pt.name || f.name)}</strong></td>
+          </tr>
+          <tr>
+            <td class="def-prop-key">Official Label</td>
+            <td class="def-prop-val">${escapeHtml(pt.label || f.label || '')}</td>
+          </tr>
+          <tr>
+            <td class="def-prop-key">Field Key</td>
+            <td class="def-prop-val"><code>${escapeHtml(f.key || '')}</code></td>
+          </tr>
+          <tr>
+            <td class="def-prop-key">SunSpec Description</td>
+            <td class="def-prop-val">${escapeHtml(pt.desc || f.description || 'No description provided')}</td>
+          </tr>
+          <tr>
+            <td class="def-prop-key">SunSpec Model</td>
+            <td class="def-prop-val">Model ${model.model_id || 'N/A'}: ${escapeHtml(model.label || model.name || '')} (<code>${escapeHtml(model.name || '')}</code>)</td>
+          </tr>
+          ${model.desc ? `
+          <tr>
+            <td class="def-prop-key">Model Description</td>
+            <td class="def-prop-val text-muted">${escapeHtml(model.desc)}</td>
+          </tr>
+          ` : ''}
+          <tr>
+            <td class="def-prop-key">Modbus Word Offset</td>
+            <td class="def-prop-val">+${offsetStr} (relative to SunSpec model block start)</td>
+          </tr>
+          <tr>
+            <td class="def-prop-key">Register Word Count</td>
+            <td class="def-prop-val">${sizeStr} register${sizeStr > 1 ? 's' : ''} (${sizeStr * 16} bits, ${sizeStr * 2} bytes)</td>
+          </tr>
+          <tr>
+            <td class="def-prop-key">Modbus Function Codes</td>
+            <td class="def-prop-val"><code>${fcStr}</code> &bull; Holding Registers</td>
+          </tr>
+          <tr>
+            <td class="def-prop-key">Byte &amp; Word Order</td>
+            <td class="def-prop-val">Big-Endian (SunSpec standard MSB-first)</td>
+          </tr>
+          <tr>
+            <td class="def-prop-key">SunSpec Point Type</td>
+            <td class="def-prop-val"><code>${escapeHtml(pt.type || f.point_type || 'uint16')}</code></td>
+          </tr>
+          <tr>
+            <td class="def-prop-key">Modbus Access</td>
+            <td class="def-prop-val">${accessStr}</td>
+          </tr>
+          <tr>
+            <td class="def-prop-key">Physical Units</td>
+            <td class="def-prop-val">${pt.units || f.units || 'None (Dimensionless)'}</td>
+          </tr>
+          <tr>
+            <td class="def-prop-key">Scale Factor Reference</td>
+            <td class="def-prop-val">${pt.sf || f.scale_factor_point ? `<code>${escapeHtml(pt.sf || f.scale_factor_point)}</code>` : 'None (Unscaled / Direct)'}</td>
+          </tr>
+          <tr>
+            <td class="def-prop-key">Mandatory Register</td>
+            <td class="def-prop-val">${pt.mandatory ? 'Yes (M - Required by standard)' : 'No (Optional)'}</td>
+          </tr>
+          <tr>
+            <td class="def-prop-key">Static Definition</td>
+            <td class="def-prop-val">${pt.static ? 'Yes (Static / Constant metadata)' : 'No (Dynamic operational metric)'}</td>
+          </tr>
+          <tr>
+            <td class="def-prop-key">Home Assistant Mapping</td>
+            <td class="def-prop-val"><code>${escapeHtml(f.ha_platform || 'sensor')}${f.ha_device_class ? ' (' + escapeHtml(f.ha_device_class) + ')' : ''}</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+
+  el.detailsModalBody.innerHTML = html;
+
+  // Wire up inspect buttons in the modal to seamlessly jump to related registers
+  el.detailsModalBody.querySelectorAll('.btn-inspect-reg, .btn-inspect-sf').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const targetKey = btn.dataset.key;
+      const targetSerial = btn.dataset.serial || (dev ? dev.serial_number : '');
+      if (targetKey) {
+        openFieldDetails(targetKey, targetSerial);
+      }
+    });
+  });
 }
 
 // Setup Event Listeners
@@ -1740,6 +2692,35 @@ function setupEventListeners() {
   el.btnCopyPreview.addEventListener('click', () => {
     navigator.clipboard.writeText(el.previewCode.textContent);
     showToast('Copied JSON to clipboard!');
+  });
+
+  // Details Modal
+  if (el.btnCloseDetailsModal) {
+    el.btnCloseDetailsModal.addEventListener('click', closeFieldDetails);
+  }
+  if (el.btnCloseDetailsFooter) {
+    el.btnCloseDetailsFooter.addEventListener('click', closeFieldDetails);
+  }
+  if (el.modbusDetailsModal) {
+    el.modbusDetailsModal.addEventListener('click', (e) => {
+      if (e.target === el.modbusDetailsModal) closeFieldDetails();
+    });
+  }
+  if (el.btnCopyDetailsJson) {
+    el.btnCopyDetailsJson.addEventListener('click', () => {
+      if (currentDetailsData) {
+        copyToClipboard(JSON.stringify(currentDetailsData, null, 2));
+        showToast('Copied Modbus register details JSON to clipboard!');
+      }
+    });
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeFieldDetails();
+    }
+  });
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.action-dropdown-menu.show').forEach(m => m.classList.remove('show'));
   });
 
   // Write Modal

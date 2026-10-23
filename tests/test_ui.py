@@ -556,6 +556,155 @@ class TestWebExplorerApi(unittest.TestCase):
             self.assertIn("inverter.live.grid_power_w", data["default_fields"])
             mock_export.assert_called_once()
 
+    def test_field_modbus_details_endpoint(self):
+        """Verify Modbus field details API endpoint returns raw register definitions, scale factors, and associated registers."""
+        inv = self.client.state.get_inverter()
+        inv_sn = inv.serial_number
+
+        # 1. Inspect register with scale factor: inverter.inverter.W
+        resp = self.test_client.get(f"/api/devices/{inv_sn}/field_details?field_key=inverter.inverter.W")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn("device", data)
+        self.assertEqual(data["device"]["serial_number"], inv_sn)
+        self.assertEqual(data["device"]["slave_id"], 8)
+        self.assertEqual(data["field"]["name"], "W")
+        self.assertEqual(data["point_def"]["type"], "int16")
+        self.assertEqual(data["point_def"]["size"], 1)
+        self.assertEqual(data["point_def"]["offset"], 14)
+
+        # Scale factor register verification
+        self.assertIsNotNone(data["scale_factor"])
+        self.assertEqual(data["scale_factor"]["name"], "W_SF")
+        self.assertEqual(data["scale_factor"]["offset"], 15)
+        self.assertEqual(data["scale_factor"]["type"], "sunssf")
+        self.assertIn("formula", data["scale_factor"])
+
+        # SunSpec bounds restrictions verification
+        self.assertIn("bounds", data)
+        self.assertEqual(data["bounds"]["category"], "numeric")
+        self.assertEqual(data["bounds"]["raw_min"], -32768)
+        self.assertEqual(data["bounds"]["raw_max"], 32767)
+        self.assertIn("description", data["bounds"])
+
+        # Associated registers verification
+        self.assertGreater(len(data["associated_registers"]), 0)
+        assoc_names = [a["name"] for a in data["associated_registers"]]
+        self.assertIn("W_SF", assoc_names)
+
+        # 2. Inspect vector/phase register: inverter.inverter.AphA
+        resp_apha = self.test_client.get(f"/api/devices/{inv_sn}/fields/inverter.inverter.AphA/modbus_details")
+        self.assertEqual(resp_apha.status_code, 200)
+        data_apha = resp_apha.get_json()
+        self.assertEqual(data_apha["field"]["name"], "AphA")
+        self.assertIsNotNone(data_apha["scale_factor"])
+        self.assertEqual(data_apha["scale_factor"]["name"], "A_SF")
+        assoc_apha = [a["name"] for a in data_apha["associated_registers"]]
+        self.assertIn("A_SF", assoc_apha)
+        self.assertIn("AphB", assoc_apha)
+        self.assertIn("AphC", assoc_apha)
+        self.assertIn("A", assoc_apha)
+
+        # 3. Inspect scale factor register itself: inverter.inverter.W_SF
+        resp_sf = self.test_client.get(f"/api/devices/{inv_sn}/field_details?field_key=inverter.inverter.W_SF")
+        self.assertEqual(resp_sf.status_code, 200)
+        data_sf = resp_sf.get_json()
+        self.assertTrue(data_sf["field"]["is_scale_factor"])
+        self.assertGreater(len(data_sf["scaled_points"]), 0)
+        scaled_names = [sp["name"] for sp in data_sf["scaled_points"]]
+        self.assertIn("W", scaled_names)
+
+        # 4. Inspect enum register: rebus_beacon.REbus_dir.SysMd
+        beacon = self.client.state.get_beacon()
+        b_sn = beacon.serial_number
+        resp_enum = self.test_client.get(f"/api/devices/{b_sn}/field_details?field_key=rebus_beacon.REbus_dir.SysMd")
+        self.assertEqual(resp_enum.status_code, 200)
+        data_enum = resp_enum.get_json()
+        self.assertTrue(data_enum["field"]["is_enum"])
+        self.assertIsNotNone(data_enum["enum_symbols"])
+        self.assertGreater(len(data_enum["enum_symbols"]), 0)
+        active_symbols = [s for s in data_enum["enum_symbols"] if s["is_active"]]
+        self.assertEqual(len(active_symbols), 1)
+
+        # Verify enum bounds
+        self.assertIn("bounds", data_enum)
+        self.assertEqual(data_enum["bounds"]["category"], "enum")
+        self.assertEqual(data_enum["bounds"]["point_type"], "enum16")
+        self.assertIn("CLEAN_BACKUP", data_enum["bounds"]["valid_names"])
+        self.assertIn(3, data_enum["bounds"]["valid_values"])
+
+        # 5. Inspect compound field: inverter.compound.grid_power
+        resp_comp = self.test_client.get(f"/api/devices/{inv_sn}/field_details?field_key=inverter.compound.grid_power")
+        self.assertEqual(resp_comp.status_code, 200)
+        data_comp = resp_comp.get_json()
+        self.assertIsNotNone(data_comp["compound_link"])
+        self.assertTrue(data_comp["compound_link"]["is_compound"])
+        self.assertIn("modbus_value", data_comp["compound_link"])
+        # Should also resolve underlying Modbus definition
+        self.assertIsNotNone(data_comp["point_def"])
+
+        # 6. Error handling: invalid field key returns 404
+        resp_err = self.test_client.get(f"/api/devices/{inv_sn}/field_details?field_key=nonexistent.field.key")
+        self.assertEqual(resp_err.status_code, 404)
+
+        # 7. Error handling: invalid device serial returns 404
+        resp_err_dev = self.test_client.get("/api/devices/INVALID_SERIAL/field_details?field_key=inverter.inverter.W")
+        self.assertEqual(resp_err_dev.status_code, 404)
+
+    def test_settable_fields_sunspec_bounds_restrictions(self):
+        """Verify SunSpec bounds restrictions are correctly populated and enforced for settable fields."""
+        inv = self.client.state.get_inverter()
+        inv_sn = inv.serial_number
+        beacon = self.client.state.get_beacon()
+        beacon_sn = beacon.serial_number
+
+        # 1. Settable enum field: SysMd in REbus_dir
+        resp_sysmd = self.test_client.get(f"/api/devices/{beacon_sn}/field_details?field_key=rebus_beacon.REbus_dir.SysMd")
+        self.assertEqual(resp_sysmd.status_code, 200)
+        data_sysmd = resp_sysmd.get_json()
+        b_sysmd = data_sysmd["bounds"]
+        self.assertEqual(b_sysmd["category"], "enum")
+        self.assertEqual(b_sysmd["point_type"], "enum16")
+        self.assertEqual(b_sysmd["raw_min"], 0)
+        self.assertEqual(b_sysmd["raw_max"], 6)
+        self.assertIn("ARBITRAGE", b_sysmd["valid_names"])
+        self.assertIn("CLEAN_BACKUP", b_sysmd["valid_names"])
+        self.assertIn("SAFETY_SHUTDOWN", b_sysmd["valid_names"])
+        self.assertIn("7 options:", b_sysmd["description"])
+
+        # 2. Settable numeric field in common model: DA (Device Address - uint16, RW)
+        resp_da = self.test_client.get(f"/api/devices/{inv_sn}/field_details?field_key=inverter.common.DA")
+        self.assertEqual(resp_da.status_code, 200)
+        data_da = resp_da.get_json()
+        b_da = data_da["bounds"]
+        self.assertEqual(b_da["category"], "numeric")
+        self.assertEqual(b_da["point_type"], "uint16")
+        self.assertEqual(b_da["raw_min"], 0)
+        self.assertEqual(b_da["raw_max"], 65535)
+        self.assertEqual(b_da["step"], 1)
+        self.assertEqual(b_da["description"], "0 to 65,535")
+        self.assertEqual(b_da["sentinel"], 65535)
+
+        # 3. Check /api/devices/<serial_number> includes bounds in fields dictionary
+        resp_dev = self.test_client.get(f"/api/devices/{beacon_sn}")
+        self.assertEqual(resp_dev.status_code, 200)
+        dev_data = resp_dev.get_json()
+        self.assertIn("fields", dev_data)
+        sysmd_field = dev_data["fields"].get("rebus_beacon.REbus_dir.SysMd")
+        self.assertIsNotNone(sysmd_field)
+        self.assertIn("bounds", sysmd_field)
+        self.assertEqual(sysmd_field["bounds"]["category"], "enum")
+
+        # 4. Check /api/fields includes bounds
+        resp_all = self.test_client.get("/api/fields")
+        self.assertEqual(resp_all.status_code, 200)
+        all_fields = resp_all.get_json()
+        writable_fields = [f for f in all_fields if f.get("is_writable")]
+        self.assertGreater(len(writable_fields), 0)
+        for wf in writable_fields:
+            self.assertIn("bounds", wf)
+            self.assertIsNotNone(wf["bounds"])
+
 
 if __name__ == "__main__":
     unittest.main()

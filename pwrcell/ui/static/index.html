@@ -182,7 +182,7 @@
                 <th class="sortable" data-sort="type" title="Sort by Type / Platform (Shift-click to multi-sort)">
                   <span class="th-content">Type / Platform<span class="sort-indicator"></span></span>
                 </th>
-                <th width="80" class="text-right">Actions</th>
+                <th width="140" class="text-right">Actions</th>
               </tr>
             </thead>
             <tbody id="fieldTableBody">
@@ -231,12 +231,14 @@
 
   <!-- Write Value Modal -->
   <div class="modal-backdrop" id="writeModal">
-    <div class="modal modal-sm">
+    <div class="modal modal-md">
       <div class="modal-header">
         <h3 id="writeModalTitle">Edit Field Value</h3>
         <button class="modal-close" id="btnCancelWrite">&times;</button>
       </div>
       <div class="modal-body">
+        <div id="writeModalError" class="write-error-banner" style="display: none;"></div>
+        <div id="writeModalBounds" class="write-bounds-container"></div>
         <p class="modal-desc" id="writeModalDesc">Enter a new value for this register:</p>
         <div class="form-group" id="writeInputContainer">
           <input type="text" id="writeInputValue" class="text-input" />
@@ -245,6 +247,35 @@
       <div class="modal-footer">
         <button class="btn btn-secondary" id="btnCancelWriteModal">Cancel</button>
         <button class="btn btn-primary" id="btnConfirmWrite">Write Value</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modbus Field Details Modal -->
+  <div class="modal-backdrop" id="modbusDetailsModal">
+    <div class="modal modal-lg modbus-details-modal">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <div class="modal-title-badges">
+            <span class="modal-tag">MODBUS REGISTER DEFINITION</span>
+            <span class="source-tag modbus" id="detailsSourceBadge">MODBUS</span>
+          </div>
+          <h3 id="detailsModalTitle">Field Details</h3>
+          <span class="field-key-badge" id="detailsModalKey">--</span>
+        </div>
+        <button class="modal-close" id="btnCloseDetailsModal">&times;</button>
+      </div>
+      <div class="modal-body" id="detailsModalBody">
+        <div class="loading-spinner">Loading Modbus details...</div>
+      </div>
+      <div class="modal-footer">
+        <div class="details-footer-left">
+          <span class="details-device-label" id="detailsDeviceLabel">--</span>
+        </div>
+        <div class="details-footer-actions">
+          <button class="btn btn-secondary" id="btnCopyDetailsJson" title="Copy complete register definition JSON to clipboard">📋 Copy JSON</button>
+          <button class="btn btn-primary" id="btnCloseDetailsFooter">Close</button>
+        </div>
       </div>
     </div>
   </div>
