@@ -16,6 +16,10 @@ const state = {
   activeDeviceModels: [],
   selectedModel: 'all',
   groupByModel: false,
+  viewMode: 'unified', // 'unified' (grouped concepts) or 'raw' (all registers)
+  unifiedFields: [],
+  preferredSources: {}, // { [concept_id]: preferred_field_key }
+  optimizationPlan: null,
   activeFields: [],
   selectedHaKeys: new Set(),
   modifiedDeviceSerials: new Set(),
@@ -27,6 +31,8 @@ const state = {
   eventSource: null,
   sortCriteria: [], // [{ column: 'model', dir: 'asc' }, ...]
   multiSortMode: false,
+  bannerCollapsed: false,
+  showAvoidedModels: false,
 };
 
 // DOM Elements
@@ -45,6 +51,16 @@ const el = {
   searchClear: document.getElementById('searchClear'),
   modelSelect: document.getElementById('modelSelect'),
   groupByModel: document.getElementById('groupByModel'),
+  viewModeToggle: document.getElementById('viewModeToggle'),
+  countUnified: document.getElementById('countUnified'),
+  countRaw: document.getElementById('countRaw'),
+  viewModeBadge: document.getElementById('viewModeBadge'),
+  optimizationBanner: document.getElementById('optimizationBanner'),
+  optBannerTitle: document.getElementById('optBannerTitle'),
+  optBannerSubtitle: document.getElementById('optBannerSubtitle'),
+  optModelsBadges: document.getElementById('optModelsBadges'),
+  btnResetPins: document.getElementById('btnResetPins'),
+  thModelContent: document.getElementById('thModelContent'),
   filterPills: document.getElementById('filterPills'),
   hideScaleFactors: document.getElementById('hideScaleFactors'),
   hideCombinedRaw: document.getElementById('hideCombinedRaw'),
@@ -252,6 +268,11 @@ async function selectDevice(serialNumber) {
   const dev = state.devices.find(d => d.serial_number === serialNumber);
   if (!dev) return;
 
+  if (state.selectedDeviceSn !== serialNumber) {
+    state.preferredSources = {};
+  }
+  state.selectedDeviceSn = serialNumber;
+
   state.activeDevice = dev;
   renderDeviceSidebar();
 
@@ -349,7 +370,16 @@ async function selectDevice(serialNumber) {
 
     // Compound fields first, then raw fields
     state.activeFields = [...compoundFields, ...rawFields];
-    el.activeDeviceFieldCount.textContent = state.activeFields.length;
+    state.unifiedFields = data.unified_fields || [];
+    // Populate state.preferredSources from backend if not already set locally
+    state.unifiedFields.forEach(g => {
+      if (g.preferred_source_key && !state.preferredSources[g.id]) {
+        state.preferredSources[g.id] = g.preferred_source_key;
+      }
+    });
+    el.activeDeviceFieldCount.textContent = state.viewMode === 'unified' ? state.unifiedFields.length : state.activeFields.length;
+    if (el.countUnified) el.countUnified.textContent = state.unifiedFields.length;
+    if (el.countRaw) el.countRaw.textContent = state.activeFields.length;
     state.activeDeviceModels = data.models || [];
     if (el.activeDeviceModelCount) {
       el.activeDeviceModelCount.textContent = state.activeDeviceModels.length || (dev.supported_models ? dev.supported_models.length : '--');
@@ -357,6 +387,7 @@ async function selectDevice(serialNumber) {
     populateModelDropdown(state.activeDeviceModels, state.activeFields);
     updateFilterCounts();
     renderFieldTable();
+    updateOptimizationPlan();
   } catch (err) {
     console.error('Failed fetching device fields:', err);
   }
@@ -421,13 +452,22 @@ function getFieldDeviceSn(f) {
 function isFieldSelected(f) {
   if (!f) return false;
   const sn = getFieldDeviceSn(f);
-  if (sn) {
-    if (state.selectedHaKeys.has(`${sn}:${f.key}`)) return true;
-    if (f.mqtt_key && state.selectedHaKeys.has(`${sn}:${f.mqtt_key}`)) return true;
+
+  const checkKey = (k) => {
+    if (!k) return false;
+    if (sn && state.selectedHaKeys.has(`${sn}:${k}`)) return true;
+    return state.selectedHaKeys.has(k);
+  };
+
+  if (checkKey(f.key)) return true;
+  if (checkKey(f.id)) return true;
+  if (checkKey(f.mqtt_key)) return true;
+  if (checkKey(f.active_source_key)) return true;
+  if (f.sources && Array.isArray(f.sources)) {
+    for (const s of f.sources) {
+      if (checkKey(s.field_key)) return true;
+    }
   }
-  // Fall back to legacy global key
-  if (state.selectedHaKeys.has(f.key)) return true;
-  if (f.mqtt_key && state.selectedHaKeys.has(f.mqtt_key)) return true;
   return false;
 }
 
@@ -437,16 +477,35 @@ function toggleHaSelection(f, isSelected) {
   if (sn) {
     state.modifiedDeviceSerials.add(sn);
   }
-  const scopedKey = sn ? `${sn}:${f.key}` : f.key;
+
+  const primaryKey = f.active_source_key || f.key || f.id;
+  const scopedPrimaryKey = sn ? `${sn}:${primaryKey}` : primaryKey;
+  const scopedId = (sn && f.id) ? `${sn}:${f.id}` : f.id;
+  const scopedKey = (sn && f.key) ? `${sn}:${f.key}` : f.key;
   const scopedMqttKey = (sn && f.mqtt_key) ? `${sn}:${f.mqtt_key}` : f.mqtt_key;
 
   if (isSelected) {
-    state.selectedHaKeys.add(scopedKey);
+    state.selectedHaKeys.add(scopedPrimaryKey);
+    if (scopedId && f.sources) state.selectedHaKeys.add(scopedId);
   } else {
-    state.selectedHaKeys.delete(scopedKey);
-    state.selectedHaKeys.delete(f.key);
+    state.selectedHaKeys.delete(scopedPrimaryKey);
+    state.selectedHaKeys.delete(primaryKey);
+    if (scopedId) {
+      state.selectedHaKeys.delete(scopedId);
+      state.selectedHaKeys.delete(f.id);
+    }
+    if (scopedKey) {
+      state.selectedHaKeys.delete(scopedKey);
+      state.selectedHaKeys.delete(f.key);
+    }
     if (scopedMqttKey) state.selectedHaKeys.delete(scopedMqttKey);
     if (f.mqtt_key) state.selectedHaKeys.delete(f.mqtt_key);
+    if (f.sources && Array.isArray(f.sources)) {
+      for (const s of f.sources) {
+        state.selectedHaKeys.delete(s.field_key);
+        if (sn) state.selectedHaKeys.delete(`${sn}:${s.field_key}`);
+      }
+    }
   }
   updateHaCounter();
   updateFilterCounts();
@@ -458,6 +517,10 @@ function getHaSortValue(f) {
 }
 
 function getModelSortValue(f) {
+  if (f.sources && Array.isArray(f.sources)) {
+    const firstModel = f.sources.find(s => s.model_id !== null && s.model_id !== undefined);
+    return firstModel ? Number(firstModel.model_id) : -1;
+  }
   if (f.is_compound) return -1;
   if (f.model_id !== undefined && f.model_id !== null) {
     const num = Number(f.model_id);
@@ -468,11 +531,11 @@ function getModelSortValue(f) {
 }
 
 function getNameSortValue(f) {
-  return (f.label || f.name || f.key || '').toLowerCase();
+  return (f.label || f.name || f.concept_key || f.key || '').toLowerCase();
 }
 
 function getValueSortValue(f) {
-  const val = f.is_compound ? f.latest_value : f.value;
+  const val = (f.latest_value !== undefined) ? f.latest_value : f.value;
   if (val === null || val === undefined || val === '') {
     return { isNull: true, num: null, str: '' };
   }
@@ -497,6 +560,7 @@ function getUnitSortValue(f) {
 }
 
 function getSourceSortValue(f) {
+  if (f.sources && Array.isArray(f.sources)) return '0_unified';
   if (f.is_compound) return '1_compound';
   if (f.source === 'MQTT_PUSH') return '2_mqtt_push';
   if (f.source === 'MODBUS_POLL') return '3_modbus_poll';
@@ -819,59 +883,256 @@ function formatBoundsBadge(field) {
   `;
 }
 
-// Render Field Table with Search, Filter & Multi-Column Sorting
-function renderFieldTable() {
-  const filtered = state.activeFields.filter(f => {
-    // Model filter
-    if (state.selectedModel !== 'all') {
-      if (state.selectedModel === 'compound') {
-        if (!f.is_compound) return false;
-      } else if (String(f.model_id) !== String(state.selectedModel)) {
-        return false;
+// Update Polling Optimization Plan & Minimal Model Set
+async function updateOptimizationPlan() {
+  if (!state.activeDevice) {
+    if (el.optimizationBanner) el.optimizationBanner.style.display = 'none';
+    return;
+  }
+
+  const sn = state.activeDevice.serial_number;
+  try {
+    const res = await fetch(apiPath(`api/devices/${encodeURIComponent(sn)}/optimize_polling`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        selected_keys: Array.from(state.selectedHaKeys),
+        preferred_sources: state.preferredSources,
+      }),
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    state.optimizationPlan = data;
+
+    // Render optimization banner
+    if (el.optimizationBanner) {
+      const stats = data.stats || {};
+      const minModels = data.minimal_models || [];
+      const avoidedModels = data.models_avoided || [];
+      const totalItems = stats.total_items || 0;
+
+      if (totalItems > 0 || Object.keys(state.preferredSources).length > 0) {
+        el.optimizationBanner.style.display = 'block';
+        if (el.optBannerTitle) {
+          el.optBannerTitle.innerHTML = `<strong>Optimal Polling Plan:</strong> ${minModels.length} Model${minModels.length === 1 ? '' : 's'} Selected (${minModels.map(m => 'M' + m).join(', ')}) &bull; <span class="text-muted">${avoidedModels.length} avoided &bull; ${totalItems} selected field${totalItems === 1 ? '' : 's'}</span>`;
+        }
+        if (el.optBannerSubtitle) {
+          el.optBannerSubtitle.textContent = avoidedModels.length > 0
+            ? `${avoidedModels.length} redundant models excluded from Modbus polling to reduce RS-485 bus traffic.`
+            : `All active models required for the selected fields.`;
+        }
+
+        if (el.optModelsBadges) {
+          const activeBadges = minModels.map(m => `<span class="badge-opt-active" title="Model ${m} selected for active Modbus polling">M${m} (Polled)</span>`).join(' ');
+          const mqttBadge = stats.mqtt_covered_count ? `<span class="badge-opt-mqtt" title="${stats.mqtt_covered_count} points provided via Push MQTT">⚡ ${stats.mqtt_covered_count} Push MQTT</span>` : '';
+          const avoidedToggle = avoidedModels.length > 0
+            ? `<button type="button" class="btn-avoided-toggle" id="btnToggleAvoided" title="Toggle list of avoided models">${state.showAvoidedModels ? '▴ Hide Avoided' : `+${avoidedModels.length} avoided ▾`}</button>`
+            : '';
+          const avoidedDrawer = avoidedModels.length > 0
+            ? `<div class="opt-avoided-drawer" id="optAvoidedDrawer" style="display: ${state.showAvoidedModels ? 'flex' : 'none'};">${avoidedModels.map(m => `<span class="badge-opt-avoided" title="Model ${m} avoided to reduce RS-485 bus traffic">M${m} (Avoided)</span>`).join(' ')}</div>`
+            : '';
+
+          el.optModelsBadges.innerHTML = `
+            <div class="opt-models-row">
+              ${activeBadges} ${mqttBadge} ${avoidedToggle}
+            </div>
+            ${avoidedDrawer}
+          `;
+
+          const toggleBtn = el.optModelsBadges.querySelector('#btnToggleAvoided');
+          if (toggleBtn) {
+            toggleBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              state.showAvoidedModels = !state.showAvoidedModels;
+              const drawer = el.optModelsBadges.querySelector('#optAvoidedDrawer');
+              if (drawer) {
+                drawer.style.display = state.showAvoidedModels ? 'flex' : 'none';
+                toggleBtn.textContent = state.showAvoidedModels ? '▴ Hide Avoided' : `+${avoidedModels.length} avoided ▾`;
+              }
+            });
+          }
+        }
+
+        if (el.btnResetPins) {
+          el.btnResetPins.style.display = Object.keys(state.preferredSources).length > 0 ? 'inline-block' : 'none';
+        }
+      } else {
+        el.optimizationBanner.style.display = 'none';
       }
     }
 
-    // If Scale Factors pill is selected, only show scale factors
-    if (state.activeFilter === 'scalefactor') {
-      if (!f.is_scale_factor) return false;
-    } else if (state.hideScaleFactors && f.is_scale_factor && !state.searchQuery) {
-      // Hide scale factors in regular views unless user explicitly searched
-      return false;
+    // Update state.unifiedFields from authoritative backend response
+    if (data.unified_fields && Array.isArray(data.unified_fields)) {
+      state.unifiedFields = data.unified_fields;
+      // Clean up state.preferredSources if any were unpinned on backend
+      Object.keys(state.preferredSources).forEach(gId => {
+        const grp = state.unifiedFields.find(g => g.id === gId);
+        if (!grp || !grp.preferred_source_key) {
+          delete state.preferredSources[gId];
+        }
+      });
+      state.unifiedFields.forEach(g => {
+        if (g.preferred_source_key) {
+          state.preferredSources[g.id] = g.preferred_source_key;
+        }
+      });
+      if (state.viewMode === 'unified') {
+        renderFieldTable();
+      }
+    } else if (data.assignments && state.unifiedFields) {
+      state.unifiedFields.forEach(g => {
+        const chosen = data.assignments[g.id];
+        let foundActive = false;
+        if (state.preferredSources[g.id]) {
+          (g.sources || []).forEach(s => {
+            const isPin = s.field_key === state.preferredSources[g.id];
+            s.is_pinned = isPin;
+            if (isPin) {
+              g.active_source_key = s.field_key;
+              g.latest_value = s.value;
+              g.latest_source = s.source_id;
+              foundActive = true;
+            }
+          });
+        }
+        if (!foundActive) {
+          (g.sources || []).forEach(s => {
+            s.is_pinned = false;
+            const isMatch = chosen !== undefined && ((chosen === 'MQTT' && s.source_type === 'MQTT') || (s.model_id === chosen));
+            s.is_optimal = isMatch;
+            if (isMatch && !foundActive) {
+              g.active_source_key = s.field_key;
+              g.latest_value = s.value;
+              g.latest_source = s.source_id;
+              foundActive = true;
+            }
+          });
+        }
+      });
+      if (state.viewMode === 'unified') {
+        renderFieldTable();
+      }
     }
+  } catch (err) {
+    console.error('Failed optimizing polling:', err);
+  }
+}
 
-    // Hide raw MQTT / Modbus fields covered by combined telemetry
-    if (state.hideCombinedRaw && f.is_compound_raw && !state.searchQuery && state.activeFilter !== 'push' && state.activeFilter !== 'modbus' && state.activeFilter !== 'selected') {
-      return false;
-    }
+// Helper to determine if a field or group is a SunSpec scale factor
+function isScaleFactorField(f) {
+  if (!f) return false;
+  if (f.is_scale_factor) return true;
+  if (f.point_type === 'sunssf') return true;
+  if (f.name && (f.name.endsWith('_SF') || f.name.endsWith('_sf') || f.name.startsWith('sf_') || f.name.startsWith('SF_') || f.name.startsWith('sunssf_'))) return true;
+  if (f.concept_key && (f.concept_key.endsWith('_sf') || f.concept_key.endsWith('_SF') || f.concept_key.startsWith('sf_') || f.concept_key.startsWith('SF_') || f.concept_key.startsWith('sunssf_'))) return true;
+  if (f.key && (f.key.endsWith('_sf') || f.key.endsWith('_SF') || f.key.includes('.sf_') || f.key.includes('.SF_') || f.key.includes('.sunssf_'))) return true;
+  if (f.id && (f.id.endsWith('_sf') || f.id.endsWith('_SF') || f.id.includes('.sf_') || f.id.includes('.SF_') || f.id.includes('.sunssf_'))) return true;
+  if (f.label && f.label.toLowerCase().includes('scale factor')) return true;
+  if (f.sources && f.sources.some(s => isScaleFactorField(s))) return true;
+  return false;
+}
 
-    // Search query
-    if (state.searchQuery) {
-      const q = state.searchQuery.toLowerCase();
-      const match = f.label.toLowerCase().includes(q) ||
-                    f.key.toLowerCase().includes(q) ||
-                    (f.units && f.units.toLowerCase().includes(q)) ||
-                    (f.description && f.description.toLowerCase().includes(q));
-      if (!match) return false;
-    }
+// Render Field Table with Search, Filter & Multi-Column Sorting
+function renderFieldTable() {
+  const isUnified = state.viewMode === 'unified';
+  const sourceItems = isUnified ? state.unifiedFields : state.activeFields;
 
-    // Filter pill
-    switch (state.activeFilter) {
-      case 'compound':
-        return f.is_compound;
-      case 'selected':
-        return isFieldSelected(f);
-      case 'sensor':
-        return f.ha_platform === 'sensor';
-      case 'writable':
-        return f.is_writable;
-      case 'push':
-        return f.source === 'MQTT_PUSH' && !f.is_compound;
-      case 'modbus':
-        return (f.source === 'MODBUS_POLL' || f.source === 'MODBUS_CONFIG') && !f.is_compound;
-      case 'scalefactor':
-        return f.is_scale_factor;
-      default:
-        return true;
+  const filtered = sourceItems.filter(f => {
+    if (isUnified) {
+      // Unified model filter
+      if (state.selectedModel !== 'all') {
+        if (state.selectedModel === 'compound') {
+          if (!f.sources || f.sources.length <= 1) return false;
+        } else {
+          const hasModel = f.sources && f.sources.some(s => String(s.model_id) === String(state.selectedModel));
+          if (!hasModel) return false;
+        }
+      }
+
+      // Filter pill & Scale Factor toggle
+      if (state.activeFilter === 'scalefactor') {
+        if (!isScaleFactorField(f)) return false;
+      } else if (state.hideScaleFactors && isScaleFactorField(f) && !state.searchQuery) {
+        return false;
+      }
+
+      // Search query
+      if (state.searchQuery) {
+        const q = state.searchQuery.toLowerCase();
+        const match = (f.label && f.label.toLowerCase().includes(q)) ||
+                      (f.concept_key && f.concept_key.toLowerCase().includes(q)) ||
+                      (f.id && f.id.toLowerCase().includes(q)) ||
+                      (f.units && f.units.toLowerCase().includes(q)) ||
+                      (f.description && f.description.toLowerCase().includes(q)) ||
+                      (f.sources && f.sources.some(s => s.field_key.toLowerCase().includes(q) || s.name.toLowerCase().includes(q)));
+        if (!match) return false;
+      }
+
+      switch (state.activeFilter) {
+        case 'compound':
+          return f.sources && f.sources.length > 1;
+        case 'selected':
+          return isFieldSelected(f);
+        case 'sensor':
+          return f.ha_platform === 'sensor';
+        case 'writable':
+          return f.is_writable;
+        case 'push':
+          return f.sources && f.sources.some(s => s.source_type === 'MQTT');
+        case 'modbus':
+          return f.sources && f.sources.some(s => s.source_type === 'SUNSPEC');
+        case 'scalefactor':
+          return isScaleFactorField(f);
+        default:
+          return true;
+      }
+    } else {
+      // Raw mode filtering
+      if (state.selectedModel !== 'all') {
+        if (state.selectedModel === 'compound') {
+          if (!f.is_compound) return false;
+        } else if (String(f.model_id) !== String(state.selectedModel)) {
+          return false;
+        }
+      }
+
+      if (state.activeFilter === 'scalefactor') {
+        if (!isScaleFactorField(f)) return false;
+      } else if (state.hideScaleFactors && isScaleFactorField(f) && !state.searchQuery) {
+        return false;
+      }
+
+      if (state.hideCombinedRaw && f.is_compound_raw && !state.searchQuery && state.activeFilter !== 'push' && state.activeFilter !== 'modbus' && state.activeFilter !== 'selected') {
+        return false;
+      }
+
+      if (state.searchQuery) {
+        const q = state.searchQuery.toLowerCase();
+        const match = f.label.toLowerCase().includes(q) ||
+                      f.key.toLowerCase().includes(q) ||
+                      (f.units && f.units.toLowerCase().includes(q)) ||
+                      (f.description && f.description.toLowerCase().includes(q));
+        if (!match) return false;
+      }
+
+      switch (state.activeFilter) {
+        case 'compound':
+          return f.is_compound;
+        case 'selected':
+          return isFieldSelected(f);
+        case 'sensor':
+          return f.ha_platform === 'sensor';
+        case 'writable':
+          return f.is_writable;
+        case 'push':
+          return f.source === 'MQTT_PUSH' && !f.is_compound;
+        case 'modbus':
+          return (f.source === 'MODBUS_POLL' || f.source === 'MODBUS_CONFIG') && !f.is_compound;
+        case 'scalefactor':
+          return f.is_scale_factor;
+        default:
+          return true;
+      }
     }
   });
 
@@ -887,6 +1148,219 @@ function renderFieldTable() {
 
   el.fieldTableBody.innerHTML = '';
 
+  const renderUnifiedRow = (f) => {
+    const tr = document.createElement('tr');
+    tr.id = `row-${sanitizeId(f.id)}`;
+    tr.className = 'unified-row';
+
+    const isChecked = isFieldSelected(f);
+    const displayVal = formatFieldValue(f.latest_value, f);
+    const isBf = isBitfield(f, f.latest_value);
+    const pinnedKey = state.preferredSources[f.id] || f.preferred_source_key;
+
+    const minModelsSet = new Set((state.optimizationPlan && state.optimizationPlan.minimal_models) || []);
+
+    // Build candidate source pills
+    const sourcePillsHtml = (f.sources || []).map(s => {
+      const isOptimal = s.is_optimal;
+      const isPinned = pinnedKey ? (pinnedKey === s.field_key) : false;
+      const isMqtt = s.source_type === 'MQTT';
+      const isPolled = isMqtt || (s.model_id && minModelsSet.has(s.model_id));
+      const pillClass = isPinned ? 'pinned' : (isOptimal ? 'optimal' : (isMqtt ? 'mqtt' : (isPolled ? 'polled' : 'alternate')));
+      const prefix = isPinned ? '📌 ' : (isOptimal ? '★ ' : '');
+      const sVal = formatFieldValue(s.value, f);
+      const title = isPinned
+        ? `📌 Pinned preferred source: ${s.source_id} (${s.field_key})\nValue: ${sVal}\nClick to unpin and use automatic minimal set solver.`
+        : (isOptimal
+            ? `★ Optimal source: ${s.source_id} (${s.field_key})\nSelected in minimal polling plan.\nValue: ${sVal}`
+            : (isPolled
+                ? `⚡ ${s.source_id} (${s.field_key})\nIncluded in minimal polling plan.\nValue: ${sVal}\nClick to pin this source.`
+                : `${s.source_id} (${s.field_key})\nExcluded / avoided from Modbus polling.\nValue: ${sVal}\nClick to pin this source.`));
+
+      return `<button class="source-pill ${pillClass}" data-group-id="${f.id}" data-field-key="${s.field_key}" data-source-id="${s.source_id}" title="${escapeHtml(title)}">${prefix}${s.source_id}</button>`;
+    }).join(' ');
+
+    const countBadge = (f.sources && f.sources.length > 1)
+      ? `<span class="badge-source-count" title="${f.sources.length} sources available">${f.sources.length} sources</span>`
+      : '';
+
+    // Active source description
+    const activeSrc = (f.sources || []).find(s => s.field_key === (pinnedKey || f.active_source_key)) || (f.sources ? f.sources[0] : null);
+    const isPinned = activeSrc && pinnedKey === activeSrc.field_key;
+    const isPolled = activeSrc && (activeSrc.source_type === 'MQTT' || (activeSrc.model_id && minModelsSet.has(activeSrc.model_id)));
+    const activeBadge = activeSrc
+      ? (isPinned
+          ? `<span class="badge-source-pinned" title="Manually pinned by user">📌 ${activeSrc.source_id} (Pinned)</span>`
+          : (activeSrc.source_type === 'MQTT'
+              ? `<span class="badge-push-simple" title="Direct Push MQTT">⚡ Push MQTT</span>`
+              : (isPolled
+                  ? `<span class="badge-optimal" title="Model ${activeSrc.model_id} selected in minimal polling plan">★ ${activeSrc.source_id} (Polled)</span>`
+                  : `<span class="badge-optimal" title="Selected by minimal model set solver">★ ${activeSrc.source_id} (Optimal)</span>`)))
+      : '&mdash;';
+
+    // Construct a comprehensive targetFieldRef for actions (details, write, copy)
+    const targetFieldRef = activeSrc
+      ? {
+          ...activeSrc,
+          key: activeSrc.field_key,
+          id: f.id,
+          device_sn: f.device_sn,
+          point_type: activeSrc.point_type || f.point_type,
+          is_bitfield: f.is_bitfield,
+          is_enum: f.is_enum,
+          symbols: activeSrc.symbols || f.symbols,
+          bounds: activeSrc.bounds || f.bounds,
+        }
+      : {
+          ...f,
+          key: f.active_source_key || f.id,
+          field_key: f.active_source_key || f.id,
+          device_sn: f.device_sn,
+        };
+
+    tr.innerHTML = `
+      <td class="text-center">
+        <input type="checkbox" class="ha-checkbox" data-key="${f.id}" ${isChecked ? 'checked' : ''} />
+      </td>
+      <td class="field-model-cell">
+        <div class="source-pill-group">
+          ${sourcePillsHtml}
+        </div>
+      </td>
+      <td>
+        <div class="field-cell-main">
+          <div class="field-label-line">
+            <span class="field-label" title="${escapeHtml(f.description || '')}">${f.label}</span>
+            ${f.is_writable ? '<span class="badge-writable" title="Settable register (Read/Write)">RW</span>' : ''}
+            ${countBadge}
+          </div>
+          <span class="field-key">${f.concept_key} &bull; <small>${f.id}</small></span>
+          ${formatBoundsBadge(f)}
+        </div>
+      </td>
+      <td>
+        <span class="field-value-badge latest${isBf ? ' is-bitfield' : ''}" id="val-${sanitizeId(f.id)}">${displayVal}</span>
+      </td>
+      <td>${f.units || '&mdash;'}</td>
+      <td>
+        ${activeBadge}
+      </td>
+      <td>
+        <span class="type-tag">${f.ha_platform}${f.ha_device_class ? ': ' + f.ha_device_class : ''}</span>
+      </td>
+      <td class="text-right">
+        <div class="action-cell-container">
+          ${f.is_writable ? `<button class="btn btn-secondary btn-sm btn-edit" data-key="${targetFieldRef.key}">Set</button>` : ''}
+          <button class="btn btn-secondary btn-sm btn-details" data-key="${targetFieldRef.key}" title="Explore Modbus register definition &amp; associated registers">Details</button>
+          <div class="action-menu-wrapper">
+            <button class="btn btn-secondary btn-sm btn-icon-more" data-key="${targetFieldRef.key}" title="More Actions">⋮</button>
+            <div class="action-dropdown-menu">
+              <button class="action-menu-item item-details" data-key="${targetFieldRef.key}">📋 Modbus Details</button>
+              ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${targetFieldRef.key}">✏️ Edit Value</button>` : ''}
+              <button class="action-menu-item item-copy" data-key="${targetFieldRef.key}">📄 Copy Key</button>
+            </div>
+          </div>
+        </div>
+      </td>
+    `;
+
+    // Event listeners
+    const chk = tr.querySelector('.ha-checkbox');
+    chk.addEventListener('change', (e) => {
+      toggleHaSelection(f, e.target.checked);
+      updateOptimizationPlan();
+    });
+
+    tr.querySelectorAll('.source-pill').forEach(pill => {
+      pill.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const gId = pill.dataset.groupId;
+        const fKey = pill.dataset.fieldKey;
+        const currentPin = state.preferredSources[gId] || f.preferred_source_key;
+
+        if (currentPin === fKey) {
+          delete state.preferredSources[gId];
+          f.preferred_source_key = null;
+          (f.sources || []).forEach(s => { s.is_pinned = false; });
+          showToast(`Unpinned ${f.label}; returned to automatic solver`);
+        } else {
+          state.preferredSources[gId] = fKey;
+          f.preferred_source_key = fKey;
+          (f.sources || []).forEach(s => { s.is_pinned = (s.field_key === fKey); });
+          const srcName = pill.dataset.sourceId || pill.textContent.trim().replace(/^[📌★]\s*/, '');
+          showToast(`Pinned ${f.label} to ${srcName}`);
+        }
+        updateOptimizationPlan();
+      });
+    });
+
+    const detailsBtn = tr.querySelector('.btn-details');
+    if (detailsBtn) {
+      detailsBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openFieldDetails(targetFieldRef);
+      });
+    }
+
+    const labelSpan = tr.querySelector('.field-label');
+    if (labelSpan) {
+      labelSpan.style.cursor = 'pointer';
+      labelSpan.title = (f.description ? `${f.description}\n` : '') + 'Click to view Modbus register details';
+      labelSpan.addEventListener('click', () => openFieldDetails(targetFieldRef));
+    }
+
+    const editBtn = tr.querySelector('.btn-edit');
+    if (editBtn) {
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openWriteModal(targetFieldRef);
+      });
+    }
+
+    const moreBtn = tr.querySelector('.btn-icon-more');
+    const dropdownMenu = tr.querySelector('.action-dropdown-menu');
+    if (moreBtn && dropdownMenu) {
+      moreBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        document.querySelectorAll('.action-dropdown-menu.show').forEach(m => {
+          if (m !== dropdownMenu) m.classList.remove('show');
+        });
+        dropdownMenu.classList.toggle('show');
+      });
+
+      const menuDetails = dropdownMenu.querySelector('.item-details');
+      if (menuDetails) {
+        menuDetails.addEventListener('click', (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          openFieldDetails(targetFieldRef);
+        });
+      }
+
+      const menuEdit = dropdownMenu.querySelector('.item-edit');
+      if (menuEdit) {
+        menuEdit.addEventListener('click', (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          openWriteModal(targetFieldRef);
+        });
+      }
+
+      const menuCopy = dropdownMenu.querySelector('.item-copy');
+      if (menuCopy) {
+        menuCopy.addEventListener('click', (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          const copyKey = targetFieldRef.key || targetFieldRef.field_key || f.id;
+          copyToClipboard(copyKey);
+          showToast(`Copied ${copyKey} to clipboard`);
+        });
+      }
+    }
+
+    return tr;
+  };
+
   const renderSingleRow = (f) => {
     const tr = document.createElement('tr');
     tr.id = `row-${sanitizeId(f.key)}`;
@@ -900,6 +1374,7 @@ function renderFieldTable() {
     if (f.is_compound) {
       const isChecked = isFieldSelected(f);
       const latestVal = formatFieldValue(f.latest_value, f);
+      const isLatestBf = isBitfield(f, f.latest_value);
       const mqttVal = formatFieldValue(f.mqtt_value, f);
       const mbVal = formatFieldValue(f.modbus_value, f);
       const mbRaw = formatFieldValue(f.modbus_raw_value);
@@ -930,7 +1405,7 @@ function renderFieldTable() {
           <div class="compound-val-container">
             <div class="val-latest-line">
               <span class="label-dim">Latest:</span>
-              <span class="field-value-badge latest" id="val-${sanitizeId(f.key)}">${latestVal}</span>
+              <span class="field-value-badge latest${isLatestBf ? ' is-bitfield' : ''}" id="val-${sanitizeId(f.key)}">${latestVal}</span>
               <span class="source-sub-badge ${latestClass}" id="src-${sanitizeId(f.key)}">${latestSrcIcon} ${latestSrcName}</span>
             </div>
             <div class="compound-sources-grid">
@@ -972,6 +1447,7 @@ function renderFieldTable() {
       const sourceClass = f.source === 'MQTT_PUSH' ? 'mqtt' : 'modbus';
       const sourceLabel = f.source === 'MQTT_PUSH' ? 'Push MQTT' : 'Modbus';
       const displayVal = formatFieldValue(f.value, f);
+      const isBf = isBitfield(f, f.value);
 
       tr.innerHTML = `
         <td class="text-center">
@@ -993,7 +1469,7 @@ function renderFieldTable() {
           </div>
         </td>
         <td>
-          <span class="field-value-badge" id="val-${sanitizeId(f.key)}">${displayVal}</span>
+          <span class="field-value-badge${isBf ? ' is-bitfield' : ''}" id="val-${sanitizeId(f.key)}">${displayVal}</span>
         </td>
         <td>${f.units || '&mdash;'}</td>
         <td>
@@ -1095,7 +1571,13 @@ function renderFieldTable() {
     return tr;
   };
 
-  if (state.groupByModel) {
+  const fragment = document.createDocumentFragment();
+
+  if (isUnified) {
+    filtered.forEach(f => {
+      fragment.appendChild(renderUnifiedRow(f));
+    });
+  } else if (state.groupByModel) {
     // Group fields by model
     const groups = new Map();
     filtered.forEach(f => {
@@ -1153,16 +1635,18 @@ function renderFieldTable() {
           </div>
         </td>
       `;
-      el.fieldTableBody.appendChild(headerTr);
+      fragment.appendChild(headerTr);
       grp.fields.forEach(f => {
-        el.fieldTableBody.appendChild(renderSingleRow(f));
+        fragment.appendChild(renderSingleRow(f));
       });
     });
   } else {
     filtered.forEach(f => {
-      el.fieldTableBody.appendChild(renderSingleRow(f));
+      fragment.appendChild(renderSingleRow(f));
     });
   }
+
+  el.fieldTableBody.appendChild(fragment);
 }
 
 function lookupEnumSymbol(field, val) {
@@ -1203,18 +1687,45 @@ function lookupEnumSymbol(field, val) {
   return null;
 }
 
+function isBitfield(field, val) {
+  if (field && (field.is_bitfield || (field.point_type && field.point_type.startsWith('bitfield')))) {
+    return true;
+  }
+  if (Array.isArray(val)) {
+    return true;
+  }
+  if (typeof val === 'string') {
+    const s = val.trim();
+    if (s.startsWith('[') && s.endsWith(']') && s.includes(',')) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function decodeBitfieldSymbols(field, val) {
   const symbols = field ? (field.symbols || []) : [];
 
   // Case 1: val is an array of symbol names (already decoded by backend)
   if (Array.isArray(val)) {
-    return val;
+    return val.map(s => String(s).trim()).filter(Boolean);
   }
   if (field && field.bitmask_flags && Array.isArray(field.bitmask_flags)) {
-    return field.bitmask_flags;
+    return field.bitmask_flags.map(s => String(s).trim()).filter(Boolean);
   }
 
-  // Case 2: raw_value or val is integer
+  // Case 2: bracketed or comma separated string e.g. "[ REBUS_CONNECTED,GRID_CONNECTED,... ]"
+  if (typeof val === 'string') {
+    let cleanVal = val.trim();
+    if (cleanVal.startsWith('[') && cleanVal.endsWith(']')) {
+      cleanVal = cleanVal.slice(1, -1).trim();
+    }
+    if (cleanVal.includes(',')) {
+      return cleanVal.split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+    }
+  }
+
+  // Case 3: raw_value or val is integer
   let rawInt = null;
   if (typeof val === 'number') {
     rawInt = val;
@@ -1236,11 +1747,6 @@ function decodeBitfieldSymbols(field, val) {
     return active;
   }
 
-  // Case 3: comma separated string
-  if (typeof val === 'string' && val.includes(',')) {
-    return val.split(',').map(s => s.trim()).filter(Boolean);
-  }
-
   return [];
 }
 
@@ -1248,22 +1754,22 @@ function formatBitfieldValue(val, field) {
   const activeFlags = decodeBitfieldSymbols(field, val);
   const rawNum = field && typeof field.raw_value === 'number' ? field.raw_value : (typeof val === 'number' ? val : null);
   const rawHex = rawNum !== null ? `0x${(rawNum >>> 0).toString(16).toUpperCase()}` : null;
-  const rawSuffix = rawNum !== null ? ` <small class="raw-note">(${rawHex} / ${rawNum})</small>` : '';
+  const rawSuffix = rawNum !== null ? `<span class="bitfield-raw-note">(${rawHex} / ${rawNum})</span>` : '';
 
   if (!activeFlags || activeFlags.length === 0) {
-    return `<span class="badge-flag none">NONE (0)</span>${rawSuffix}`;
+    return `<div class="bitfield-badges-wrap"><span class="badge-flag none">NONE (0)</span>${rawSuffix}</div>`;
   }
 
   const tags = activeFlags.map(flag => {
     let title = flag;
     if (field && field.symbols) {
-      const sym = field.symbols.find(s => s.name === flag);
+      const sym = field.symbols.find(s => s.name === flag || String(s.value) === String(flag));
       if (sym) {
         title = `Bit ${sym.value}: ${sym.label || sym.name}${sym.desc ? ' - ' + sym.desc : ''}`;
       }
     }
-    return `<span class="badge-flag active" title="${title}">${flag}</span>`;
-  }).join(' ');
+    return `<span class="badge-flag active" title="${escapeHtml(title)}">${escapeHtml(flag)}</span>`;
+  }).join('');
 
   return `<div class="bitfield-badges-wrap">${tags}${rawSuffix}</div>`;
 }
@@ -1271,11 +1777,11 @@ function formatBitfieldValue(val, field) {
 function formatFieldValue(val, field = null) {
   if (val === null || val === undefined) return '&mdash;';
 
-  if (field) {
-    if (field.is_bitfield || (field.point_type && field.point_type.startsWith('bitfield'))) {
-      return formatBitfieldValue(val, field);
-    }
+  if (isBitfield(field, val)) {
+    return formatBitfieldValue(val, field);
+  }
 
+  if (field) {
     const sym = lookupEnumSymbol(field, val);
     if (sym) {
       if (sym.value !== null && sym.value !== undefined) {
@@ -1297,17 +1803,44 @@ function sanitizeId(key) {
 
 // Update Filter Pill Counts
 function updateFilterCounts() {
-  const fields = state.activeFields;
-  el.counts.all.textContent = fields.length;
-  if (el.counts.compound) {
-    el.counts.compound.textContent = fields.filter(f => f.is_compound).length;
+  const isUnified = state.viewMode === 'unified';
+  if (isUnified) {
+    const fields = state.unifiedFields || [];
+    if (el.counts.all) el.counts.all.textContent = fields.length;
+    if (el.counts.compound) {
+      el.counts.compound.textContent = fields.filter(f => f.sources && f.sources.length > 1).length;
+    }
+    if (el.counts.selected) el.counts.selected.textContent = fields.filter(f => isFieldSelected(f)).length;
+    if (el.counts.sensor) el.counts.sensor.textContent = fields.filter(f => f.ha_platform === 'sensor').length;
+    if (el.counts.writable) el.counts.writable.textContent = fields.filter(f => f.is_writable).length;
+    if (el.counts.push) el.counts.push.textContent = fields.filter(f => f.sources && f.sources.some(s => s.source_type === 'MQTT')).length;
+    if (el.counts.modbus) el.counts.modbus.textContent = fields.filter(f => f.sources && f.sources.some(s => s.source_type === 'SUNSPEC')).length;
+    if (el.counts.scalefactor) el.counts.scalefactor.textContent = fields.filter(f => isScaleFactorField(f)).length;
+  } else {
+    const fields = state.activeFields;
+    if (el.counts.all) el.counts.all.textContent = fields.length;
+    if (el.counts.compound) {
+      el.counts.compound.textContent = fields.filter(f => f.is_compound).length;
+    }
+    if (el.counts.selected) el.counts.selected.textContent = fields.filter(f => isFieldSelected(f)).length;
+    if (el.counts.sensor) el.counts.sensor.textContent = fields.filter(f => f.ha_platform === 'sensor').length;
+    if (el.counts.writable) el.counts.writable.textContent = fields.filter(f => f.is_writable).length;
+    if (el.counts.push) el.counts.push.textContent = fields.filter(f => f.source === 'MQTT_PUSH' && !f.is_compound).length;
+    if (el.counts.modbus) el.counts.modbus.textContent = fields.filter(f => (f.source === 'MODBUS_POLL' || f.source === 'MODBUS_CONFIG') && !f.is_compound).length;
+    if (el.counts.scalefactor) el.counts.scalefactor.textContent = fields.filter(f => isScaleFactorField(f)).length;
   }
-  el.counts.selected.textContent = fields.filter(f => isFieldSelected(f)).length;
-  el.counts.sensor.textContent = fields.filter(f => f.ha_platform === 'sensor').length;
-  el.counts.writable.textContent = fields.filter(f => f.is_writable).length;
-  el.counts.push.textContent = fields.filter(f => f.source === 'MQTT_PUSH' && !f.is_compound).length;
-  el.counts.modbus.textContent = fields.filter(f => (f.source === 'MODBUS_POLL' || f.source === 'MODBUS_CONFIG') && !f.is_compound).length;
-  el.counts.scalefactor.textContent = fields.filter(f => f.is_scale_factor).length;
+
+  // Dynamic visibility for mode-specific controls to save vertical space
+  const currentFields = isUnified ? (state.unifiedFields || []) : (state.activeFields || []);
+  const hasSf = currentFields.some(f => isScaleFactorField(f));
+  const sfPill = el.filterPills ? el.filterPills.querySelector('[data-filter="scalefactor"]') : null;
+  if (sfPill) {
+    sfPill.style.display = hasSf ? 'inline-flex' : 'none';
+  }
+  const optScale = document.getElementById('optHideScaleFactors');
+  const optRaw = document.getElementById('optHideCombinedRaw');
+  if (optScale) optScale.style.display = hasSf ? 'inline-flex' : 'none';
+  if (optRaw) optRaw.style.display = isUnified ? 'none' : 'inline-flex';
 }
 
 function updateHaCounter() {
@@ -1423,10 +1956,38 @@ function handleLiveFieldUpdate(field) {
       cached.last_updated = field.last_updated;
     }
 
+    // Update unified fields cache
+    if (state.unifiedFields) {
+      state.unifiedFields.forEach(g => {
+        let matched = false;
+        (g.sources || []).forEach(s => {
+          if (s.field_key === field.key) {
+            s.value = field.value;
+            s.raw_value = field.raw_value;
+            matched = true;
+          }
+        });
+        if (matched) {
+          const activeKey = state.preferredSources[g.id] || g.active_source_key;
+          if (activeKey === field.key) {
+            g.latest_value = field.value;
+            const valBadge = document.getElementById(`val-${sanitizeId(g.id)}`);
+            if (valBadge) {
+              valBadge.innerHTML = formatFieldValue(field.value, g);
+              valBadge.classList.toggle('is-bitfield', isBitfield(g, field.value));
+              valBadge.classList.add('value-flash');
+              setTimeout(() => valBadge.classList.remove('value-flash'), 600);
+            }
+          }
+        }
+      });
+    }
+
     // Flash value in table
     const valBadge = document.getElementById(`val-${sanitizeId(field.key)}`);
     if (valBadge) {
       valBadge.innerHTML = formatFieldValue(field.value, field);
+      valBadge.classList.toggle('is-bitfield', isBitfield(field, field.value));
       valBadge.classList.add('value-flash');
       setTimeout(() => valBadge.classList.remove('value-flash'), 600);
     }
@@ -1786,11 +2347,13 @@ async function submitWrite() {
     }
   }
 
+  const targetKey = targetWriteField.field_key || targetWriteField.key || targetWriteField.active_source_key || targetWriteField.id;
+
   try {
     const res = await fetch(apiPath('api/fields/write'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ field_key: targetWriteField.key, value: newVal }),
+      body: JSON.stringify({ field_key: targetKey, value: newVal }),
     });
     const data = await res.json();
     if (data.success) {
@@ -1801,10 +2364,11 @@ async function submitWrite() {
       targetWriteField.last_updated = Date.now() / 1000;
 
       // Update UI row immediately
-      const id = sanitizeId(targetWriteField.key);
-      const valBadge = document.getElementById(`val-${id}`);
+      const id = sanitizeId(targetKey);
+      const valBadge = document.getElementById(`val-${id}`) || (targetWriteField.id ? document.getElementById(`val-${sanitizeId(targetWriteField.id)}`) : null);
       if (valBadge) {
         valBadge.innerHTML = formatFieldValue(confirmedVal, targetWriteField);
+        valBadge.classList.toggle('is-bitfield', isBitfield(targetWriteField, confirmedVal));
         valBadge.classList.add('value-flash');
         setTimeout(() => valBadge.classList.remove('value-flash'), 600);
       }
@@ -1851,8 +2415,27 @@ function closeFieldDetails() {
 }
 
 async function openFieldDetails(fieldOrKey, optSerial) {
-  const fieldKey = typeof fieldOrKey === 'string' ? fieldOrKey : fieldOrKey.key;
-  const devSerial = optSerial || (typeof fieldOrKey === 'object' && fieldOrKey.device_sn) || (state.activeDevice ? state.activeDevice.serial_number : '');
+  let fieldKey = '';
+  let devSerial = optSerial || '';
+
+  if (typeof fieldOrKey === 'string') {
+    fieldKey = fieldOrKey;
+  } else if (fieldOrKey && typeof fieldOrKey === 'object') {
+    fieldKey = fieldOrKey.field_key || fieldOrKey.key || fieldOrKey.active_source_key || fieldOrKey.id || '';
+    if (!devSerial && fieldOrKey.device_sn) {
+      devSerial = fieldOrKey.device_sn;
+    }
+  }
+
+  if (!devSerial && state.activeDevice) {
+    devSerial = state.activeDevice.serial_number;
+  }
+
+  if (!fieldKey || fieldKey === 'undefined') {
+    console.error('openFieldDetails called without valid field key:', fieldOrKey);
+    showToast('Unable to determine field key for details');
+    return;
+  }
 
   if (!devSerial) {
     showToast('Select a device to view Modbus details');
@@ -2472,6 +3055,61 @@ function setupEventListeners() {
   if (el.multiSortToggle) {
     el.multiSortToggle.addEventListener('change', (e) => {
       state.multiSortMode = e.target.checked;
+    });
+  }
+
+  // View Mode Segmented Toggle
+  if (el.viewModeToggle) {
+    el.viewModeToggle.querySelectorAll('.view-mode-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        el.viewModeToggle.querySelectorAll('.view-mode-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.viewMode = btn.dataset.mode;
+        if (el.viewModeBadge) {
+          el.viewModeBadge.textContent = state.viewMode === 'unified' ? '✨ Semantic Deduplication Active' : '📋 All Registers Active';
+        }
+        if (el.thModelContent) {
+          el.thModelContent.innerHTML = state.viewMode === 'unified'
+            ? 'Sources<span class="sort-indicator"></span>'
+            : 'Model<span class="sort-indicator"></span>';
+        }
+        if (el.activeDeviceFieldCount) {
+          el.activeDeviceFieldCount.textContent = state.viewMode === 'unified'
+            ? state.unifiedFields.length
+            : state.activeFields.length;
+        }
+        updateFilterCounts();
+        renderFieldTable();
+      });
+    });
+  }
+
+  // Reset Pinned Sources Button
+  if (el.btnResetPins) {
+    el.btnResetPins.addEventListener('click', () => {
+      state.preferredSources = {};
+      (state.unifiedFields || []).forEach(g => {
+        g.preferred_source_key = null;
+        (g.sources || []).forEach(s => { s.is_pinned = false; });
+      });
+      showToast('Reset all pins; using automatic minimal model solver');
+      updateOptimizationPlan();
+    });
+  }
+
+  // Optimization Banner Collapse / Expand Toggle
+  const btnToggleBanner = document.getElementById('btnToggleBanner');
+  const optBannerBody = document.getElementById('optBannerBody');
+  if (btnToggleBanner && optBannerBody) {
+    btnToggleBanner.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.bannerCollapsed = !state.bannerCollapsed;
+      optBannerBody.style.display = state.bannerCollapsed ? 'none' : 'flex';
+      btnToggleBanner.textContent = state.bannerCollapsed ? '＋' : '−';
+      btnToggleBanner.title = state.bannerCollapsed ? 'Expand Polling Plan' : 'Minimize Polling Plan';
+      if (el.optimizationBanner) {
+        el.optimizationBanner.classList.toggle('collapsed', state.bannerCollapsed);
+      }
     });
   }
 

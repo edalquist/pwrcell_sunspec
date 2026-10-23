@@ -643,11 +643,22 @@ class TestWebExplorerApi(unittest.TestCase):
         # Should also resolve underlying Modbus definition
         self.assertIsNotNone(data_comp["point_def"])
 
-        # 6. Error handling: invalid field key returns 404
+        # 6. Inspect unified concept key: inverter.concept.ac_frequency
+        resp_concept = self.test_client.get(f"/api/devices/{inv_sn}/field_details?field_key=inverter.concept.ac_frequency")
+        self.assertEqual(resp_concept.status_code, 200)
+        data_concept = resp_concept.get_json()
+        self.assertIsNotNone(data_concept["field"])
+        self.assertIn("Hz", data_concept["field"]["name"])
+
+        # 7. Error handling: field_key=undefined returns 400
+        resp_undefined = self.test_client.get(f"/api/devices/{inv_sn}/field_details?field_key=undefined")
+        self.assertEqual(resp_undefined.status_code, 400)
+
+        # 8. Error handling: invalid field key returns 404
         resp_err = self.test_client.get(f"/api/devices/{inv_sn}/field_details?field_key=nonexistent.field.key")
         self.assertEqual(resp_err.status_code, 404)
 
-        # 7. Error handling: invalid device serial returns 404
+        # 9. Error handling: invalid device serial returns 404
         resp_err_dev = self.test_client.get("/api/devices/INVALID_SERIAL/field_details?field_key=inverter.inverter.W")
         self.assertEqual(resp_err_dev.status_code, 404)
 
@@ -704,6 +715,105 @@ class TestWebExplorerApi(unittest.TestCase):
         for wf in writable_fields:
             self.assertIn("bounds", wf)
             self.assertIsNotNone(wf["bounds"])
+
+    def test_unified_fields_and_optimize_polling_endpoints(self):
+        """Test unified field grouping and minimal model set solver endpoints."""
+        inv_sn = "0001000714E9"
+
+        # 1. Test /api/devices/<serial_number>/unified_fields
+        resp = self.test_client.get(f"/api/devices/{inv_sn}/unified_fields")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["device_sn"], inv_sn)
+        self.assertEqual(data["device_type"], "inverter")
+        groups = data.get("unified_fields", [])
+        self.assertGreater(len(groups), 0)
+
+        # Check concept grouping of grid_power (groups M64208 CTPow, M102 W, and MQTT grid_power_w)
+        grid_grp = next((g for g in groups if g["concept_key"] == "grid_power"), None)
+        self.assertIsNotNone(grid_grp)
+        self.assertGreaterEqual(len(grid_grp["sources"]), 2)
+        source_types = {s["source_type"] for s in grid_grp["sources"]}
+        self.assertIn("SUNSPEC", source_types)
+
+        # Check concept grouping of system_mode
+        sys_grp = next((g for g in groups if g["concept_key"] == "system_mode"), None)
+        self.assertIsNotNone(sys_grp)
+        self.assertGreaterEqual(len(sys_grp["sources"]), 2)
+
+        # Inverter output power should group inverter.inverter.W, NOT grid_power
+        inv_out_grp = next((g for g in groups if g["concept_key"] == "inverter_output_power"), None)
+        self.assertIsNotNone(inv_out_grp)
+        self.assertTrue(any(s["field_key"] == "inverter.inverter.W" for s in inv_out_grp["sources"]))
+
+        grid_grp = next((g for g in groups if g["concept_key"] == "grid_power"), None)
+        self.assertIsNotNone(grid_grp)
+        self.assertFalse(any(s["field_key"] == "inverter.inverter.W" for s in grid_grp["sources"]))
+
+        # 2. Test /api/devices/<serial_number>/optimize_polling
+        # Select items that can be covered by Model 64208 alone
+        opt_resp = self.test_client.post(
+            f"/api/devices/{inv_sn}/optimize_polling",
+            json={
+                "selected_keys": [
+                    "inverter.concept.grid_power",
+                    "inverter.concept.system_mode",
+                ],
+                "preferred_sources": {},
+            },
+        )
+        self.assertEqual(opt_resp.status_code, 200)
+        opt_data = opt_resp.get_json()
+        self.assertIn("minimal_models", opt_data)
+        self.assertIn("assignments", opt_data)
+        self.assertIn("models_avoided", opt_data)
+        # Model 64208 covers them
+        self.assertEqual(opt_data["minimal_models"], [64208])
+        self.assertEqual(opt_data["stats"]["models_needed"], 1)
+
+        # Pin system_mode to Model 64202 SysMd
+        opt_pinned = self.test_client.post(
+            f"/api/devices/{inv_sn}/optimize_polling",
+            json={
+                "selected_keys": [
+                    "inverter.concept.grid_power",
+                    "inverter.concept.system_mode",
+                ],
+                "preferred_sources": {
+                    "inverter.concept.system_mode": "inverter.REbus_arb.SysMd",
+                },
+            },
+        )
+        self.assertEqual(opt_pinned.status_code, 200)
+        pinned_data = opt_pinned.get_json()
+        self.assertIn(64202, pinned_data["minimal_models"])
+        self.assertIn(64208, pinned_data["minimal_models"])
+        self.assertEqual(pinned_data["stats"]["models_needed"], 2)
+        self.assertIn("unified_fields", pinned_data)
+        pinned_sys = next(g for g in pinned_data["unified_fields"] if g["concept_key"] == "system_mode")
+        self.assertEqual(pinned_sys["preferred_source_key"], "inverter.REbus_arb.SysMd")
+
+        # Unpin system_mode (empty preferred_sources)
+        opt_unpinned = self.test_client.post(
+            f"/api/devices/{inv_sn}/optimize_polling",
+            json={
+                "selected_keys": [
+                    "inverter.concept.grid_power",
+                    "inverter.concept.system_mode",
+                ],
+                "preferred_sources": {},
+            },
+        )
+        self.assertEqual(opt_unpinned.status_code, 200)
+        unpinned_data = opt_unpinned.get_json()
+        self.assertEqual(unpinned_data["minimal_models"], [64208])
+        self.assertIn("unified_fields", unpinned_data)
+        unpinned_sys = next(g for g in unpinned_data["unified_fields"] if g["concept_key"] == "system_mode")
+        self.assertIsNone(unpinned_sys["preferred_source_key"])
+        self.assertTrue(all(not s.get("is_pinned") for s in unpinned_sys["sources"]))
+        # Optimal source MUST match the minimal polling plan model (64208), NOT avoided Model 64202!
+        opt_src = next(s for s in unpinned_sys["sources"] if s.get("is_optimal"))
+        self.assertEqual(opt_src["model_id"], 64208)
 
 
 if __name__ == "__main__":

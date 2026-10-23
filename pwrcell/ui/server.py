@@ -154,19 +154,157 @@ def create_app(client: PwrcellClient) -> Flask:
 
         fields_dict = dev.serialize_fields()
         compound_views = [c.to_dict() for c in client.state.get_compound_views(serial_number)]
+        ha_selected = set(load_ha_config())
+        unified_groups = [g.to_dict() for g in client.state.get_unified_fields(serial_number, ha_selected_keys=ha_selected)]
 
         return jsonify({
             **dev.to_dict(catalog=client.catalog),
             "fields": fields_dict,
             "compound_fields": compound_views,
+            "unified_fields": unified_groups,
+        })
+
+    @app.route("/api/devices/<serial_number>/unified_fields")
+    def get_device_unified_fields(serial_number: str):
+        dev = client.state.devices.get(serial_number)
+        if not dev:
+            return jsonify({"error": "Device not found"}), 404
+        ha_selected = set(load_ha_config())
+        groups = client.state.get_unified_fields(serial_number, ha_selected_keys=ha_selected)
+        return jsonify({
+            "device_sn": serial_number,
+            "device_type": dev.device_type,
+            "unified_fields": [g.to_dict() for g in groups],
+            "total_count": len(groups),
+        })
+
+    @app.route("/api/devices/<serial_number>/optimize_polling", methods=["POST"])
+    def optimize_polling_for_device(serial_number: str):
+        from ..optimizer import solve_minimal_model_set
+        dev = client.state.devices.get(serial_number)
+        if not dev:
+            return jsonify({"error": "Device not found"}), 404
+
+        body = request.get_json() or {}
+        incoming_selected = body.get("selected_keys")
+        preferred_sources = body.get("preferred_sources", {})
+
+        ha_selected = set(incoming_selected) if incoming_selected is not None else set(load_ha_config())
+        groups = client.state.get_unified_fields(
+            serial_number,
+            preferred_sources=preferred_sources,
+            ha_selected_keys=ha_selected,
+        )
+
+        selected_items = {}
+        for g in groups:
+            qual_id = f"{serial_number}:{g.id}"
+            if g.is_selected or g.id in ha_selected or qual_id in ha_selected or g.name in ha_selected:
+                cand_sources = set()
+                for s in g.sources:
+                    if s.source_type == "MQTT":
+                        cand_sources.add("MQTT")
+                    elif s.model_id is not None:
+                        cand_sources.add(s.model_id)
+                selected_items[g.id] = cand_sources
+
+        # Also capture any specific raw field keys selected
+        for k in ha_selected:
+            clean_k = k.split(":", 1)[-1] if ":" in k else k
+            if clean_k in dev.fields:
+                f = dev.fields[clean_k]
+                if f.model_id:
+                    selected_items.setdefault(clean_k, set()).add(f.model_id)
+
+        pinned_models = {}
+        for g_id, pref_key in preferred_sources.items():
+            for g in groups:
+                if g.id == g_id or g.concept_key == g_id:
+                    for s in g.sources:
+                        is_match = (
+                            s.field_key == pref_key
+                            or pref_key in (s.source_id, f"M{s.model_id}", str(s.model_id))
+                            or (s.model_id and f"model_{s.model_id}" in pref_key)
+                            or (s.name.lower() == pref_key.split(".")[-1].lower() and s.model_id and str(s.model_id) in pref_key)
+                        )
+                        if is_match:
+                            pinned_models[g.id] = "MQTT" if s.source_type == "MQTT" else (s.model_id or pref_key)
+                            break
+
+        opt_res = solve_minimal_model_set(
+            items=selected_items,
+            pinned_sources=pinned_models,
+            allow_mqtt=True,
+        )
+
+        all_models = set(dev.supported_models)
+        for f in dev.fields.values():
+            if f.model_id:
+                all_models.add(f.model_id)
+
+        models_avoided = sorted(list(all_models - set(opt_res.minimal_models)))
+
+        # Synchronize groups with opt_res.assignments and opt_res.minimal_models
+        polled_models = set(opt_res.minimal_models)
+        for g in groups:
+            for s in g.sources:
+                s.is_optimal = False
+                s.is_pinned = False
+
+            if g.preferred_source_key:
+                for s in g.sources:
+                    if s.field_key == g.preferred_source_key:
+                        s.is_pinned = True
+                        s.is_optimal = True
+                        g.active_source_key = s.field_key
+                        g.latest_value = s.value
+                        g.raw_value = s.raw_value
+                        g.latest_source = s.source_id
+                        break
+                continue
+
+            chosen = opt_res.assignments.get(g.id)
+            matched_src = None
+            if chosen is not None:
+                for s in g.sources:
+                    if (chosen == "MQTT" and s.source_type == "MQTT") or (s.model_id == chosen):
+                        matched_src = s
+                        break
+            elif polled_models:
+                for s in g.sources:
+                    if (s.source_type == "MQTT" and "MQTT" in polled_models) or (s.model_id in polled_models):
+                        matched_src = s
+                        break
+
+            if not matched_src and g.sources:
+                matched_src = g.sources[0]
+
+            if matched_src:
+                matched_src.is_optimal = True
+                g.active_source_key = matched_src.field_key
+                g.latest_value = matched_src.value
+                g.raw_value = matched_src.raw_value
+                g.latest_source = matched_src.source_id
+
+        return jsonify({
+            "device_sn": serial_number,
+            "minimal_models": opt_res.minimal_models,
+            "assignments": opt_res.assignments,
+            "models_avoided": models_avoided,
+            "unified_fields": [g.to_dict() for g in groups],
+            "stats": {
+                **opt_res.stats,
+                "all_device_models_count": len(all_models),
+                "models_avoided_count": len(models_avoided),
+            },
         })
 
     @app.route("/api/devices/<serial_number>/field_details")
     @app.route("/api/devices/<serial_number>/fields/<path:field_key>/modbus_details")
     def get_field_modbus_details(serial_number: str, field_key: Optional[str] = None):
         target_key = field_key or request.args.get("field_key")
-        if not target_key:
-            return jsonify({"error": "field_key parameter is required"}), 400
+        if not target_key or target_key == "undefined":
+            return jsonify({"error": "A valid field_key parameter is required"}), 400
         details = client.state.get_field_modbus_details(serial_number, target_key)
         if not details:
             return jsonify({"error": f"Field '{target_key}' not found on device '{serial_number}'"}), 404

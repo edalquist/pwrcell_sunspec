@@ -969,6 +969,31 @@ class StateStore:
                     views.append(view)
         return views
 
+    def get_unified_fields(
+        self,
+        device_sn: str,
+        preferred_sources: Optional[Dict[str, str]] = None,
+        ha_selected_keys: Optional[Set[str]] = None,
+    ) -> List[Any]:
+        """Compute unified semantic field groups for a device, grouping duplicate metrics across models."""
+        from .optimizer import group_device_fields
+        with self._lock:
+            dev = self.devices.get(device_sn)
+            if not dev:
+                clean_sn = device_sn.strip().upper()
+                for d in self.devices.values():
+                    if d.serial_number.strip().upper() == clean_sn:
+                        dev = d
+                        break
+            if not dev:
+                return []
+            return group_device_fields(
+                dev,
+                mapping_registry=MappingRegistry.get_instance(),
+                ha_selected_keys=ha_selected_keys,
+                preferred_sources=preferred_sources,
+            )
+
     def subscribe_compound(self, listener: Callable[[CompoundFieldView], None]):
         """Register a callback for compound view updates."""
         with self._lock:
@@ -1135,7 +1160,15 @@ class StateStore:
                     existing.model_name = model_name
                 if model_label is not None:
                     existing.model_label = model_label
-                existing.is_scale_factor = is_scale_factor
+                is_sf_val = (
+                    is_scale_factor
+                    or name.endswith(("_SF", "_sf"))
+                    or name.startswith(("sf_", "SF_", "sunssf_"))
+                    or (point_type == "sunssf")
+                    or (label and label.lower().startswith("scale factor"))
+                    or existing.is_scale_factor
+                )
+                existing.is_scale_factor = is_sf_val
                 if scale_factor_point is not None:
                     existing.scale_factor_point = scale_factor_point
                 if offset is not None:
@@ -1165,7 +1198,13 @@ class StateStore:
                     source=source,
                     access=access,
                     symbols=symbols,
-                    is_scale_factor=is_scale_factor,
+                    is_scale_factor=(
+                        is_scale_factor
+                        or name.endswith(("_SF", "_sf"))
+                        or name.startswith(("sf_", "SF_", "sunssf_"))
+                        or (point_type == "sunssf")
+                        or bool(label and label.lower().startswith("scale factor"))
+                    ),
                     scale_factor_point=scale_factor_point,
                     offset=offset,
                     size=size,
@@ -1858,7 +1897,12 @@ class StateStore:
             symbols_defs = [s.to_dict() for s in pt_def.symbols] if (pt_def and (pt_def.is_enum or pt_def.is_bitfield or pt_def.symbols)) else None
 
             # Detect scale factor point
-            is_sf = (pt_def and pt_def.is_scale_factor) or pt_name.endswith(("_SF", "_sf"))
+            is_sf = (
+                (pt_def and (pt_def.is_scale_factor or pt_def.type == "sunssf"))
+                or pt_name.endswith(("_SF", "_sf"))
+                or pt_name.startswith(("sf_", "SF_", "sunssf_"))
+                or bool(label and label.lower().startswith("scale factor"))
+            )
 
             self.set_field(
                 device_sn=serial_number,
@@ -1930,6 +1974,17 @@ class StateStore:
                         underlying_mb_field = self.ensure_field_definition(dev.serial_number, c_view.modbus_key)
 
             target_field = underlying_mb_field if c_view else dev.fields.get(field_key)
+            if not target_field and not c_view:
+                # Check if requested key is a unified concept
+                for ug in self.get_unified_fields(dev.serial_number):
+                    if ug.id == field_key or ug.concept_key == field_key:
+                        active_src = next((s for s in ug.sources if s.field_key == ug.active_source_key), None)
+                        if not active_src:
+                            active_src = next((s for s in ug.sources if s.model_id is not None), None)
+                        if active_src:
+                            target_field = dev.fields.get(active_src.field_key) or self.ensure_field_definition(dev.serial_number, active_src.field_key)
+                            if target_field:
+                                break
             if not target_field:
                 target_field = self.ensure_field_definition(dev.serial_number, field_key)
 

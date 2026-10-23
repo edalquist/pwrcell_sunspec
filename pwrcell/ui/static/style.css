@@ -290,24 +290,27 @@ body {
 }
 
 .device-banner {
-  padding: 18px 24px;
+  padding: 10px 24px;
   background-color: var(--bg-card);
   border-bottom: 1px solid var(--border-color);
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
 .device-info h2 {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 700;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
+  line-height: 1.2;
 }
 
 .device-meta {
   display: flex;
-  gap: 16px;
-  font-size: 12px;
+  gap: 12px;
+  font-size: 11px;
   color: var(--text-secondary);
 }
 
@@ -318,18 +321,32 @@ body {
 
 .device-banner-actions {
   display: flex;
-  gap: 10px;
+  gap: 6px;
+  align-items: center;
 }
 
 /* Toolbar */
 .toolbar {
-  padding: 14px 24px;
+  padding: 8px 24px;
   background-color: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toolbar-top {
+  display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.toolbar-search-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
@@ -339,8 +356,8 @@ body {
   background-color: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  padding: 6px 12px;
-  width: 320px;
+  padding: 4px 10px;
+  width: 250px;
 }
 
 .search-box:focus-within {
@@ -373,17 +390,18 @@ body {
 
 .filter-pills {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .pill {
   background-color: var(--bg-card);
   border: 1px solid var(--border-color);
   color: var(--text-secondary);
-  padding: 5px 12px;
-  border-radius: 20px;
-  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 14px;
+  font-size: 11px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -403,11 +421,11 @@ body {
 .model-select-box {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .model-select-label {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text-secondary);
 }
@@ -416,12 +434,12 @@ body {
   background-color: var(--bg-card);
   border: 1px solid var(--border-color);
   color: var(--text-primary);
-  padding: 5px 10px;
+  padding: 4px 8px;
   border-radius: var(--radius-md);
-  font-size: 12px;
+  font-size: 11px;
   outline: none;
   cursor: pointer;
-  max-width: 280px;
+  max-width: 240px;
 }
 
 .model-dropdown:focus {
@@ -489,7 +507,293 @@ body {
 .toolbar-options {
   display: flex;
   align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  padding: 3px 8px;
+  border-radius: 12px;
+  transition: all 0.15s ease;
+}
+
+.toggle-label:hover {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+/* ==========================================================================
+   View Mode Segmented Control (Embedded in Device Banner)
+   ========================================================================== */
+.view-mode-segmented {
+  display: inline-flex;
+  background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 2px;
+  gap: 2px;
+}
+
+.view-mode-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  border-radius: calc(var(--radius-md) - 2px);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  transition: all 0.15s ease;
+}
+
+.view-mode-btn:hover {
+  color: var(--text-primary);
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.view-mode-btn.active {
+  background-color: var(--accent-primary);
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+/* ==========================================================================
+   Polling Optimization Status Banner (Compact & Collapsible)
+   ========================================================================== */
+.optimization-banner {
+  margin: 6px 24px 2px;
+  padding: 6px 12px;
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1) 0%, rgba(139, 92, 246, 0.05) 100%);
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  border-radius: var(--radius-md);
+  transition: all 0.2s ease;
+}
+
+.optimization-banner.collapsed {
+  padding: 5px 12px;
+}
+
+.opt-banner-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 12px;
+}
+
+.opt-banner-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.opt-banner-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.opt-banner-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.opt-banner-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-banner-toggle {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  line-height: 1;
+  transition: all 0.15s ease;
+}
+
+.btn-banner-toggle:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+}
+
+.opt-banner-body {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(99, 102, 241, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.opt-banner-subtitle {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.opt-models-badges {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.opt-models-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.btn-avoided-toggle {
+  background: rgba(100, 116, 139, 0.15);
+  border: 1px dashed rgba(100, 116, 139, 0.4);
+  color: #94a3b8;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: var(--font-mono);
+}
+
+.btn-avoided-toggle:hover {
+  background: rgba(100, 116, 139, 0.28);
+  color: var(--text-primary);
+  border-color: rgba(100, 116, 139, 0.6);
+}
+
+.opt-avoided-drawer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.badge-opt-active {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background-color: rgba(16, 185, 129, 0.18);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  font-family: var(--font-mono);
+}
+
+.badge-opt-avoided {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background-color: rgba(100, 116, 139, 0.18);
+  color: #94a3b8;
+  border: 1px dashed rgba(100, 116, 139, 0.35);
+  font-family: var(--font-mono);
+  text-decoration: line-through;
+}
+
+.badge-opt-mqtt {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background-color: rgba(56, 189, 248, 0.18);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+/* ==========================================================================
+   Candidate Source Pills (Unified Rows)
+   ========================================================================== */
+.source-pill-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.source-pill {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.source-pill:hover {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-color: var(--border-focus);
+  transform: translateY(-1px);
+}
+
+.source-pill.optimal {
+  background-color: rgba(99, 102, 241, 0.18);
+  border-color: rgba(99, 102, 241, 0.5);
+  color: #a5b4fc;
+}
+
+.source-pill.pinned {
+  background-color: rgba(245, 158, 11, 0.2);
+  border-color: rgba(245, 158, 11, 0.6);
+  color: #fbbf24;
+}
+
+.source-pill.mqtt {
+  background-color: rgba(56, 189, 248, 0.15);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #38bdf8;
+}
+
+.source-pill.alternate {
+  opacity: 0.65;
+}
+
+.badge-source-count {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 10px;
+  background-color: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  margin-left: 4px;
 }
 
 .toggle-label {
@@ -731,6 +1035,8 @@ body {
 
 .field-model-cell {
   white-space: nowrap;
+  vertical-align: middle;
+  min-width: 80px;
 }
 
 .field-model-cell .badge-model,
@@ -780,6 +1086,14 @@ body {
   font-weight: 600;
   font-size: 13px;
   transition: background-color 0.4s ease, transform 0.2s ease;
+}
+
+.field-value-badge.is-bitfield,
+.field-value-badge:has(.bitfield-badges-wrap) {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  box-shadow: none !important;
 }
 
 .value-flash {
@@ -1262,9 +1576,9 @@ body {
 /* Bitfield Badges & Controls */
 .bitfield-badges-wrap {
   display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: center;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
 }
 
 .badge-flag {
@@ -1275,6 +1589,8 @@ body {
   font-weight: 600;
   font-family: var(--font-mono);
   letter-spacing: 0.02em;
+  white-space: nowrap;
+  line-height: 1.3;
 }
 
 .badge-flag.active {
@@ -1287,6 +1603,13 @@ body {
   background-color: rgba(148, 163, 184, 0.1);
   color: var(--text-muted);
   border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.bitfield-raw-note {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-top: 2px;
 }
 
 .bitfield-checklist {

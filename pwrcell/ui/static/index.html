@@ -78,7 +78,7 @@
 
       <!-- Main Content Area: Field Explorer -->
       <main class="main-content">
-        <!-- Device Info Banner -->
+        <!-- Device Info Banner with Merged View Mode Toggle -->
         <section class="device-banner" id="deviceBanner">
           <div class="device-info">
             <h2 id="activeDeviceName">Select a Device</h2>
@@ -90,27 +90,79 @@
               <span class="meta-item">Fields: <strong id="activeDeviceFieldCount">--</strong></span>
             </div>
           </div>
+
+          <!-- View Mode Segmented Control (Merged into Device Header) -->
+          <div class="view-mode-segmented" id="viewModeToggle">
+            <button class="view-mode-btn active" data-mode="unified" title="Unified Semantic View: Group redundant Modbus and MQTT data sources into single rows with automatic minimal polling solver">
+              <span class="view-mode-icon">✨</span> Unified (<span id="countUnified">0</span>)
+            </button>
+            <button class="view-mode-btn" data-mode="raw" title="All Registers View: Show all individual raw SunSpec registers and MQTT push telemetry fields">
+              <span class="view-mode-icon">📋</span> All Registers (<span id="countRaw">0</span>)
+            </button>
+          </div>
+
           <div class="device-banner-actions">
-            <button class="btn btn-secondary" id="btnPollAllModels" title="Poll all SunSpec models supported by this device">🔄 Poll All Models</button>
-            <button class="btn btn-secondary" id="btnSelectRecommended">Select Recommended</button>
-            <button class="btn btn-secondary" id="btnDeselectAll">Deselect All</button>
-            <button class="btn btn-secondary" id="btnApplySameType" title="Apply this device's selected fields to all devices of the same type" style="display: none;">📋 Apply to All</button>
+            <button class="btn btn-secondary btn-sm" id="btnPollAllModels" title="Poll all SunSpec models supported by this device">🔄 Poll All</button>
+            <button class="btn btn-secondary btn-sm" id="btnSelectRecommended">Select Recommended</button>
+            <button class="btn btn-secondary btn-sm" id="btnDeselectAll">Deselect All</button>
+            <button class="btn btn-secondary btn-sm" id="btnApplySameType" title="Apply this device's selected fields to all devices of the same type" style="display: none;">📋 Apply to All</button>
           </div>
         </section>
 
-        <!-- Search & Filter Controls -->
-        <div class="toolbar">
-          <div class="search-box">
-            <span class="search-icon">🔍</span>
-            <input type="text" id="searchInput" placeholder="Search fields by name, label, unit..." />
-            <button id="searchClear" class="clear-btn">&times;</button>
+        <!-- Polling Optimization Status Banner (Compact & Collapsible) -->
+        <div class="optimization-banner" id="optimizationBanner" style="display: none;">
+          <div class="opt-banner-header">
+            <div class="opt-banner-left">
+              <span class="opt-banner-icon">🎯</span>
+              <div class="opt-banner-title" id="optBannerTitle">Minimal Model Polling Plan</div>
+            </div>
+            <div class="opt-banner-controls">
+              <button class="btn btn-secondary btn-xs" id="btnResetPins" style="display: none;" title="Reset manually pinned sources back to automatic minimal set solver">↺ Reset to Auto</button>
+              <button type="button" class="btn-banner-toggle" id="btnToggleBanner" title="Minimize / Expand Polling Plan Banner">−</button>
+            </div>
           </div>
+          <div class="opt-banner-body" id="optBannerBody">
+            <div class="opt-banner-subtitle" id="optBannerSubtitle">Calculating optimal SunSpec models...</div>
+            <div class="opt-models-badges" id="optModelsBadges"></div>
+          </div>
+        </div>
 
-          <div class="model-select-box">
-            <label for="modelSelect" class="model-select-label">Model:</label>
-            <select id="modelSelect" class="model-dropdown" title="Filter fields by SunSpec Model">
-              <option value="all">All Models</option>
-            </select>
+        <!-- Streamlined Search, Filter & Options Toolbar -->
+        <div class="toolbar">
+          <div class="toolbar-top">
+            <div class="toolbar-search-group">
+              <div class="search-box">
+                <span class="search-icon">🔍</span>
+                <input type="text" id="searchInput" placeholder="Search fields by name, label, unit..." />
+                <button id="searchClear" class="clear-btn">&times;</button>
+              </div>
+
+              <div class="model-select-box">
+                <label for="modelSelect" class="model-select-label">Model:</label>
+                <select id="modelSelect" class="model-dropdown" title="Filter fields by SunSpec Model">
+                  <option value="all">All Models</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="toolbar-options">
+              <label class="toggle-label" id="optGroupByModel" title="Group table rows by SunSpec Model">
+                <input type="checkbox" id="groupByModel" />
+                <span>Group by Model</span>
+              </label>
+              <label class="toggle-label" id="optHideScaleFactors" title="Hide raw scale factor registers from standard views">
+                <input type="checkbox" id="hideScaleFactors" checked />
+                <span>Hide Scale Factors</span>
+              </label>
+              <label class="toggle-label" id="optHideCombinedRaw" title="Hide raw MQTT/Modbus fields covered by combined telemetry points">
+                <input type="checkbox" id="hideCombinedRaw" checked />
+                <span>Hide Combined Raw</span>
+              </label>
+              <label class="toggle-label" id="optMultiSort" title="Enable multi-column sorting without holding Shift">
+                <input type="checkbox" id="multiSortToggle" />
+                <span>Multi-Sort Mode</span>
+              </label>
+            </div>
           </div>
 
           <div class="filter-pills" id="filterPills">
@@ -122,25 +174,6 @@
             <button class="pill" data-filter="push">MQTT Push (<span id="countPush">0</span>)</button>
             <button class="pill" data-filter="modbus">Modbus (<span id="countModbus">0</span>)</button>
             <button class="pill" data-filter="scalefactor">Scale Factors (<span id="countScaleFactor">0</span>)</button>
-          </div>
-
-          <div class="toolbar-options">
-            <label class="toggle-label" title="Group table rows by SunSpec Model">
-              <input type="checkbox" id="groupByModel" />
-              <span>Group by Model</span>
-            </label>
-            <label class="toggle-label" title="Hide raw scale factor registers from standard views">
-              <input type="checkbox" id="hideScaleFactors" checked />
-              <span>Hide Scale Factors</span>
-            </label>
-            <label class="toggle-label" title="Hide raw MQTT/Modbus fields covered by combined telemetry points">
-              <input type="checkbox" id="hideCombinedRaw" checked />
-              <span>Hide Combined Raw</span>
-            </label>
-            <label class="toggle-label" title="Enable multi-column sorting without holding Shift">
-              <input type="checkbox" id="multiSortToggle" />
-              <span>Multi-Sort Mode</span>
-            </label>
           </div>
         </div>
 
@@ -164,8 +197,8 @@
                 <th width="48" class="text-center sortable" data-sort="ha" title="Sort by Home Assistant export selection">
                   <span class="th-content">HA<span class="sort-indicator"></span></span>
                 </th>
-                <th width="100" class="sortable" data-sort="model" title="Sort by SunSpec Model # (Shift-click to multi-sort)">
-                  <span class="th-content">Model<span class="sort-indicator"></span></span>
+                <th width="90" class="sortable" data-sort="model" title="Sort by SunSpec Model # (Shift-click to multi-sort)">
+                  <span class="th-content" id="thModelContent">Sources<span class="sort-indicator"></span></span>
                 </th>
                 <th class="sortable" data-sort="name" title="Sort by Field Name &amp; Label (Shift-click to multi-sort)">
                   <span class="th-content">Field Name &amp; Label<span class="sort-indicator"></span></span>

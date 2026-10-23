@@ -71,7 +71,12 @@ class SunspecPointDef:
 
     @property
     def is_scale_factor(self) -> bool:
-        return self.type == "sunssf" or self.name.endswith("_sf") or self.name.endswith("_SF")
+        return (
+            self.type == "sunssf"
+            or self.name.endswith(("_sf", "_SF"))
+            or self.name.startswith(("sf_", "SF_", "sunssf_"))
+            or (self.label and self.label.lower().startswith("scale factor"))
+        )
 
     @property
     def is_pad(self) -> bool:

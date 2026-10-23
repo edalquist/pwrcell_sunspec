@@ -17,7 +17,6 @@ mappings:
   modbus_field: inverter.model_64208.CTPow
   modbus_candidates:
   - inverter.model_64208.CTPow
-  - inverter.model_102.W
   transform: negate
   transform_desc: '-1 * CTPow (CT meter polarity inverted: positive = grid import)'
   description: Net power imported (+) or exported (-) to the utility grid
@@ -114,7 +113,8 @@ mappings:
   modbus_field: inverter.model_102.W
   modbus_candidates:
   - inverter.model_102.W
-  - inverter.model_64207.P
+  - inverter.model_101.W
+  - inverter.model_103.W
   transform: none
   transform_desc: ''
   description: Real-time AC output power of the inverter (Split Phase model 102)

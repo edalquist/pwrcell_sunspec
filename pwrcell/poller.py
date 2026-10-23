@@ -159,6 +159,7 @@ def resolve_paths_to_models(
     paths: List[str],
     catalog: Optional[Any] = None,
     state_store: Optional[Any] = None,
+    optimize: bool = False,
 ) -> Dict[str, List[int]]:
     """Resolve unified path strings to SunSpec model IDs per device type.
 
@@ -169,7 +170,14 @@ def resolve_paths_to_models(
     - Qualified paths with serials: '000100034AC7:pv_link.string_combiner.DCW'
     - Numeric models: 'pv_link.404', 'battery.model_64252'
     - Wildcards: 'pv_link.*', 'battery'
+
+    When optimize=True or when concept/unified paths are supplied, uses Set Cover
+    optimization to compute the exact minimal model set.
     """
+    if optimize or any((".concept." in p or ".unified." in p) for p in paths if isinstance(p, str)):
+        from .optimizer import resolve_minimal_models_for_paths
+        return resolve_minimal_models_for_paths(paths, state_store=state_store, catalog=catalog)
+
     from .mapping import MappingRegistry
 
     result: Dict[str, Set[int]] = {}
@@ -493,11 +501,12 @@ class TieredModbusPoller:
             self.slow_models[dev_type] = sorted(list(set(self.slow_models.get(dev_type, [])) | set(mids)))
 
     def sync_ha_selected_fields(self, selected_keys: List[str]):
-        """Ensure all SunSpec models backing selected Home Assistant entities are polled."""
+        """Ensure all SunSpec models backing selected Home Assistant entities are polled (minimal set)."""
         ha_models = resolve_paths_to_models(
             selected_keys,
             catalog=self.client.catalog if self.client else None,
             state_store=self.client.state if self.client else None,
+            optimize=True,
         )
         for dev_type, model_ids in ha_models.items():
             current_active = (
