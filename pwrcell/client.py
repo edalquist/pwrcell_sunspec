@@ -10,7 +10,7 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
-from typing import Generator, Optional
+from typing import Generator, List, Optional
 
 from .catalog import ModelCatalog, get_catalog
 from .config import AppConfig, DeviceConfig
