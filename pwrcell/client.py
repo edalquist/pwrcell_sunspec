@@ -268,7 +268,7 @@ class PwrcellClient:
             configure_sunspec_model_paths(sunspec_dir)
             self.catalog = get_catalog()
         except Exception as e:
-            logger.info("Using cached sunspec models (%s)", e)
+            logger.warning("Failed to sync SunSpec models over SCP; using cached sunspec models (%s)", e)
             from .modbus import configure_sunspec_model_paths
             configure_sunspec_model_paths()
 

@@ -76,6 +76,64 @@ class TestClientLifecycle(unittest.TestCase):
         addon_cfg = yaml.safe_load((Path(__file__).resolve().parent.parent / "config.yaml").read_text(encoding="utf-8"))
         self.assertEqual(addon_cfg.get("version"), pwrcell.__version__)
 
+    def test_load_models_dir_tofu_host_keys_and_atomic_download(self):
+        """load_models_dir must use RejectPolicy once known_hosts exists, clean up version.chk, and download via a staging directory."""
+        import tempfile
+        from pathlib import Path
+        from paramiko import AutoAddPolicy, RejectPolicy
+        from pwrcell.config import AppConfig, PwrcellConfig, SshTunnel
+        from pwrcell.models import load_models_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            cfg = AppConfig(
+                sunspec_cache_dir=str(cache_dir),
+                pwrcell=PwrcellConfig(ssh_tunnel=SshTunnel(host="127.0.0.1", port=22, username="root")),
+            )
+
+            mock_ssh = MagicMock()
+            mock_ssh.__enter__.return_value = mock_ssh
+            mock_scp = MagicMock()
+            mock_scp.__enter__.return_value = mock_scp
+
+            def fake_scp_get(remote_path, local_path, recursive=False, preserve_times=False):
+                lp = Path(local_path)
+                if remote_path == "/opt/pika/sunspec-models/version":
+                    lp.write_text("v2.0\n", encoding="utf-8")
+                elif remote_path == "/opt/pika/sunspec-models":
+                    dl_dir = lp / "sunspec-models"
+                    dl_dir.mkdir(parents=True, exist_ok=True)
+                    (dl_dir / "version").write_text("v2.0\n", encoding="utf-8")
+                    (dl_dir / "model_1.json").write_text("{}", encoding="utf-8")
+
+            mock_scp.get.side_effect = fake_scp_get
+
+            # 1. First run: known_hosts does not exist -> AutoAddPolicy used, then saved to known_hosts
+            with patch("pwrcell.models.SSHClient", return_value=mock_ssh), \
+                 patch("pwrcell.models.SCPClient", return_value=mock_scp):
+                res_dir = load_models_dir(cfg)
+                self.assertEqual(res_dir, cache_dir / "sunspec-models")
+                self.assertTrue((res_dir / "version").exists())
+                self.assertEqual((res_dir / "version").read_text(encoding="utf-8"), "v2.0\n")
+                self.assertFalse((res_dir / "version.chk").exists())
+                policy_arg = mock_ssh.set_missing_host_key_policy.call_args[0][0]
+                self.assertIsInstance(policy_arg, AutoAddPolicy)
+                mock_ssh.save_host_keys.assert_called_once()
+
+            # Create non-empty known_hosts to simulate subsequent run
+            known_hosts_file = cache_dir / "known_hosts"
+            known_hosts_file.write_text("127.0.0.1 ssh-rsa AAAAB3Nza...\n", encoding="utf-8")
+            mock_ssh.reset_mock()
+
+            # 2. Second run with existing known_hosts -> RejectPolicy used (pinned host key) and up-to-date check cleans version.chk
+            with patch("pwrcell.models.SSHClient", return_value=mock_ssh), \
+                 patch("pwrcell.models.SCPClient", return_value=mock_scp):
+                res_dir2 = load_models_dir(cfg)
+                self.assertEqual(res_dir2, cache_dir / "sunspec-models")
+                self.assertFalse((res_dir2 / "version.chk").exists())
+                policy_arg2 = mock_ssh.set_missing_host_key_policy.call_args[0][0]
+                self.assertIsInstance(policy_arg2, RejectPolicy)
+
 
 if __name__ == "__main__":
     unittest.main()
