@@ -169,6 +169,22 @@ mappings:
   ha_device_class: energy
   ha_state_class: total_increasing
 
+- id: inverter_output_energy
+  label: Inverter Output Energy
+  device_type: inverter
+  unit: Wh
+  mqtt_field: inverter.live.inverter_output_exported_energy_wh
+  modbus_field: inverter.model_102.WH
+  modbus_candidates:
+  - inverter.model_102.WH
+  - inverter.model_64207.E
+  transform: none
+  transform_desc: ''
+  description: Cumulative electrical energy produced/exported by the inverter
+  ha_platform: sensor
+  ha_device_class: energy
+  ha_state_class: total_increasing
+
 - id: battery_imported_energy
   label: Battery Stored / Charged Energy
   device_type: battery

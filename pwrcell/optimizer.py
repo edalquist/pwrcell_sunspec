@@ -63,6 +63,15 @@ CANONICAL_SYNONYMS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "ha_state_class": "measurement",
             "desc": "Real AC power output from inverter",
         },
+        "inverter_output_energy": {
+            "names": {"wh", "e", "inverter_output_exported_energy_wh", "inverter_output_energy_wh"},
+            "units": "Wh",
+            "label": "Inverter Output Energy",
+            "ha_platform": "sensor",
+            "ha_device_class": "energy",
+            "ha_state_class": "total_increasing",
+            "desc": "Cumulative electrical energy produced/exported by the inverter",
+        },
         "grid_power": {
             "names": {"ctpow", "grid_power_w"},
             "units": "W",

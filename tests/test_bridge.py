@@ -250,7 +250,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
         self.bridge.selected_field_keys = [f"{sn}:inverter.live.inverter_output_exported_energy_wh"]
         self.bridge.publish_discovery()
 
-        config_topic = f"homeassistant/sensor/pwrcell_{sn.lower()}/live_inverter_output_exported_energy_wh/config"
+        config_topic = f"homeassistant/sensor/pwrcell_{sn.lower()}/compound_inverter_output_energy/config"
         matching_call = next(call for call in self.mock_mqttc.publish.call_args_list if call[0][0] == config_topic)
         payload = json.loads(matching_call[0][1])
         # Energy in Wh has suggested_display_precision 0
@@ -259,6 +259,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
 
         # Update field with large energy value: 63,050,200 Wh (63.05 MWh)
         self.client.state.subscribe(self.bridge._on_field_update)
+        self.client.state.subscribe_compound(self.bridge._on_compound_update)
         self.mock_mqttc.publish.reset_mock()
         self.client.state.set_field(
             device_sn=sn,
@@ -268,7 +269,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
             units="Wh",
         )
 
-        state_topic = f"pwrcell/{sn.lower()}/live_inverter_output_exported_energy_wh/state"
+        state_topic = f"pwrcell/{sn.lower()}/compound_inverter_output_energy/state"
         state_call = next(call for call in self.mock_mqttc.publish.call_args_list if call[0][0] == state_topic)
         self.assertEqual(state_call[0][1], "63050200")
         self.assertNotIn("e+", state_call[0][1])
