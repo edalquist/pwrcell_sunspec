@@ -215,6 +215,151 @@ class TestRecommenderEngine(unittest.TestCase):
                 self.assertNotIn("V_SF", src.name)
                 self.assertFalse(src.name.endswith("_SF"))
 
+    def test_recommender_filters_settings_phases_and_directions(self):
+        # 1. Protection trip setting vs live telemetry (Hz vs ReConnMaxHz)
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="Hz_Live",
+            label="Grid Frequency",
+            value=60.01,
+            raw_value=6001,
+            units="Hz",
+            model_id=102,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inv_test",
+        )
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="ReConnMaxHz",
+            label="Reconnect Max Frequency Trip Setting",
+            value=60.50,
+            raw_value=6050,
+            units="Hz",
+            model_id=64203,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inv_test",
+        )
+
+        # 2. Phase A vs Phase B voltage
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="PhVphA_Test",
+            label="Phase A Voltage",
+            value=120.0,
+            raw_value=1200,
+            units="V",
+            model_id=102,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inv_test",
+        )
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="PhVphB_Test",
+            label="Phase B Voltage",
+            value=120.2,
+            raw_value=1202,
+            units="V",
+            model_id=102,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inv_test",
+        )
+
+        # 3. Cabinet vs Transformer temp
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="TmpCab_Test",
+            label="Cabinet Temperature",
+            value=45.0,
+            raw_value=450,
+            units="C",
+            model_id=102,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inv_test",
+        )
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="TmpTrns_Test",
+            label="Transformer Temperature",
+            value=45.2,
+            raw_value=452,
+            units="C",
+            model_id=102,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inv_test",
+        )
+
+        # 4. Energy export vs energy import
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="WhExp_Test",
+            label="Lifetime Exported Energy",
+            value=50000.0,
+            raw_value=50000,
+            units="Wh",
+            model_id=102,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inv_test",
+        )
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="WhImp_Test",
+            label="Lifetime Imported Energy",
+            value=50000.0,
+            raw_value=50000,
+            units="Wh",
+            model_id=102,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inv_test",
+        )
+
+        suggestions = find_suggested_groupings(self.client.state, dismissed_ids=set())
+        
+        # Verify no illegal pairings exist in suggestions
+        for s in suggestions:
+            names = {src.name for src in s.sources}
+            self.assertFalse({"Hz_Live", "ReConnMaxHz"}.issubset(names))
+            self.assertFalse({"PhVphA_Test", "PhVphB_Test"}.issubset(names))
+            self.assertFalse({"TmpCab_Test", "TmpTrns_Test"}.issubset(names))
+            self.assertFalse({"WhExp_Test", "WhImp_Test"}.issubset(names))
+
+    def test_batch_api_endpoints(self):
+        app = create_app(self.client)
+        app.config["TESTING"] = True
+        test_client = app.test_client()
+
+        # 1. Fetch suggestions
+        resp = test_client.get("/api/grouping/suggestions")
+        self.assertEqual(resp.status_code, 200)
+        suggs = resp.get_json().get("suggestions", [])
+        self.assertGreater(len(suggs), 0)
+
+        # 2. Batch dismiss
+        ids_to_dismiss = [s["id"] for s in suggs[:2]]
+        resp_dismiss = test_client.post(
+            "/api/grouping/suggestions/batch-dismiss",
+            json={"suggestion_ids": ids_to_dismiss},
+        )
+        self.assertEqual(resp_dismiss.status_code, 200)
+        self.assertEqual(resp_dismiss.get_json()["count"], 2)
+
+        # 3. Batch approve
+        items_to_approve = [
+            {
+                "device_sn": s["device_sn"],
+                "field_keys": [src["field_key"] for src in s["sources"]],
+                "target_concept": s["suggested_concept_key"],
+                "label": s["suggested_label"],
+                "suggestion_id": s["id"],
+            }
+            for s in suggs[2:4]
+        ]
+        resp_approve = test_client.post(
+            "/api/grouping/suggestions/batch-approve",
+            json={"suggestions": items_to_approve},
+        )
+        self.assertEqual(resp_approve.status_code, 200)
+        self.assertEqual(resp_approve.get_json()["count"], len(items_to_approve))
+
 
 if __name__ == "__main__":
     unittest.main()

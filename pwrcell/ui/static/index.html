@@ -370,6 +370,24 @@
 
         <!-- Suggestions View Container -->
         <div id="compareSuggestionsContainer" class="compare-suggestions-container" style="display: none;">
+          <div class="suggestions-toolbar" id="suggestionsToolbar">
+            <div class="suggestions-toolbar-left">
+              <span class="suggestions-toolbar-title">✨ Recommended Register Groupings</span>
+              <span class="text-muted" style="font-size: 12px;">High correlation across SunSpec Modbus &amp; Generac REbus vendor registers</span>
+            </div>
+            <div class="suggestions-toolbar-right">
+              <select class="compare-device-select" id="cmpSuggestionsConfidence">
+                <option value="high" selected>High Confidence Only (≥85%)</option>
+                <option value="all">All Candidates (≥70%)</option>
+              </select>
+              <button class="btn-approve-suggestion" id="btnBatchApproveVisible" title="Approve all currently visible grouping suggestions in one batch">
+                ✅ Approve All (<span id="cntBatchApprove">0</span>)
+              </button>
+              <button class="btn-dismiss-suggestion" id="btnBatchDismissVisible" title="Dismiss all currently visible suggestions">
+                ✕ Dismiss All
+              </button>
+            </div>
+          </div>
           <div class="suggestions-list" id="suggestionsList"></div>
         </div>
 

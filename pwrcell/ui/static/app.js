@@ -106,6 +106,11 @@ const el = {
   compareTableBody: document.getElementById('compareTableBody'),
   compareSuggestionsContainer: document.getElementById('compareSuggestionsContainer'),
   suggestionsList: document.getElementById('suggestionsList'),
+  suggestionsToolbar: document.getElementById('suggestionsToolbar'),
+  cmpSuggestionsConfidence: document.getElementById('cmpSuggestionsConfidence'),
+  btnBatchApproveVisible: document.getElementById('btnBatchApproveVisible'),
+  btnBatchDismissVisible: document.getElementById('btnBatchDismissVisible'),
+  cntBatchApprove: document.getElementById('cntBatchApprove'),
   tabCmpDiscrepancies: document.getElementById('tabCmpDiscrepancies'),
   tabCmpSuggestions: document.getElementById('tabCmpSuggestions'),
   tabCmpMulti: document.getElementById('tabCmpMulti'),
@@ -3633,6 +3638,115 @@ function setupEventListeners() {
           }
           return;
         }
+
+        const batchDeviceBtn = e.target.closest('[data-action="batch-approve-device"]');
+        if (batchDeviceBtn) {
+          const deviceSn = batchDeviceBtn.dataset.sn;
+          const items = JSON.parse(batchDeviceBtn.dataset.items || '[]');
+          if (items.length === 0) return;
+
+          batchDeviceBtn.disabled = true;
+          batchDeviceBtn.textContent = 'Approving...';
+          try {
+            const res = await fetch(apiPath('api/grouping/suggestions/batch-approve'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ suggestions: items }),
+            });
+            const data = await res.json();
+            if (data.status === 'ok') {
+              showToast(`Approved ${items.length} suggestions for ${deviceSn.slice(-4)}!`);
+              await refreshAfterGroupingChange(deviceSn);
+              await fetchGroupingSuggestions();
+              fetchAndRenderCompare();
+            } else {
+              alert(`Error approving suggestions: ${data.error || 'Unknown error'}`);
+            }
+          } catch (err) {
+            alert(`Failed approving suggestions: ${err}`);
+          }
+          return;
+        }
+      });
+    }
+
+    // Suggestions Toolbar Controls
+    if (el.cmpSuggestionsConfidence) {
+      el.cmpSuggestionsConfidence.addEventListener('change', (e) => {
+        compareState.suggestionConfidence = e.target.value;
+        renderCompareSuggestions(compareState.suggestions || []);
+      });
+    }
+
+    if (el.btnBatchApproveVisible) {
+      el.btnBatchApproveVisible.addEventListener('click', async () => {
+        const visible = compareState.visibleSuggestions || [];
+        if (visible.length === 0) return;
+        const confirmMsg = `Approve all ${visible.length} visible grouping suggestions?`;
+        if (!confirm(confirmMsg)) return;
+
+        el.btnBatchApproveVisible.disabled = true;
+        el.btnBatchApproveVisible.textContent = 'Approving...';
+        try {
+          const items = visible.map(s => ({
+            device_sn: s.device_sn,
+            field_keys: (s.sources || []).map(src => src.field_key),
+            target_concept: s.suggested_concept_key,
+            label: s.suggested_label,
+            suggestion_id: s.id,
+          }));
+          const res = await fetch(apiPath('api/grouping/suggestions/batch-approve'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ suggestions: items }),
+          });
+          const data = await res.json();
+          if (data.status === 'ok') {
+            showToast(`Approved ${items.length} suggestions!`);
+            const firstSn = visible[0] ? visible[0].device_sn : '';
+            if (firstSn) await refreshAfterGroupingChange(firstSn);
+            await fetchGroupingSuggestions();
+            fetchAndRenderCompare();
+          } else {
+            alert(`Error approving suggestions: ${data.error || 'Unknown error'}`);
+          }
+        } catch (err) {
+          alert(`Failed approving suggestions: ${err}`);
+        } finally {
+          el.btnBatchApproveVisible.disabled = false;
+        }
+      });
+    }
+
+    if (el.btnBatchDismissVisible) {
+      el.btnBatchDismissVisible.addEventListener('click', async () => {
+        const visible = compareState.visibleSuggestions || [];
+        if (visible.length === 0) return;
+        const confirmMsg = `Dismiss all ${visible.length} visible grouping suggestions?`;
+        if (!confirm(confirmMsg)) return;
+
+        el.btnBatchDismissVisible.disabled = true;
+        el.btnBatchDismissVisible.textContent = 'Dismissing...';
+        try {
+          const ids = visible.map(s => s.id);
+          const res = await fetch(apiPath('api/grouping/suggestions/batch-dismiss'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ suggestion_ids: ids }),
+          });
+          const data = await res.json();
+          if (data.status === 'ok') {
+            showToast(`Dismissed ${ids.length} suggestions`);
+            await fetchGroupingSuggestions();
+            fetchAndRenderCompare();
+          } else {
+            alert(`Error dismissing suggestions: ${data.error || 'Unknown error'}`);
+          }
+        } catch (err) {
+          alert(`Failed dismissing suggestions: ${err}`);
+        } finally {
+          el.btnBatchDismissVisible.disabled = false;
+        }
       });
     }
   }
@@ -4001,6 +4115,8 @@ const compareState = {
   searchQuery: '',
   data: null,
   suggestions: [],
+  suggestionConfidence: 'high',
+  visibleSuggestions: [],
   hasInitializedTab: false,
 };
 
@@ -4161,8 +4277,12 @@ function renderCompareSuggestions(suggestions) {
   if (!el.suggestionsList) return;
   const devFilter = (compareState.selectedDevice || '').trim().toUpperCase();
   const query = (compareState.searchQuery || '').trim().toLowerCase();
+  const confFilter = (compareState.suggestionConfidence || 'high').toLowerCase();
 
   const filtered = (suggestions || []).filter(s => {
+    if (confFilter === 'high' && s.confidence_label !== 'HIGH' && (s.confidence || 0) < 0.85) {
+      return false;
+    }
     if (devFilter) {
       const sSn = (s.device_sn || '').toUpperCase();
       const sDev = (s.device_type || '').toUpperCase();
@@ -4182,105 +4302,159 @@ function renderCompareSuggestions(suggestions) {
     return true;
   });
 
+  // Store visible suggestions on compareState so batch actions know what to approve/dismiss
+  compareState.visibleSuggestions = filtered;
+
+  if (el.cntBatchApprove) el.cntBatchApprove.textContent = filtered.length;
+  if (el.btnBatchApproveVisible) el.btnBatchApproveVisible.disabled = filtered.length === 0;
+  if (el.btnBatchDismissVisible) el.btnBatchDismissVisible.disabled = filtered.length === 0;
+
   if (filtered.length === 0) {
     el.suggestionsList.innerHTML = `
       <div class="empty-state" style="padding: 30px; text-align: center;">
         <span style="font-size: 28px; display: block; margin-bottom: 8px;">✨</span>
         <strong>No Grouping Suggestions Found</strong>
         <p class="text-muted" style="margin-top: 4px; font-size: 13px;">
-          All compatible telemetry streams with high correlation are already grouped or dismissed.
+          ${confFilter === 'high' ? 'No high-confidence (≥85%) suggestions found. Switch to "All Candidates" to view lower confidence pairings.' : 'All compatible telemetry streams with high correlation are already grouped or dismissed.'}
         </p>
       </div>
     `;
     return;
   }
 
-  el.suggestionsList.innerHTML = filtered.map(s => {
-    const confClass = s.confidence_label === 'HIGH' ? 'high' : 'medium';
-    const confPct = Math.round((s.confidence || 0) * 100);
+  // Group by device
+  const deviceGroups = {};
+  filtered.forEach(s => {
+    const key = s.device_sn || 'UNKNOWN';
+    if (!deviceGroups[key]) {
+      deviceGroups[key] = {
+        name: s.device_name || s.device_type,
+        device_sn: s.device_sn,
+        items: [],
+      };
+    }
+    deviceGroups[key].items.push(s);
+  });
 
-    const sourcesHtml = (s.sources || []).map(src => {
-      let srcClass = 'src-sunspec';
-      if (src.source_type === 'MQTT') srcClass = 'src-mqtt';
-      else if (src.model_id && src.model_id >= 64200) srcClass = 'src-vendor';
+  el.suggestionsList.innerHTML = Object.values(deviceGroups).map(dg => {
+    const cardsHtml = dg.items.map(s => {
+      const confClass = s.confidence_label === 'HIGH' ? 'high' : 'medium';
+      const confPct = Math.round((s.confidence || 0) * 100);
 
-      const valDisplay = src.value !== null && src.value !== undefined
-        ? `${formatFieldValue(src.value)} ${escapeHtml(src.units || s.units || '')}`
-        : '<span class="text-muted">--</span>';
+      const sourcesHtml = (s.sources || []).map(src => {
+        let srcClass = 'src-sunspec';
+        if (src.source_type === 'MQTT') srcClass = 'src-mqtt';
+        else if (src.model_id && src.model_id >= 64200) srcClass = 'src-vendor';
 
-      return `
-        <div class="compare-source-card">
-          <div class="compare-source-left">
-            <span class="source-chip ${srcClass}">${escapeHtml(src.source_id || src.source_type)}</span>
-            <div class="compare-source-meta">
-              <span class="compare-source-name">${escapeHtml(src.label || src.name)}</span>
-              <span class="compare-source-key">${escapeHtml(src.field_key)}</span>
+        const valDisplay = src.value !== null && src.value !== undefined
+          ? `${formatFieldValue(src.value)} ${escapeHtml(src.units || s.units || '')}`
+          : '<span class="text-muted">--</span>';
+
+        return `
+          <div class="compare-source-card">
+            <div class="compare-source-left">
+              <span class="source-chip ${srcClass}">${escapeHtml(src.source_id || src.source_type)}</span>
+              <div class="compare-source-meta">
+                <span class="compare-source-name">${escapeHtml(src.label || src.name)}</span>
+                <span class="compare-source-key">${escapeHtml(src.field_key)}</span>
+              </div>
+            </div>
+            <div class="compare-source-right">
+              <span class="compare-source-value">${valDisplay}</span>
             </div>
           </div>
-          <div class="compare-source-right">
-            <span class="compare-source-value">${valDisplay}</span>
+        `;
+      }).join('');
+
+      const reasonsHtml = (s.reasons || []).map(r => `
+        <div class="suggestion-reason-item">
+          <span>✔</span>
+          <span>${escapeHtml(r)}</span>
+        </div>
+      `).join('');
+
+      const fieldKeysJson = escapeHtml(JSON.stringify((s.sources || []).map(src => src.field_key)));
+
+      return `
+        <div class="suggestion-card" data-suggestion-id="${escapeHtml(s.id)}">
+          <div class="suggestion-card-header">
+            <div class="suggestion-title-group">
+              <span class="suggestion-concept-badge">💡 ${escapeHtml(s.suggested_label)} (${escapeHtml(s.suggested_concept_key)})</span>
+              <span class="suggestion-confidence-badge ${confClass}">${confPct}% ${escapeHtml(s.confidence_label)} Confidence</span>
+            </div>
+            <div class="suggestion-actions">
+              <button class="btn-approve-suggestion"
+                      data-action="approve-suggestion"
+                      data-id="${escapeHtml(s.id)}"
+                      data-sn="${escapeHtml(s.device_sn)}"
+                      data-concept="${escapeHtml(s.suggested_concept_key)}"
+                      data-label="${escapeHtml(s.suggested_label)}"
+                      data-field-keys="${fieldKeysJson}"
+                      title="Merge these fields into a single unified telemetry point">
+                ✅ Approve &amp; Merge
+              </button>
+              <button class="btn-customize-suggestion"
+                      data-action="customize-suggestion"
+                      data-id="${escapeHtml(s.id)}"
+                      data-sn="${escapeHtml(s.device_sn)}"
+                      data-concept="${escapeHtml(s.suggested_concept_key)}"
+                      data-label="${escapeHtml(s.suggested_label)}"
+                      data-field-keys="${fieldKeysJson}"
+                      title="Open grouping modal to customize concept key or label before saving">
+                ✏️ Customize
+              </button>
+              <button class="btn-dismiss-suggestion"
+                      data-action="dismiss-suggestion"
+                      data-id="${escapeHtml(s.id)}"
+                      title="Dismiss this suggestion">
+                ✕ Dismiss
+              </button>
+            </div>
+          </div>
+
+          <div class="compare-sources-list">
+            ${sourcesHtml}
+          </div>
+
+          <div class="suggestion-reasons-list">
+            ${reasonsHtml}
           </div>
         </div>
       `;
     }).join('');
 
-    const reasonsHtml = (s.reasons || []).map(r => `
-      <div class="suggestion-reason-item">
-        <span>✔</span>
-        <span>${escapeHtml(r)}</span>
-      </div>
-    `).join('');
-
-    const fieldKeysJson = escapeHtml(JSON.stringify((s.sources || []).map(src => src.field_key)));
+    const dgItemsJson = escapeHtml(JSON.stringify(dg.items.map(s => ({
+      device_sn: s.device_sn,
+      field_keys: (s.sources || []).map(src => src.field_key),
+      target_concept: s.suggested_concept_key,
+      label: s.suggested_label,
+      suggestion_id: s.id,
+    }))));
 
     return `
-      <div class="suggestion-card" data-suggestion-id="${escapeHtml(s.id)}">
-        <div class="suggestion-card-header">
-          <div class="suggestion-title-group">
-            <span class="compare-device-pill">${escapeHtml(s.device_name || s.device_type)}</span>
-            <span class="suggestion-concept-badge">💡 ${escapeHtml(s.suggested_label)} (${escapeHtml(s.suggested_concept_key)})</span>
-            <span class="suggestion-confidence-badge ${confClass}">${confPct}% ${escapeHtml(s.confidence_label)} Confidence</span>
+      <div class="device-suggestions-group">
+        <div class="device-suggestions-header">
+          <div class="device-suggestions-title">
+            <span class="compare-device-pill">${escapeHtml(dg.name)}</span>
+            <span class="text-muted" style="font-size: 12px;">${dg.items.length} suggestion${dg.items.length === 1 ? '' : 's'}</span>
           </div>
-          <div class="suggestion-actions">
-            <button class="btn-approve-suggestion"
-                    data-action="approve-suggestion"
-                    data-id="${escapeHtml(s.id)}"
-                    data-sn="${escapeHtml(s.device_sn)}"
-                    data-concept="${escapeHtml(s.suggested_concept_key)}"
-                    data-label="${escapeHtml(s.suggested_label)}"
-                    data-field-keys="${fieldKeysJson}"
-                    title="Merge these fields into a single unified telemetry point">
-              ✅ Approve & Merge
-            </button>
-            <button class="btn-customize-suggestion"
-                    data-action="customize-suggestion"
-                    data-id="${escapeHtml(s.id)}"
-                    data-sn="${escapeHtml(s.device_sn)}"
-                    data-concept="${escapeHtml(s.suggested_concept_key)}"
-                    data-label="${escapeHtml(s.suggested_label)}"
-                    data-field-keys="${fieldKeysJson}"
-                    title="Open grouping modal to customize concept key or label before saving">
-              ✏️ Customize
-            </button>
-            <button class="btn-dismiss-suggestion"
-                    data-action="dismiss-suggestion"
-                    data-id="${escapeHtml(s.id)}"
-                    title="Dismiss this suggestion">
-              ✕ Dismiss
+          <div class="device-suggestions-actions">
+            <button class="btn-approve-suggestion btn-sm"
+                    data-action="batch-approve-device"
+                    data-sn="${escapeHtml(dg.device_sn)}"
+                    data-items="${dgItemsJson}"
+                    title="Approve all suggestions for this device">
+              ✅ Approve All for Device (${dg.items.length})
             </button>
           </div>
         </div>
-
-        <div class="compare-sources-list">
-          ${sourcesHtml}
-        </div>
-
-        <div class="suggestion-reasons-list">
-          ${reasonsHtml}
+        <div class="device-suggestions-body">
+          ${cardsHtml}
         </div>
       </div>
     `;
   }).join('');
+}
 }
 
 function renderCompareTableRows(rows) {

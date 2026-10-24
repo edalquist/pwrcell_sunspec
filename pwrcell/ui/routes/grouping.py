@@ -163,6 +163,17 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         )
         return jsonify({"status": "ok", "overrides": result})
 
+    @bp.route("/api/grouping/suggestions/batch-approve", methods=["POST"])
+    def batch_approve_grouping_suggestions():
+        from ...grouping import approve_suggestions
+        data = request.get_json() or {}
+        suggestions = data.get("suggestions", [])
+        if not isinstance(suggestions, list):
+            return jsonify({"error": "suggestions array is required"}), 400
+
+        result = approve_suggestions(suggestions)
+        return jsonify({"status": "ok", "count": len(suggestions), "overrides": result})
+
     @bp.route("/api/grouping/suggestions/dismiss", methods=["POST"])
     def dismiss_grouping_suggestion():
         from ...grouping import dismiss_suggestion
@@ -173,6 +184,17 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
 
         result = dismiss_suggestion(suggestion_id=suggestion_id)
         return jsonify({"status": "ok", "overrides": result})
+
+    @bp.route("/api/grouping/suggestions/batch-dismiss", methods=["POST"])
+    def batch_dismiss_grouping_suggestions():
+        from ...grouping import dismiss_suggestions
+        data = request.get_json() or {}
+        suggestion_ids = data.get("suggestion_ids", [])
+        if not isinstance(suggestion_ids, list):
+            return jsonify({"error": "suggestion_ids array is required"}), 400
+
+        result = dismiss_suggestions(suggestion_ids)
+        return jsonify({"status": "ok", "count": len(suggestion_ids), "overrides": result})
 
     @bp.route("/api/grouping/export")
     def export_grouping_mappings():

@@ -140,10 +140,19 @@ def dismiss_suggestion(
     config_path: Optional[Path | str] = None,
 ) -> Dict[str, Any]:
     """Record a suggestion ID as dismissed by user so it won't appear again."""
+    return dismiss_suggestions([suggestion_id], config_path=config_path)
+
+
+def dismiss_suggestions(
+    suggestion_ids: List[str],
+    config_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """Record multiple suggestion IDs as dismissed by user so they won't appear again."""
     data = load_custom_groupings(config_path)
-    s_id = suggestion_id.strip()
     dismissed = set(data.get("dismissed_suggestions", []))
-    dismissed.add(s_id)
+    for s_id in suggestion_ids:
+        if s_id and s_id.strip():
+            dismissed.add(s_id.strip())
     data["dismissed_suggestions"] = list(dismissed)
     save_custom_groupings(data, config_path)
     return data
@@ -158,24 +167,51 @@ def approve_suggestion(
     config_path: Optional[Path | str] = None,
 ) -> Dict[str, Any]:
     """Approve a suggested grouping by setting overrides for all source field keys."""
+    return approve_suggestions(
+        [
+            {
+                "device_sn": device_sn,
+                "field_keys": field_keys,
+                "target_concept": target_concept,
+                "custom_label": custom_label,
+                "suggestion_id": suggestion_id,
+            }
+        ],
+        config_path=config_path,
+    )
+
+
+def approve_suggestions(
+    suggestions: List[Dict[str, Any]],
+    config_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """Approve multiple suggested groupings in a single batch operation."""
     data = load_custom_groupings(config_path)
-    clean_sn = device_sn.strip().upper()
-    clean_target = target_concept.strip()
+    dismissed = set(data.get("dismissed_suggestions", []))
 
-    for f_key in field_keys:
-        qual_key = f"{clean_sn}:{f_key.strip()}"
-        data["field_overrides"][qual_key] = clean_target
+    for item in suggestions:
+        device_sn = item.get("device_sn", "").strip().upper()
+        field_keys = item.get("field_keys", [])
+        target_concept = item.get("target_concept", "").strip()
+        custom_label = item.get("label") or item.get("custom_label")
+        s_id = item.get("suggestion_id") or item.get("id")
 
-    if custom_label:
-        data.setdefault("custom_concepts", {})[clean_target] = {
-            "label": custom_label.strip(),
-        }
+        if not device_sn or not field_keys or not target_concept:
+            continue
 
-    if suggestion_id:
-        dismissed = set(data.get("dismissed_suggestions", []))
-        dismissed.add(suggestion_id.strip())
-        data["dismissed_suggestions"] = list(dismissed)
+        for f_key in field_keys:
+            qual_key = f"{device_sn}:{f_key.strip()}"
+            data["field_overrides"][qual_key] = target_concept
 
+        if custom_label:
+            data.setdefault("custom_concepts", {})[target_concept] = {
+                "label": custom_label.strip(),
+            }
+
+        if s_id:
+            dismissed.add(str(s_id).strip())
+
+    data["dismissed_suggestions"] = list(dismissed)
     save_custom_groupings(data, config_path)
     return data
 

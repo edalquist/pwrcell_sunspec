@@ -1,13 +1,14 @@
 """Automated Grouping Recommendation Engine for Generac PWRcell.
 
 Analyzes telemetry across SunSpec Modbus registers and live MQTT push fields to identify
-candidate groupings based on:
-1. Live value agreement and correlation (Delta < 1%)
-2. Clean unit and device class compatibility
-3. Semantic token and naming proximity (e.g. 'wh' ≈ 'e' ≈ 'energy')
-4. Paired SunSpec standard vs. Generac vendor model topologies
+high-confidence candidate groupings based on:
+1. Live telemetry classification (excluding configuration, settings, trip thresholds, and address fields)
+2. Phase, sensor location, and flow-direction compatibility (preventing Phase A vs Phase B or Import vs Export mismatches)
+3. Physical measurement units and semantic concept alignment
+4. Quiescent zero-matching gates to prevent idle false positives
+5. Paired SunSpec standard vs. Generac vendor model topologies
 
-Surfaces scored suggestions for one-click user review, approval, or dismissal in the UI.
+Surfaces scored suggestions for one-click user review, batch approval, or dismissal in the UI.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ SEMANTIC_SYNONYM_CLUSTERS: List[Dict[str, Any]] = [
         "concept": "current",
         "units": "A",
         "label": "Current",
-        "tokens": {"a", "amp", "amps", "current", "dca", "iin", "apha", "aphb", "aphc"},
+        "tokens": {"a", "amp", "amps", "current", "dca", "iin", "i", "apha", "aphb", "aphc"},
     },
     {
         "concept": "frequency",
@@ -59,7 +60,7 @@ SEMANTIC_SYNONYM_CLUSTERS: List[Dict[str, Any]] = [
         "concept": "temperature",
         "units": "C",
         "label": "Temperature",
-        "tokens": {"temp", "tmp", "temperature", "tmpsnk", "tmpcab", "tmpamb"},
+        "tokens": {"temp", "tmp", "temperature", "tmpsnk", "tmpcab", "tmpamb", "tmptrns"},
     },
     {
         "concept": "state_of_charge",
@@ -73,13 +74,71 @@ SEMANTIC_SYNONYM_CLUSTERS: List[Dict[str, Any]] = [
         "label": "State of Health",
         "tokens": {"soh", "state_of_health"},
     },
-    {
-        "concept": "connection_state",
-        "units": "",
-        "label": "Connection / Enable State",
-        "tokens": {"conn", "connect", "connected", "enabled", "enable", "ena"},
-    },
 ]
+
+# Exclusion sets for non-telemetry points
+SETTING_PREFIXES = (
+    "reconn",
+    "wmaxlim",
+    "outpf",
+    "varpct",
+    "pqset",
+    "varmod",
+    "wmod",
+    "trip",
+    "prot",
+    "conn",
+    "autostart",
+    "pcmd",
+)
+SETTING_SUFFIXES = (
+    "_ena",
+    "ena",
+    "lim",
+    "rtg",
+    "crv",
+    "tms",
+    "time",
+    "dly",
+    "set",
+    "cfg",
+    "offset",
+    "slope",
+    "bias",
+    "latchtms",
+    "trip",
+)
+ADDRESS_POINTS = {
+    "adr1",
+    "adr2",
+    "cty",
+    "st",
+    "zp",
+    "cntr",
+    "phn",
+    "fnm",
+    "lnm",
+    "em",
+    "ico",
+    "iem",
+    "ifnm",
+    "ilnm",
+    "iphn",
+    "dns1",
+    "dns2",
+    "gw",
+    "ip",
+    "mac",
+    "port",
+    "mask",
+    "sn",
+    "vn",
+    "vm",
+    "vr",
+    "cert",
+    "ver",
+}
+NON_TELEMETRY_MODELS = {16, 64203, 64250, 120, 121, 122, 123, 124, 126}
 
 
 @dataclass
@@ -137,6 +196,101 @@ def find_semantic_cluster(tokens: Set[str], unit: Optional[str]) -> Optional[Dic
     return None
 
 
+def is_telemetry_candidate(source: Any, group: Any) -> bool:
+    """Filter out non-telemetry points (configuration, setpoints, network settings, addresses, scale factors)."""
+    name = (source.name or "").lower()
+    # 1. Scale factors
+    if getattr(group, "is_scale_factor", False) or is_scale_factor_point(
+        name=source.name,
+        point_type=getattr(source, "point_type", None),
+        label=source.label,
+        explicit=bool(getattr(group, "is_scale_factor", False)),
+    ):
+        return False
+
+    # 2. Writable registers (setpoints, control registers)
+    if getattr(source, "is_writable", False):
+        return False
+
+    # 3. Models known to be purely network config, curve definitions, or protection trips
+    if source.model_id in NON_TELEMETRY_MODELS:
+        return False
+
+    # 4. Network and address points
+    if name in ADDRESS_POINTS:
+        return False
+
+    # 5. Empty or blank strings
+    val = source.value
+    if isinstance(val, str) and not val.strip():
+        return False
+
+    # 6. Setting / limit / trip / curve prefixes and suffixes
+    if any(name.startswith(p) for p in SETTING_PREFIXES):
+        return False
+    if any(name.endswith(s) for s in SETTING_SUFFIXES):
+        return False
+
+    # 7. Must possess a valid physical measurement unit
+    u = clean_unit(source.units or getattr(group, "units", None))
+    if not u:
+        return False
+
+    return True
+
+
+def extract_phase(name: str, label: str) -> str:
+    """Extract electrical phase (A, B, C) if explicitly specified in name or label."""
+    cleaned = re.sub(r"[_\W]+", " ", f"{name} {label}").lower()
+    m = re.search(r"\b(?:phase|line)\s*([abc])\b", cleaned)
+    if m:
+        return m.group(1).upper()
+    m2 = re.search(r"\b(?:phv|a|w|v)?ph([abc])\b", cleaned)
+    if m2:
+        return m2.group(1).upper()
+    return ""
+
+
+def extract_temp_sensor(name: str, label: str) -> str:
+    """Extract physical temperature sensor location."""
+    cleaned = re.sub(r"[_\W]+", " ", f"{name} {label}").lower()
+    if re.search(r"\b(?:snk|heatsink)\b|tmpsnk", cleaned):
+        return "heatsink"
+    if re.search(r"\b(?:cab|cabinet)\b|tmpcab", cleaned):
+        return "cabinet"
+    if re.search(r"\b(?:trns|transformer)\b|tmptrns", cleaned):
+        return "transformer"
+    if re.search(r"\b(?:amb|ambient)\b|tmpamb", cleaned):
+        return "ambient"
+    if re.search(r"\bcell\b", cleaned):
+        return "cell"
+    return ""
+
+
+def extract_direction(name: str, label: str) -> str:
+    """Extract power or energy flow direction (export, import, charge, discharge)."""
+    cleaned = re.sub(r"[_\W]+", " ", f"{name} {label}").lower()
+    if re.search(r"\b(?:exp|export(?:ed)?|out|whout|whexp)\b", cleaned):
+        return "export"
+    if re.search(r"\b(?:imp|import(?:ed)?|whimp|whin)\b", cleaned) or re.search(r"\bin\b", cleaned):
+        return "import"
+    if re.search(r"\b(?:discha|discharge|discharging)\b", cleaned):
+        return "discharge"
+    if re.search(r"\b(?:cha|charge|charging)\b", cleaned):
+        return "charge"
+    return ""
+
+
+def extract_count_type(name: str, label: str) -> str:
+    """Distinguish detected vs installed device counts."""
+    cleaned = re.sub(r"[_\W]+", " ", f"{name} {label}").lower()
+    if re.search(r"\bdetected\b", cleaned):
+        return "detected"
+    if re.search(r"\binstalled\b", cleaned):
+        return "installed"
+    return ""
+
+
 def find_suggested_groupings(
     state_store: StateStore,
     dismissed_ids: Optional[Set[str]] = None,
@@ -159,22 +313,12 @@ def find_suggested_groupings(
         # Evaluate existing unified groups for this device
         groups = group_device_fields(dev)
 
-        # Collect candidate sources that currently sit in single-source groups and have live values.
-        # Exclude scale factor registers from merging candidates.
-        single_source_candidates: List[Tuple[Any, Any]] = []  # (group, source)
+        # Collect candidate sources that sit in single-source groups and qualify as telemetry
+        single_source_candidates: List[Tuple[Any, Any]] = []
         for g in groups:
-            if getattr(g, "is_scale_factor", False):
-                continue
             if len(g.sources) == 1:
                 s = g.sources[0]
-                if is_scale_factor_point(
-                    name=s.name,
-                    point_type=getattr(s, "point_type", None),
-                    label=s.label,
-                    explicit=bool(getattr(s, "is_scale_factor", False)),
-                ):
-                    continue
-                if s.value is not None:
+                if s.value is not None and is_telemetry_candidate(s, g):
                     single_source_candidates.append((g, s))
 
         # Check pairs of candidates on this device
@@ -194,31 +338,89 @@ def find_suggested_groupings(
                     continue
                 evaluated_pairs.add(pair_key)
 
-                # 1. Units must be compatible
+                # 1. Units must be non-empty and compatible
                 u_a = clean_unit(s_a.units or g_a.units)
                 u_b = clean_unit(s_b.units or g_b.units)
-                if u_a != u_b:
+                if not u_a or not u_b or u_a != u_b:
                     continue
 
-                # 2. Score heuristics
+                # 2. Phase isolation: Phase A != Phase B, and single phase != aggregate phase
+                ph_a = extract_phase(s_a.name, s_a.label)
+                ph_b = extract_phase(s_b.name, s_b.label)
+                if (ph_a or ph_b) and ph_a != ph_b:
+                    continue
+
+                # 3. Temp sensor location isolation: Heatsink != Cabinet != Transformer
+                ts_a = extract_temp_sensor(s_a.name, s_a.label)
+                ts_b = extract_temp_sensor(s_b.name, s_b.label)
+                if ts_a and ts_b and ts_a != ts_b:
+                    continue
+
+                # 4. Flow direction isolation: Import != Export, Charge != Discharge
+                dir_a = extract_direction(s_a.name, s_a.label)
+                dir_b = extract_direction(s_b.name, s_b.label)
+                if dir_a and dir_b and dir_a != dir_b:
+                    continue
+
+                # 5. Count type isolation: Detected != Installed
+                ct_a = extract_count_type(s_a.name, s_a.label)
+                ct_b = extract_count_type(s_b.name, s_b.label)
+                if ct_a and ct_b and ct_a != ct_b:
+                    continue
+
+                # 6. Semantic token and naming proximity
+                tok_a = tokenize_name(f"{s_a.name} {s_a.label} {g_a.concept_key}")
+                tok_b = tokenize_name(f"{s_b.name} {s_b.label} {g_b.concept_key}")
+                cluster_a = find_semantic_cluster(tok_a, u_a)
+                cluster_b = find_semantic_cluster(tok_b, u_b)
+
+                same_concept = bool(cluster_a and cluster_b and cluster_a["concept"] == cluster_b["concept"])
+                shared_tokens = tok_a & tok_b
+
+                # Hard gate: Must share semantic concept or at least 2 distinct naming tokens
+                if not same_concept and len(shared_tokens) < 2:
+                    continue
+
+                # 7. Topology / Paired Model correlation
+                is_standard = s_a.model_id in (101, 102, 103, 120, 121, 122, 123, 404, 802, 804) or s_b.model_id in (101, 102, 103, 120, 121, 122, 123, 404, 802, 804)
+                is_vendor_or_mqtt = (
+                    s_a.source_type == "MQTT"
+                    or s_b.source_type == "MQTT"
+                    or (s_a.model_id and s_a.model_id >= 64200)
+                    or (s_b.model_id and s_b.model_id >= 64200)
+                )
+                is_topo_match = is_standard and is_vendor_or_mqtt
+
+                # 8. Score heuristics
                 score = 0
                 reasons: List[str] = []
 
-                # Heuristic A: Value correlation
                 val_a = s_a.value
                 val_b = s_b.value
-                is_numeric = isinstance(val_a, (int, float)) and isinstance(val_b, (int, float)) and not isinstance(val_a, bool) and not isinstance(val_b, bool)
+                is_numeric = (
+                    isinstance(val_a, (int, float))
+                    and isinstance(val_b, (int, float))
+                    and not isinstance(val_a, bool)
+                    and not isinstance(val_b, bool)
+                )
 
                 if is_numeric:
                     f_a = float(val_a)
                     f_b = float(val_b)
+                    both_zero = abs(f_a) < 0.05 and abs(f_b) < 0.05
                     delta = abs(f_a - f_b)
                     denom = max(abs(f_a), abs(f_b), 1.0)
                     pct_diff = (delta / denom) * 100.0
 
-                    if delta <= 0.05:
+                    if both_zero:
+                        # Zero matching requires high semantic concept agreement and topology match
+                        if not (same_concept and (shared_tokens or is_topo_match)):
+                            continue
+                        score += 40
+                        reasons.append(f"Quiescent zero value agreement (0.00 {u_a})")
+                    elif delta <= 0.05:
                         score += 50
-                        reasons.append(f"Exact live value match ({f_a:.2f} {u_a or ''})")
+                        reasons.append(f"Exact live value match ({f_a:.2f} {u_a})")
                     elif pct_diff <= 1.0 and denom >= 10.0:
                         score += 45
                         reasons.append(f"Near-exact live values agree within {pct_diff:.2f}% (Δ {delta:.2f})")
@@ -226,48 +428,29 @@ def find_suggested_groupings(
                         score += 30
                         reasons.append(f"Live values agree within sensor noise ({pct_diff:.1f}% difference)")
                     else:
-                        # Values do not match; cannot recommend grouping with high confidence
                         continue
                 else:
-                    # String or Enum matching
                     raw_a = s_a.raw_value
                     raw_b = s_b.raw_value
                     if raw_a is not None and raw_b is not None and raw_a == raw_b:
                         score += 50
-                        reasons.append(f"Identical raw enum state code ({raw_a})")
+                        reasons.append(f"Identical raw state code ({raw_a})")
                     elif str(val_a).strip().upper() == str(val_b).strip().upper():
                         score += 50
                         reasons.append(f"Identical state value ({val_a})")
                     else:
                         continue
 
-                # Heuristic B: Semantic token and naming proximity
-                tok_a = tokenize_name(f"{s_a.name} {s_a.label} {g_a.concept_key}")
-                tok_b = tokenize_name(f"{s_b.name} {s_b.label} {g_b.concept_key}")
-
-                cluster_a = find_semantic_cluster(tok_a, u_a)
-                cluster_b = find_semantic_cluster(tok_b, u_b)
-
-                common_tokens = tok_a & tok_b
-                if cluster_a and cluster_b and cluster_a["concept"] == cluster_b["concept"]:
+                # Concept bonus
+                if same_concept and cluster_a:
                     score += 35
                     reasons.append(f"Shared semantic concept: {cluster_a['label']}")
-                elif common_tokens:
-                    score += 25
-                    reasons.append(f"Matching naming tokens: {', '.join(sorted(common_tokens))}")
+                elif shared_tokens:
+                    score += 20
+                    reasons.append(f"Matching naming tokens: {', '.join(sorted(shared_tokens))}")
 
-                # Heuristic C: Topology / Paired Model correlation
-                # E.g. Standard model (102, 802, 404) vs. Vendor model (64207, 64251, 64252) or MQTT
-                is_standard_a = s_a.model_id in (101, 102, 103, 120, 121, 122, 123, 404, 802, 804)
-                is_standard_b = s_b.model_id in (101, 102, 103, 120, 121, 122, 123, 404, 802, 804)
-                is_vendor_or_mqtt = (
-                    s_a.source_type == "MQTT"
-                    or s_b.source_type == "MQTT"
-                    or (s_a.model_id and s_a.model_id >= 64200)
-                    or (s_b.model_id and s_b.model_id >= 64200)
-                )
-
-                if (is_standard_a or is_standard_b) and is_vendor_or_mqtt:
+                # Topology bonus
+                if is_topo_match:
                     score += 15
                     reasons.append("Complementary SunSpec standard and Generac REbus vendor registers")
 
@@ -277,7 +460,7 @@ def find_suggested_groupings(
                     conf_label = "HIGH" if confidence >= 0.85 else "MEDIUM"
 
                     # Synthesize clean concept key and display label
-                    if cluster_a and cluster_b and cluster_a["concept"] == cluster_b["concept"]:
+                    if same_concept and cluster_a:
                         suggested_key = cluster_a["concept"]
                         suggested_label = cluster_a["label"]
                     else:
