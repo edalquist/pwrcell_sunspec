@@ -1119,6 +1119,135 @@ class StateStore:
             except Exception as e:
                 logger.warning("Error in compound change listener: %s", e)
 
+    def _resolve_model_metadata(self, sub_group, model_id, model_name, model_label):
+        """Resolve SunSpec model metadata from the sub-group name when not explicitly provided."""
+        if model_id is not None or not sub_group:
+            return model_id, model_name, model_label
+        if sub_group == "live":
+            return model_id, "live", "Push Telemetry"
+        if sub_group == "compound":
+            return model_id, "compound", "Merged Telemetry"
+        cat_model = self.catalog.get_model_by_name(sub_group)
+        if not cat_model and sub_group.startswith("model_"):
+            try:
+                cat_model = self.catalog.get_model(int(sub_group[6:]))
+            except ValueError:
+                pass
+        if cat_model:
+            return cat_model.model_id, cat_model.name, cat_model.label
+        return model_id, model_name, model_label
+
+    def _should_suppress_counter_drop(self, dev, key, name, existing, value, units, ha_hint) -> bool:
+        """Monotonicity protection for lifetime total_increasing energy counters.
+
+        PV Link counters (e.g. REbus_status.E, string_combiner.DCWh) are volatile daily/session
+        counters that reset when de-energized, so they are exempt. Returns True if the update
+        should be dropped as an anomalous reading.
+        """
+        device_sn = dev.serial_number
+        is_total_inc = (
+            dev.device_type != "pv_link"
+            and ((ha_hint and ha_hint.state_class == "total_increasing") or (units in ("Wh", "kWh") and not name.endswith("_w")))
+        )
+        if not (is_total_inc and isinstance(existing.value, (int, float)) and existing.value > 100.0):
+            return False
+        drop_key = (device_sn, key)
+        if not (isinstance(value, (int, float)) and value < existing.value):
+            self._monotonic_drop_counts.pop(drop_key, None)
+            return False
+        if not (value <= 0 or (existing.value - value) > (0.1 * existing.value)):
+            return False
+
+        dev_info = f" on {dev.serial_number}" + (f" (slave {dev.slave_id})" if dev.slave_id is not None else "")
+        prev_count, prev_cand = self._monotonic_drop_counts.get(drop_key, (0, 0.0))
+        if value > 0 and prev_count > 0 and value >= prev_cand * 0.9:
+            new_count = prev_count + 1
+        elif value > 0:
+            new_count = 1
+        else:
+            new_count = 0
+
+        if new_count >= 3:
+            logger.warning(
+                "Accepted reset/lower baseline in cumulative energy counter %s%s after %d consecutive readings (%s -> %s)",
+                key, dev_info, new_count, existing.value, value,
+            )
+            self._monotonic_drop_counts.pop(drop_key, None)
+            return False
+        if prev_count == 0:
+            logger.warning(
+                "Suppressed anomalous drop in cumulative energy counter %s%s (%s -> %s)",
+                key, dev_info, existing.value, value,
+            )
+        self._monotonic_drop_counts[drop_key] = (max(1, new_count), float(value))
+        return True
+
+    @staticmethod
+    def _build_field(dev, key, existing, *, name, label, description, value, raw_value, units, source,
+                     access, symbols, point_type, is_enum, is_bitfield, bitmask_flags, is_scale_factor,
+                     scale_factor_point, offset, size, ha_hint, model_id, model_name, model_label,
+                     mqtt_eq, c_key) -> StateField:
+        """Create a new StateField, or merge incoming metadata over an existing one."""
+        def pick(new, old_attr):
+            if new is not None or existing is None:
+                return new
+            return getattr(existing, old_attr)
+
+        if existing is None:
+            merged_label = label
+            merged_access = access
+            merged_size = size
+            merged_bitfield = bool(is_bitfield)
+            merged_flags = bitmask_flags or (value if (is_bitfield and isinstance(value, list)) else None)
+        else:
+            merged_label = label if (label and label != existing.name) else existing.label
+            merged_access = access if (access != "R" or existing.access == "R") else existing.access
+            merged_size = size if (size != 1 or existing.size == 1) else existing.size
+            merged_bitfield = bool(pick(is_bitfield, "is_bitfield"))
+            if bitmask_flags is not None:
+                merged_flags = bitmask_flags
+            elif merged_bitfield and isinstance(value, list):
+                merged_flags = value
+            else:
+                merged_flags = existing.bitmask_flags
+
+        merged_pt_type = pick(point_type, "point_type")
+        return StateField(
+            key=key,
+            device_sn=dev.serial_number,
+            device_type=dev.device_type,
+            name=name,
+            label=merged_label,
+            description=description if (description or existing is None) else existing.description,
+            value=value,
+            raw_value=raw_value,
+            units=pick(units, "units"),
+            point_type=merged_pt_type,
+            is_enum=bool(pick(is_enum, "is_enum")),
+            is_bitfield=merged_bitfield,
+            bitmask_flags=merged_flags,
+            source=pick(source, "source"),
+            access=merged_access,
+            symbols=pick(symbols, "symbols"),
+            is_scale_factor=is_scale_factor_point(
+                name=name,
+                point_type=merged_pt_type,
+                label=merged_label,
+                explicit=bool(is_scale_factor or (existing and existing.is_scale_factor)),
+            ),
+            scale_factor_point=pick(scale_factor_point, "scale_factor_point"),
+            offset=pick(offset, "offset"),
+            size=merged_size,
+            mqtt_equivalent=mqtt_eq,
+            compound_key=c_key,
+            is_compound_raw=bool(c_key),
+            ha_hint=pick(ha_hint, "ha_hint"),
+            model_id=pick(model_id, "model_id"),
+            model_name=pick(model_name, "model_name"),
+            model_label=pick(model_label, "model_label"),
+            last_updated=time.time(),
+        )
+
     def set_field(
         self,
         device_sn: str,
@@ -1167,25 +1296,9 @@ class StateStore:
             if raw_value is None and value is not None:
                 raw_value = value
 
-            # Resolve model metadata if not explicitly provided
-            if model_id is None and sub_group:
-                if sub_group == "live":
-                    model_name = "live"
-                    model_label = "Push Telemetry"
-                elif sub_group == "compound":
-                    model_name = "compound"
-                    model_label = "Merged Telemetry"
-                else:
-                    cat_model = self.catalog.get_model_by_name(sub_group)
-                    if not cat_model and sub_group.startswith("model_"):
-                        try:
-                            cat_model = self.catalog.get_model(int(sub_group[6:]))
-                        except ValueError:
-                            pass
-                    if cat_model:
-                        model_id = cat_model.model_id
-                        model_name = cat_model.name
-                        model_label = cat_model.label
+            model_id, model_name, model_label = self._resolve_model_metadata(
+                sub_group, model_id, model_name, model_label
+            )
 
             if model_id is not None and model_id not in dev.supported_models:
                 dev.supported_models = sorted(list(set(dev.supported_models + [model_id])))
@@ -1196,145 +1309,23 @@ class StateStore:
             raw_to_comp = get_active_raw_to_compound_mapping()
             mqtt_eq = mb_to_mqtt.get(key)
             c_key = raw_to_comp.get(key) or (raw_to_comp.get(mqtt_eq) if mqtt_eq else None)
-            is_comp_raw = bool(c_key)
 
             existing = dev.fields.get(key)
-            if existing is not None:
-                # Monotonicity protection for lifetime total_increasing energy counters
-                # Note: PV Link counters (e.g. REbus_status.E, string_combiner.DCWh) are volatile daily/session counters that reset when de-energized
-                is_pvlink = (dev.device_type == "pv_link")
-                is_total_inc = (
-                    not is_pvlink
-                    and ((ha_hint and ha_hint.state_class == "total_increasing") or (units in ("Wh", "kWh") and not name.endswith("_w")))
-                )
-                if is_total_inc and isinstance(existing.value, (int, float)) and existing.value > 100.0:
-                    drop_key = (device_sn, key)
-                    if isinstance(value, (int, float)) and value < existing.value:
-                        dev_info = f" on {dev.serial_number}" + (f" (slave {dev.slave_id})" if dev.slave_id is not None else "")
-                        if value <= 0 or (existing.value - value) > (0.1 * existing.value):
-                            prev_count, prev_cand = self._monotonic_drop_counts.get(drop_key, (0, 0.0))
-                            if value > 0 and prev_count > 0 and value >= prev_cand * 0.9:
-                                new_count = prev_count + 1
-                            elif value > 0:
-                                new_count = 1
-                            else:
-                                new_count = 0
+            if existing is not None and self._should_suppress_counter_drop(dev, key, name, existing, value, units, ha_hint):
+                return existing
 
-                            if new_count >= 3:
-                                logger.warning(
-                                    "Accepted reset/lower baseline in cumulative energy counter %s%s after %d consecutive readings (%s -> %s)",
-                                    key, dev_info, new_count, existing.value, value,
-                                )
-                                self._monotonic_drop_counts.pop(drop_key, None)
-                            else:
-                                if prev_count == 0:
-                                    logger.warning(
-                                        "Suppressed anomalous drop in cumulative energy counter %s%s (%s -> %s)",
-                                        key, dev_info, existing.value, value,
-                                    )
-                                self._monotonic_drop_counts[drop_key] = (max(1, new_count), float(value))
-                                return existing
-                    else:
-                        self._monotonic_drop_counts.pop(drop_key, None)
-
-                changed = (existing.value != value)
-                merged_label = label if (label and label != existing.name) else existing.label
-                merged_desc = description if description else existing.description
-                merged_units = units if units is not None else existing.units
-                merged_ha_hint = ha_hint if ha_hint is not None else existing.ha_hint
-                merged_source = source if source is not None else existing.source
-                merged_access = access if (access != "R" or existing.access == "R") else existing.access
-                merged_pt_type = point_type if point_type is not None else existing.point_type
-                merged_is_enum = is_enum if is_enum is not None else existing.is_enum
-                merged_is_bitfield = is_bitfield if is_bitfield is not None else existing.is_bitfield
-                if bitmask_flags is not None:
-                    merged_bitmask_flags = bitmask_flags
-                elif merged_is_bitfield and isinstance(value, list):
-                    merged_bitmask_flags = value
-                else:
-                    merged_bitmask_flags = existing.bitmask_flags
-                merged_symbols = symbols if symbols is not None else existing.symbols
-                merged_model_id = model_id if model_id is not None else existing.model_id
-                merged_model_name = model_name if model_name is not None else existing.model_name
-                merged_model_label = model_label if model_label is not None else existing.model_label
-                merged_is_sf = is_scale_factor_point(
-                    name=name,
-                    point_type=merged_pt_type,
-                    label=merged_label,
-                    explicit=bool(is_scale_factor or existing.is_scale_factor),
-                )
-                merged_sf_point = scale_factor_point if scale_factor_point is not None else existing.scale_factor_point
-                merged_offset = offset if offset is not None else existing.offset
-                merged_size = size if (size != 1 or existing.size == 1) else existing.size
-
-                field_obj = StateField(
-                    key=key,
-                    device_sn=device_sn,
-                    device_type=dev.device_type,
-                    name=name,
-                    label=merged_label,
-                    description=merged_desc,
-                    value=value,
-                    raw_value=raw_value,
-                    units=merged_units,
-                    point_type=merged_pt_type,
-                    is_enum=bool(merged_is_enum),
-                    is_bitfield=bool(merged_is_bitfield),
-                    bitmask_flags=merged_bitmask_flags,
-                    source=merged_source,
-                    access=merged_access,
-                    symbols=merged_symbols,
-                    is_scale_factor=merged_is_sf,
-                    scale_factor_point=merged_sf_point,
-                    offset=merged_offset,
-                    size=merged_size,
-                    mqtt_equivalent=mqtt_eq,
-                    compound_key=c_key,
-                    is_compound_raw=is_comp_raw,
-                    ha_hint=merged_ha_hint,
-                    model_id=merged_model_id,
-                    model_name=merged_model_name,
-                    model_label=merged_model_label,
-                    last_updated=time.time(),
-                )
-                dev.fields[key] = field_obj
-            else:
-                field_obj = StateField(
-                    key=key,
-                    device_sn=device_sn,
-                    device_type=dev.device_type,
-                    name=name,
-                    label=label,
-                    description=description,
-                    value=value,
-                    raw_value=raw_value,
-                    units=units,
-                    point_type=point_type,
-                    is_enum=bool(is_enum),
-                    is_bitfield=bool(is_bitfield),
-                    bitmask_flags=bitmask_flags or (value if (is_bitfield and isinstance(value, list)) else None),
-                    source=source,
-                    access=access,
-                    symbols=symbols,
-                    is_scale_factor=is_scale_factor_point(
-                        name=name,
-                        point_type=point_type,
-                        label=label,
-                        explicit=bool(is_scale_factor),
-                    ),
-                    scale_factor_point=scale_factor_point,
-                    offset=offset,
-                    size=size,
-                    mqtt_equivalent=mqtt_eq,
-                    compound_key=c_key,
-                    is_compound_raw=is_comp_raw,
-                    ha_hint=ha_hint,
-                    model_id=model_id,
-                    model_name=model_name,
-                    model_label=model_label,
-                )
-                dev.fields[key] = field_obj
-                changed = True
+            changed = existing is None or existing.value != value
+            field_obj = self._build_field(
+                dev, key, existing,
+                name=name, label=label, description=description, value=value, raw_value=raw_value,
+                units=units, source=source, access=access, symbols=symbols, point_type=point_type,
+                is_enum=is_enum, is_bitfield=is_bitfield, bitmask_flags=bitmask_flags,
+                is_scale_factor=is_scale_factor, scale_factor_point=scale_factor_point,
+                offset=offset, size=size, ha_hint=ha_hint,
+                model_id=model_id, model_name=model_name, model_label=model_label,
+                mqtt_eq=mqtt_eq, c_key=c_key,
+            )
+            dev.fields[key] = field_obj
 
             dev.last_seen = time.time()
             listeners = list(self._listeners) if changed else []
