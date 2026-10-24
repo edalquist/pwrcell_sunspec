@@ -44,6 +44,7 @@ class PwrcellClient:
         self.is_mock = is_mock
         self._mock_generator: Optional[MockTelemetryGenerator] = None
         self._sim_thread: Optional[threading.Thread] = None
+        self._sim_stop = threading.Event()
         fast_interval = float(self.config.poll_rate)
         config_interval = float(self.config.config_poll_interval)
         slow_interval = float(self.config.slow_poll_interval)
@@ -118,6 +119,7 @@ class PwrcellClient:
             if not self._running:
                 return
             self._running = False
+            self._sim_stop.set()
 
             if self._init_poll_thread and self._init_poll_thread.is_alive():
                 self._init_poll_thread.join(timeout=1.0)
@@ -170,6 +172,7 @@ class PwrcellClient:
 
         # Start simulated telemetry ticker thread
         self._mock_generator = MockTelemetryGenerator()
+        self._sim_stop.clear()
         self._sim_thread = threading.Thread(
             target=self._mock_sim_loop,
             name="PwrCellMockSim",
@@ -179,7 +182,7 @@ class PwrcellClient:
 
     def _mock_sim_loop(self):
         logger.debug("Mock simulation telemetry loop running")
-        while self._running:
+        while self._running and not self._sim_stop.is_set():
             if self._mock_generator:
                 rec_set = self._mock_generator.tick(elapsed_seconds=1.5)
                 snapshot = MqttClient._parse_snapshot(rec_set)
@@ -253,7 +256,7 @@ class PwrcellClient:
                         sub_group="REbus_dir",
                     )
 
-            time.sleep(1.5)
+            self._sim_stop.wait(1.5)
 
     def _start_live_mode(self):
         """Connect Modbus and MQTT and load discovered devices."""
