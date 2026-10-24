@@ -136,7 +136,7 @@ CANONICAL_SYNONYMS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "desc": "AC current on Phase C",
         },
         "grid_imported_energy": {
-            "names": {"grid_imported_energy_wh", "totwhexp"},
+            "names": {"grid_imported_energy_wh", "totwhimp"},
             "units": "Wh",
             "label": "Grid Imported Energy",
             "ha_platform": "sensor",
@@ -145,7 +145,7 @@ CANONICAL_SYNONYMS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "desc": "Cumulative energy imported from grid",
         },
         "grid_exported_energy": {
-            "names": {"whout", "grid_exported_energy_wh", "totwhimp"},
+            "names": {"whout", "grid_exported_energy_wh", "totwhexp"},
             "units": "Wh",
             "label": "Grid Exported Energy",
             "ha_platform": "sensor",

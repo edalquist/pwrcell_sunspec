@@ -86,6 +86,13 @@ class TestSetCoverOptimizer(unittest.TestCase):
         self.assertEqual(clean_unit("Pct"), "%")
         self.assertEqual(clean_unit("kW"), "kW")
 
+    def test_grid_imported_and_exported_energy_synonyms(self):
+        """TotWhImp must map to grid_imported_energy and TotWhExp to grid_exported_energy."""
+        imp_concept = find_canonical_concept("inverter", "TotWhImp", "Wh")
+        exp_concept = find_canonical_concept("inverter", "TotWhExp", "Wh")
+        self.assertEqual(imp_concept, "grid_imported_energy")
+        self.assertEqual(exp_concept, "grid_exported_energy")
+
 
 class TestDeviceFieldGrouping(unittest.TestCase):
     def setUp(self):
