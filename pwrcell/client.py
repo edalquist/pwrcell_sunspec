@@ -448,21 +448,15 @@ class PwrcellClient:
 
 
     def _load_from_device_config(self, cfg: DeviceConfig):
-        type_maps = [
-            ("rebus_beacon", cfg.rebus_beacon),
-            ("inverter", cfg.inverter),
-            ("battery", cfg.battery),
-            ("pv_link", cfg.pv_link),
-            ("icm", cfg.icm),
-        ]
-        for dev_type, sn_map in type_maps:
-            for sn, slave_id in sn_map.items():
-                self.state.register_device(
-                    serial_number=sn,
-                    slave_id=slave_id,
-                    device_type=dev_type,
-                    model_name=dev_type.replace("_", " ").title(),
-                )
+        for dev_type, sn_map in cfg.to_dict().items():
+            if isinstance(sn_map, dict):
+                for sn, slave_id in sn_map.items():
+                    self.state.register_device(
+                        serial_number=sn,
+                        slave_id=slave_id,
+                        device_type=dev_type,
+                        model_name=dev_type.replace("_", " ").title(),
+                    )
 
     def _save_scanned_devices(self, discovered: dict):
         if not discovered:
@@ -484,7 +478,7 @@ class PwrcellClient:
                 model_name=md,
                 supported_models=supported,
             )
-            getattr(cfg, dev_type)[dev_state.serial_number] = slave_id
+            cfg.get_device_map(dev_type)[dev_state.serial_number] = slave_id
 
         if self._is_empty_device_config(cfg):
             logger.warning("No valid devices discovered during Modbus scan; skipping devices.yaml save")
@@ -496,6 +490,28 @@ class PwrcellClient:
     @staticmethod
     def _classify_device_type(supported_models: List[int], model_name: str = "") -> str:
         """Classify a discovered PWRcell device by its supported SunSpec model IDs first, then model name."""
+        from pathlib import Path
+        try:
+            import yaml
+            cfg_path = Path(__file__).resolve().parent / "data" / "device_types.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    rules = yaml.safe_load(f).get("device_types", {})
+                models_set = set(supported_models)
+                # 1. Model ID matching
+                for dev_type, info in rules.items():
+                    req_ids = set(info.get("model_ids", []))
+                    if req_ids and (models_set & req_ids):
+                        return dev_type
+                # 2. Keyword matching on model_name
+                md_lower = (model_name or "").lower()
+                for dev_type, info in rules.items():
+                    keywords = info.get("model_keywords", [])
+                    if any(kw in md_lower for kw in keywords):
+                        return dev_type
+        except Exception:
+            pass
+
         models_set = set(supported_models)
         if MODEL_REBUS_DIR in models_set:
             return "rebus_beacon"
