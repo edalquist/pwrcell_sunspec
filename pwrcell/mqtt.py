@@ -181,7 +181,14 @@ class MqttClient:
 
             self.__mqttc.loop_start()
             logger.info("Connecting to internal PWRcell MQTT on %s:%s", self.__tunnel_ip, self.port)
-            self.__mqttc.connect(self.__tunnel_ip, self.port)
+            try:
+                self.__mqttc.connect(self.__tunnel_ip, self.port)
+            except Exception as e:
+                logger.warning("Initial connection to internal PWRcell MQTT failed (%s); client loop will retry", e)
+                try:
+                    self.__mqttc.connect_async(self.__tunnel_ip, self.port)
+                except Exception:
+                    pass
 
     def stop(self):
         with self.__lock:
