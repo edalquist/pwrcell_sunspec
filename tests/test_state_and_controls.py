@@ -580,6 +580,18 @@ class TestStateAndControls(unittest.TestCase):
         self.assertEqual(self.bat.fields["battery.live.max_charge_power_w"].value, 0.0)
         self.assertEqual(self.bat.fields["battery.live.max_discharge_power_w"].value, 0.0)
 
+    def test_update_from_modbus_points_accepts_list_for_bitfield(self):
+        """Passing a list as raw_val for a bitfield point must not raise TypeError on SUNSPEC_SENTINELS membership."""
+        # Model 802 has bitfield point Evt1
+        self.state.update_from_modbus_points(
+            serial_number=self.bat.serial_number,
+            model_id=802,
+            raw_values={"Evt1": ["COMMUNICATION_ERROR"]},
+        )
+        evt_field = self.bat.fields.get("battery.battery.Evt1")
+        self.assertIsNotNone(evt_field)
+        self.assertEqual(evt_field.active_flags, ["COMMUNICATION_ERROR"])
+
 
 if __name__ == "__main__":
     unittest.main()

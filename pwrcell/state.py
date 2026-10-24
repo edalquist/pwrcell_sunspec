@@ -1865,7 +1865,8 @@ class StateStore:
 
             # If enum, lookup against enum symbols:
             # scaled_val becomes the enum symbol name, while raw_val remains the integer register value
-            if pt_def and pt_def.is_enum and raw_val not in SUNSPEC_SENTINELS:
+            is_sentinel = isinstance(raw_val, (int, float)) and raw_val in SUNSPEC_SENTINELS
+            if pt_def and pt_def.is_enum and not is_sentinel:
                 sym = None
                 if isinstance(raw_val, int):
                     sym = pt_def.symbols_by_value.get(raw_val)
@@ -1882,7 +1883,7 @@ class StateStore:
             # If bitfield, decode integer bitmask into list of active symbol names:
             # scaled_val becomes the list of active flag names, while raw_val remains the integer register value
             bitmask_flags = None
-            if pt_def and pt_def.is_bitfield and raw_val not in SUNSPEC_SENTINELS:
+            if pt_def and pt_def.is_bitfield and not is_sentinel:
                 bit_val = raw_val if isinstance(raw_val, int) else (int(raw_val) if isinstance(raw_val, str) and (raw_val.isdigit() or (raw_val.startswith("-") and raw_val[1:].isdigit())) else None)
                 if bit_val is not None:
                     bitmask_flags = pt_def.decode_bitfield(bit_val)
