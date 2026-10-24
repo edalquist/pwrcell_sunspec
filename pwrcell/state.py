@@ -581,6 +581,7 @@ class StateField:
             "model_name": self.model_name,
             "model_label": self.model_label,
             "last_updated": self.last_updated,
+            "data_age": round(max(0.0, time.time() - self.last_updated), 1) if self.last_updated > 0 else None,
         }
 
 

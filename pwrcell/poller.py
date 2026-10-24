@@ -363,11 +363,21 @@ class TieredModbusPoller:
             PollingTier.CONFIG.value: 0.0,
             PollingTier.SLOW.value: 0.0,
         }
+        self.last_poll_attempt: Dict[str, float] = {
+            PollingTier.FAST.value: 0.0,
+            PollingTier.CONFIG.value: 0.0,
+            PollingTier.SLOW.value: 0.0,
+        }
         self.poll_counts: Dict[str, int] = {
             PollingTier.FAST.value: 0,
             PollingTier.CONFIG.value: 0,
             PollingTier.SLOW.value: 0,
             "errors": 0,
+        }
+        self.poll_attempts: Dict[str, int] = {
+            PollingTier.FAST.value: 0,
+            PollingTier.CONFIG.value: 0,
+            PollingTier.SLOW.value: 0,
         }
 
         self._pending_triggers: queue.Queue[str] = queue.Queue()
@@ -438,6 +448,7 @@ class TieredModbusPoller:
             return self.poll_all_devices_all_models()
 
         polled_count = 0
+        attempted_models = 0
         devices = self.client.state.get_devices_snapshot()
 
         for dev in devices:
@@ -445,14 +456,19 @@ class TieredModbusPoller:
                 continue
             target_models = models_map.get(dev.device_type, [])
             for mid in target_models:
+                attempted_models += 1
                 success = self.poll_device_model(dev.slave_id, dev.serial_number, mid)
                 if success:
                     polled_count += 1
 
+        now = time.time()
         with self._cond:
-            self.last_poll[tier_str] = time.time()
-            self.poll_counts[tier_str] = self.poll_counts.get(tier_str, 0) + 1
-        logger.debug("Completed Modbus poll for tier '%s': %d models updated", tier_str, polled_count)
+            self.last_poll_attempt[tier_str] = now
+            self.poll_attempts[tier_str] = self.poll_attempts.get(tier_str, 0) + 1
+            if polled_count > 0 or attempted_models == 0:
+                self.last_poll[tier_str] = now
+                self.poll_counts[tier_str] = self.poll_counts.get(tier_str, 0) + 1
+        logger.debug("Completed Modbus poll for tier '%s': %d/%d models updated", tier_str, polled_count, attempted_models)
         return polled_count
 
     def poll_device_model(self, slave_id: int, serial_number: str, model_id: int) -> bool:
@@ -592,7 +608,13 @@ class TieredModbusPoller:
                     "config": self.last_poll.get(PollingTier.CONFIG.value, 0.0),
                     "slow": self.last_poll.get(PollingTier.SLOW.value, 0.0),
                 },
+                "last_poll_attempt": {
+                    "fast": self.last_poll_attempt.get(PollingTier.FAST.value, 0.0),
+                    "config": self.last_poll_attempt.get(PollingTier.CONFIG.value, 0.0),
+                    "slow": self.last_poll_attempt.get(PollingTier.SLOW.value, 0.0),
+                },
                 "poll_counts": dict(self.poll_counts),
+                "poll_attempts": dict(self.poll_attempts),
                 "paths": {
                     "fast": list(self.fast_paths),
                     "config": list(self.config_paths),
@@ -646,7 +668,8 @@ class TieredModbusPoller:
                     logger.debug("Discovery retry failed: %s", de)
 
             # Fast Tier
-            if now - self.last_poll.get(PollingTier.FAST.value, 0.0) >= self.fast_interval:
+            last_fast = max(self.last_poll.get(PollingTier.FAST.value, 0.0), self.last_poll_attempt.get(PollingTier.FAST.value, 0.0))
+            if now - last_fast >= self.fast_interval:
                 try:
                     self.poll_tier(PollingTier.FAST)
                 except Exception as e:
@@ -654,7 +677,8 @@ class TieredModbusPoller:
 
             # Config & Keypad State Sync Tier
             now = time.time()
-            if now - self.last_poll.get(PollingTier.CONFIG.value, 0.0) >= self.config_interval:
+            last_cfg = max(self.last_poll.get(PollingTier.CONFIG.value, 0.0), self.last_poll_attempt.get(PollingTier.CONFIG.value, 0.0))
+            if now - last_cfg >= self.config_interval:
                 try:
                     self.poll_tier(PollingTier.CONFIG)
                 except Exception as e:
@@ -662,11 +686,19 @@ class TieredModbusPoller:
 
             # Slow Energy & Diagnostics Tier
             now = time.time()
-            if now - self.last_poll.get(PollingTier.SLOW.value, 0.0) >= self.slow_interval:
+            last_slow = max(self.last_poll.get(PollingTier.SLOW.value, 0.0), self.last_poll_attempt.get(PollingTier.SLOW.value, 0.0))
+            if now - last_slow >= self.slow_interval:
                 try:
                     self.poll_tier(PollingTier.SLOW)
                 except Exception as e:
                     logger.error("Error during slow tier poll: %s", e)
+
+            bridge = getattr(self.client, "bridge", None)
+            if bridge and hasattr(bridge, "check_availability"):
+                try:
+                    bridge.check_availability()
+                except Exception as e:
+                    logger.debug("Error checking HA availability: %s", e)
 
             # 3. Wait up to 1 second before next tick or trigger notification
             with self._cond:

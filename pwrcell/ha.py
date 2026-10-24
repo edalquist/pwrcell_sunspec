@@ -340,6 +340,7 @@ def generate_discovery_payload(
     state_topic = f"{base_topic}/{clean_sn}/{object_id}/state"
     command_topic = f"{base_topic}/{clean_sn}/{object_id}/set"
     availability_topic = f"{base_topic}/status"
+    device_availability_topic = f"{base_topic}/{clean_sn}/status"
 
     old_sensor_topic = f"{ha_prefix}/sensor/{node_id}/{object_id}/config" if platform in ("select", "number", "switch") else None
 
@@ -352,12 +353,18 @@ def generate_discovery_payload(
         "unique_id": unique_id,
         "object_id": f"{device.device_type}_{clean_sn}_{object_id}",
         "state_topic": state_topic,
+        "availability_mode": "all",
         "availability": [
             {
                 "topic": availability_topic,
                 "payload_available": "online",
                 "payload_not_available": "offline",
-            }
+            },
+            {
+                "topic": device_availability_topic,
+                "payload_available": "online",
+                "payload_not_available": "offline",
+            },
         ],
         "device": device_info,
         "origin": ORIGIN_INFO,
@@ -486,6 +493,7 @@ def generate_discovery_payload(
         "old_sensor_topic": old_sensor_topic,
         "suggested_display_precision": precision,
         "availability_topic": availability_topic,
+        "device_availability_topic": device_availability_topic,
         "platform": platform,
         "payload": payload,
     }

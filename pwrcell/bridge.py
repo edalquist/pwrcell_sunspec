@@ -78,6 +78,8 @@ class HomeAssistantBridge:
         discovery_prefix: str = "homeassistant",
         base_topic: str = "pwrcell",
         published_topics_path: Optional[Path] = None,
+        stale_timeout: float = 900.0,
+        clock: Optional[ Any ] = None,
     ):
         self.client = client
         self.mqtt_config = mqtt_config or (client.config.mqtt if client.config else MqttConfig())
@@ -86,14 +88,49 @@ class HomeAssistantBridge:
         self.published_topics_path = (
             published_topics_path if published_topics_path is not None else get_default_published_topics_path()
         )
+        self.stale_timeout = float(stale_timeout)
+        self._clock = clock or time.time
         self.selected_field_keys: List[str] = []
         self._selected_set: set[str] = set()
         self._command_topic_to_field: Dict[str, Any] = {}
         self._published_discovery_topics: set[str] = set()
         self._active_compound_keys: set[str] = set()
+        self._payload_info_cache: Dict[str, Dict[str, Any]] = {}
+        self._device_online_state: Dict[str, str] = {}
         self._mqttc: Optional[mqtt.Client] = None
         self._lock = threading.RLock()
         self._running = False
+
+    def _is_device_available(self, dev: Any) -> bool:
+        """Return True if device is online, tunnel (if present) is healthy, and data is not stale."""
+        if not getattr(dev, "online", True):
+            return False
+        if self.client.modbus and getattr(self.client.modbus, "tunnel", None) is not None:
+            if not self.client.modbus.tunnel.is_active:
+                return False
+        last_seen = getattr(dev, "last_seen", 0.0) or 0.0
+        if last_seen > 0.0 and self.stale_timeout > 0.0:
+            if (self._clock() - last_seen) > self.stale_timeout:
+                return False
+        return True
+
+    def _publish_device_availability(self, dev: Any, force: bool = False):
+        """Publish per-device online/offline status when changed or forced."""
+        if not self._mqttc or not dev:
+            return
+        clean_sn = dev.serial_number.strip().lower()
+        status_str = "online" if self._is_device_available(dev) else "offline"
+        with self._lock:
+            prev = self._device_online_state.get(clean_sn)
+            if not force and prev == status_str:
+                return
+            self._device_online_state[clean_sn] = status_str
+        self._mqttc.publish(f"{self.base_topic}/{clean_sn}/status", status_str, qos=1, retain=True)
+
+    def check_availability(self):
+        """Check freshness and transport health across all devices and publish updated availability."""
+        for dev in self.client.state.get_devices_snapshot():
+            self._publish_device_availability(dev, force=False)
 
     def start(self):
         """Connect to external Home Assistant MQTT broker and publish discovery."""
@@ -168,8 +205,9 @@ class HomeAssistantBridge:
         properties: Properties,
     ):
         logger.info("Connected to Home Assistant MQTT broker: %s", reason_code)
-        # Publish bridge online status
+        # Publish bridge online status and subscribe to Home Assistant birth topic
         client.publish(f"{self.base_topic}/status", "online", qos=1, retain=True)
+        client.subscribe(f"{self.discovery_prefix}/status")
         self.publish_discovery()
 
     def _on_disconnect(
@@ -248,10 +286,16 @@ class HomeAssistantBridge:
         published_count = 0
         new_command_map: dict[str, Any] = {}
         new_active_compounds: set[str] = set()
+        new_payload_cache: dict[str, Dict[str, Any]] = {}
         current_discovery_topics: set[str] = set()
+        persisted_topics = self._load_persisted_published_topics()
+        with self._lock:
+            previously_published = set(self._published_discovery_topics) | persisted_topics
+            self._device_online_state.clear()
 
         for dev in self.client.state.get_devices_snapshot():
             sn_clean = dev.serial_number.strip().upper()
+            self._publish_device_availability(dev, force=True)
             # 1. Publish selected compound fields
             for c_view in self.client.state.get_compound_views(dev.serial_number):
                 if is_field_selected(c_view.key, dev.serial_number, selected_set, c_view.mqtt_key):
@@ -263,14 +307,16 @@ class HomeAssistantBridge:
                         base_topic=self.base_topic,
                         ha_prefix=self.discovery_prefix,
                     )
+                    new_payload_cache[f"{sn_clean}:{c_view.key}"] = payload_info
                     config_topic = payload_info["config_topic"]
                     config_payload = json.dumps(payload_info["payload"])
                     self._mqttc.publish(config_topic, config_payload, retain=True)
                     current_discovery_topics.add(config_topic)
                     published_count += 1
 
-                    if payload_info.get("old_sensor_topic"):
-                        self._mqttc.publish(payload_info["old_sensor_topic"], "", retain=True)
+                    old_s_topic = payload_info.get("old_sensor_topic")
+                    if old_s_topic and old_s_topic in previously_published:
+                        self._mqttc.publish(old_s_topic, "", retain=True)
 
                     cmd_topic = payload_info.get("command_topic")
                     if cmd_topic:
@@ -321,6 +367,7 @@ class HomeAssistantBridge:
                         base_topic=self.base_topic,
                         ha_prefix=self.discovery_prefix,
                     )
+                    new_payload_cache[f"{sn_clean}:{f_key}"] = payload_info
 
                     config_topic = payload_info["config_topic"]
                     config_payload = json.dumps(payload_info["payload"])
@@ -330,8 +377,9 @@ class HomeAssistantBridge:
                     current_discovery_topics.add(config_topic)
                     published_count += 1
 
-                    if payload_info.get("old_sensor_topic"):
-                        self._mqttc.publish(payload_info["old_sensor_topic"], "", retain=True)
+                    old_s_topic = payload_info.get("old_sensor_topic")
+                    if old_s_topic and old_s_topic in previously_published:
+                        self._mqttc.publish(old_s_topic, "", retain=True)
 
                     # If field is writable, subscribe to its command topic
                     cmd_topic = payload_info.get("command_topic")
@@ -343,10 +391,10 @@ class HomeAssistantBridge:
                     if field.value is not None:
                         self._publish_field_state(field, payload_info, retain=True)
 
-        persisted_topics = self._load_persisted_published_topics()
         with self._lock:
             self._command_topic_to_field = new_command_map
             self._active_compound_keys = new_active_compounds
+            self._payload_info_cache = new_payload_cache
             previously_published = set(self._published_discovery_topics) | persisted_topics
             self._published_discovery_topics = set(current_discovery_topics)
 
@@ -418,15 +466,22 @@ class HomeAssistantBridge:
         dev = self.client.state.get_device(field.device_sn)
         if not dev:
             return
+        self._publish_device_availability(dev)
 
-        gateway = self.client.state.get_beacon() or self.client.state.get_inverter()
-        payload_info = generate_discovery_payload(
-            field,
-            dev,
-            gateway_device=gateway,
-            base_topic=self.base_topic,
-            ha_prefix=self.discovery_prefix,
-        )
+        cache_key = f"{dev.serial_number.strip().upper()}:{field.key}"
+        with self._lock:
+            payload_info = self._payload_info_cache.get(cache_key)
+        if payload_info is None:
+            gateway = self.client.state.get_beacon() or self.client.state.get_inverter()
+            payload_info = generate_discovery_payload(
+                field,
+                dev,
+                gateway_device=gateway,
+                base_topic=self.base_topic,
+                ha_prefix=self.discovery_prefix,
+            )
+            with self._lock:
+                self._payload_info_cache[cache_key] = payload_info
 
         config_topic = payload_info["config_topic"]
         with self._lock:
@@ -436,8 +491,6 @@ class HomeAssistantBridge:
         if needs_discovery:
             config_payload = json.dumps(payload_info["payload"])
             self._mqttc.publish(config_topic, config_payload, retain=True)
-            if payload_info.get("old_sensor_topic"):
-                self._mqttc.publish(payload_info["old_sensor_topic"], "", retain=True)
             cmd_topic = payload_info.get("command_topic")
             if cmd_topic:
                 with self._lock:
@@ -455,19 +508,25 @@ class HomeAssistantBridge:
         if not is_field_selected(c_view.key, c_view.device_sn, selected_snapshot, getattr(c_view, "mqtt_key", None)):
             return
         clean_sn = c_view.device_sn.strip().upper()
+        cache_key = f"{clean_sn}:{c_view.key}"
         with self._lock:
-            self._active_compound_keys.add(f"{clean_sn}:{c_view.key}")
+            self._active_compound_keys.add(cache_key)
+            payload_info = self._payload_info_cache.get(cache_key)
         dev = self.client.state.get_device(c_view.device_sn)
         if not dev:
             return
-        gateway = self.client.state.get_beacon() or self.client.state.get_inverter()
-        payload_info = generate_discovery_payload(
-            c_view,
-            dev,
-            gateway_device=gateway,
-            base_topic=self.base_topic,
-            ha_prefix=self.discovery_prefix,
-        )
+        self._publish_device_availability(dev)
+        if payload_info is None:
+            gateway = self.client.state.get_beacon() or self.client.state.get_inverter()
+            payload_info = generate_discovery_payload(
+                c_view,
+                dev,
+                gateway_device=gateway,
+                base_topic=self.base_topic,
+                ha_prefix=self.discovery_prefix,
+            )
+            with self._lock:
+                self._payload_info_cache[cache_key] = payload_info
 
         config_topic = payload_info["config_topic"]
         with self._lock:
@@ -477,8 +536,6 @@ class HomeAssistantBridge:
         if needs_discovery:
             config_payload = json.dumps(payload_info["payload"])
             self._mqttc.publish(config_topic, config_payload, retain=True)
-            if payload_info.get("old_sensor_topic"):
-                self._mqttc.publish(payload_info["old_sensor_topic"], "", retain=True)
             cmd_topic = payload_info.get("command_topic")
             if cmd_topic:
                 with self._lock:
@@ -492,9 +549,16 @@ class HomeAssistantBridge:
             self._mqttc.publish(state_topic, val_str)
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
-        """Handle incoming command messages on subscribed command topics."""
+        """Handle incoming command messages on subscribed command topics and HA birth status."""
         topic = msg.topic
         payload_str = msg.payload.decode("utf-8").strip()
+
+        if topic == f"{self.discovery_prefix}/status":
+            if payload_str.lower() == "online":
+                logger.info("Home Assistant birth message received (%s=online); republishing discovery and states", topic)
+                self.publish_discovery()
+            return
+
         logger.info("Received command on %s: %s", topic, payload_str)
 
         with self._lock:

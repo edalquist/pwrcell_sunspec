@@ -341,6 +341,58 @@ class TestHomeAssistantBridge(unittest.TestCase):
         p2 = generate_discovery_payload(f2, dev2)["payload"]
         self.assertNotEqual(p1["object_id"], p2["object_id"])
 
+    def test_device_availability_staleness_and_ha_birth_republish(self):
+        """Entities must include per-device availability, transition to offline when stale (injected clock), and republish on HA birth."""
+        fake_now = [1000.0]
+        inv = self.client.state.get_inverter()
+        sn = inv.serial_number
+        inv.last_seen = 1000.0
+
+        bridge = HomeAssistantBridge(
+            client=self.client,
+            published_topics_path=self.topics_file,
+            stale_timeout=300.0,
+            clock=lambda: fake_now[0],
+        )
+        mock_mqttc = MagicMock()
+        bridge._mqttc = mock_mqttc
+        bridge.selected_field_keys = [f"{sn}:inverter.inverter.A"]
+
+        # 1. Discovery payload includes both process and per-device availability topics
+        bridge.publish_discovery()
+        config_topic = f"homeassistant/sensor/pwrcell_{sn.lower()}/inverter_a/config"
+        matching_call = next(call for call in mock_mqttc.publish.call_args_list if call[0][0] == config_topic)
+        payload = json.loads(matching_call[0][1])
+        avail_topics = [a["topic"] for a in payload["availability"]]
+        self.assertIn("pwrcell/status", avail_topics)
+        self.assertIn(f"pwrcell/{sn.lower()}/status", avail_topics)
+        self.assertEqual(payload.get("availability_mode"), "all")
+
+        # Initial device status is online
+        dev_status_topic = f"pwrcell/{sn.lower()}/status"
+        status_calls = [c for c in mock_mqttc.publish.call_args_list if c[0][0] == dev_status_topic]
+        self.assertTrue(status_calls)
+        self.assertEqual(status_calls[-1][0][1], "online")
+
+        # 2. Advance injected clock past stale_timeout -> check_availability marks device offline
+        mock_mqttc.publish.reset_mock()
+        fake_now[0] = 1400.0
+        bridge.check_availability()
+        offline_calls = [c for c in mock_mqttc.publish.call_args_list if c[0][0] == dev_status_topic]
+        self.assertTrue(offline_calls)
+        self.assertEqual(offline_calls[-1][0][1], "offline")
+
+        # 3. HA birth message on homeassistant/status='online' triggers discovery and state republish
+        mock_mqttc.publish.reset_mock()
+        inv.last_seen = 1400.0
+        birth_msg = MagicMock()
+        birth_msg.topic = "homeassistant/status"
+        birth_msg.payload = b"online"
+        birth_msg.retain = False
+        bridge._on_message(mock_mqttc, None, birth_msg)
+        republished_topics = [c[0][0] for c in mock_mqttc.publish.call_args_list]
+        self.assertIn(config_topic, republished_topics)
+
 
 if __name__ == "__main__":
     unittest.main()
