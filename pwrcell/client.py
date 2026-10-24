@@ -125,10 +125,10 @@ class PwrcellClient:
                 return
             self._running = True
 
-            if self.is_mock:
-                self._start_mock_mode()
-            else:
-                self._start_live_mode()
+        if self.is_mock:
+            self._start_mock_mode()
+        else:
+            self._start_live_mode()
 
     def stop(self):
         """Stop all background workers and disconnect clients."""
@@ -137,23 +137,28 @@ class PwrcellClient:
                 return
             self._running = False
             self._sim_stop.set()
+            init_poll_thread = self._init_poll_thread
+            sim_thread = self._sim_thread
+            poller = self.poller
+            mqtt = self.mqtt
+            modbus = self.modbus
 
-            if self._init_poll_thread and self._init_poll_thread.is_alive():
-                self._init_poll_thread.join(timeout=1.0)
+        if init_poll_thread and init_poll_thread.is_alive():
+            init_poll_thread.join(timeout=1.0)
 
-            if self.poller:
-                self.poller.stop()
+        if poller:
+            poller.stop()
 
-            if self._sim_thread and self._sim_thread.is_alive():
-                self._sim_thread.join(timeout=2.0)
+        if sim_thread and sim_thread.is_alive():
+            sim_thread.join(timeout=2.0)
 
-            if self.mqtt:
-                self.mqtt.stop()
+        if mqtt:
+            mqtt.stop()
 
-            if self.modbus:
-                self.modbus.close()
+        if modbus:
+            modbus.close()
 
-            logger.info("PWRcell client stopped")
+        logger.info("PWRcell client stopped")
 
     def __enter__(self):
         self.start()

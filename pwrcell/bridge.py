@@ -220,128 +220,143 @@ class HomeAssistantBridge:
             logger.warning("Could not write persisted published topics to %s: %s", self.published_topics_path, e)
 
     def publish_discovery(self):
-        """Publish discovery configurations for all selected entities."""
+        """Publish discovery configurations for all selected entities.
+
+        Lock order note: Do not hold self._lock across StateStore calls, MQTT publishes, or file I/O.
+        StateStore notifies listeners outside StateStore._lock, and HomeAssistantBridge only acquires
+        self._lock briefly to read or swap in-memory topic/selection sets.
+        """
         if not self._mqttc:
             return
 
-        if not self.selected_field_keys:
+        with self._lock:
+            has_selected = bool(self.selected_field_keys)
+        if not has_selected:
             raw_keys = load_ha_config()
-            self.selected_field_keys = qualify_legacy_ha_config(raw_keys, self.client.state)
-            if not self.selected_field_keys:
-                self.selected_field_keys = get_recommended_field_keys(self.client.state)
-            self._selected_set = set(self.selected_field_keys)
+            resolved_keys = qualify_legacy_ha_config(raw_keys, self.client.state)
+            if not resolved_keys:
+                resolved_keys = get_recommended_field_keys(self.client.state)
+            with self._lock:
+                self.selected_field_keys = resolved_keys
+                self._selected_set = set(resolved_keys)
+
+        with self._lock:
+            selected_keys = list(self.selected_field_keys)
+            selected_set = set(self.selected_field_keys) | set(self._selected_set)
 
         gateway = self.client.state.get_beacon() or self.client.state.get_inverter()
         published_count = 0
+        new_command_map: dict[str, Any] = {}
+        new_active_compounds: set[str] = set()
+        current_discovery_topics: set[str] = set()
 
-        with self._lock:
-            self._command_topic_to_field.clear()
-            self._active_compound_keys.clear()
-            current_discovery_topics: set[str] = set()
+        for dev in self.client.state.get_devices_snapshot():
+            sn_clean = dev.serial_number.strip().upper()
+            # 1. Publish selected compound fields
+            for c_view in self.client.state.get_compound_views(dev.serial_number):
+                if is_field_selected(c_view.key, dev.serial_number, selected_set, c_view.mqtt_key):
+                    new_active_compounds.add(f"{sn_clean}:{c_view.key}")
+                    payload_info = generate_discovery_payload(
+                        c_view,
+                        dev,
+                        gateway_device=gateway,
+                        base_topic=self.base_topic,
+                        ha_prefix=self.discovery_prefix,
+                    )
+                    config_topic = payload_info["config_topic"]
+                    config_payload = json.dumps(payload_info["payload"])
+                    self._mqttc.publish(config_topic, config_payload, retain=True)
+                    current_discovery_topics.add(config_topic)
+                    published_count += 1
 
-            for dev in self.client.state.devices.values():
-                sn_clean = dev.serial_number.strip().upper()
-                # 1. Publish selected compound fields
-                for c_view in self.client.state.get_compound_views(dev.serial_number):
-                    if is_field_selected(c_view.key, dev.serial_number, self.selected_field_keys, c_view.mqtt_key):
-                        self._active_compound_keys.add(f"{sn_clean}:{c_view.key}")
-                        payload_info = generate_discovery_payload(
-                            c_view,
-                            dev,
-                            gateway_device=gateway,
-                            base_topic=self.base_topic,
-                            ha_prefix=self.discovery_prefix,
-                        )
-                        config_topic = payload_info["config_topic"]
-                        config_payload = json.dumps(payload_info["payload"])
-                        self._mqttc.publish(config_topic, config_payload, retain=True)
-                        current_discovery_topics.add(config_topic)
-                        published_count += 1
+                    if payload_info.get("old_sensor_topic"):
+                        self._mqttc.publish(payload_info["old_sensor_topic"], "", retain=True)
 
-                        if payload_info.get("old_sensor_topic"):
-                            self._mqttc.publish(payload_info["old_sensor_topic"], "", retain=True)
+                    cmd_topic = payload_info.get("command_topic")
+                    if cmd_topic:
+                        new_command_map[cmd_topic] = c_view
+                        self._mqttc.subscribe(cmd_topic)
 
-                        cmd_topic = payload_info.get("command_topic")
-                        if cmd_topic:
-                            self._command_topic_to_field[cmd_topic] = c_view
-                            self._mqttc.subscribe(cmd_topic)
+                    if c_view.latest_value is not None:
+                        val_str = format_state_value(c_view.latest_value, payload_info.get("suggested_display_precision"))
+                        if val_str is not None:
+                            self._mqttc.publish(payload_info["state_topic"], val_str, retain=True)
 
-                        if c_view.latest_value is not None:
-                            val_str = format_state_value(c_view.latest_value, payload_info.get("suggested_display_precision"))
-                            if val_str is not None:
-                                self._mqttc.publish(payload_info["state_topic"], val_str, retain=True)
-
-                # 2. Publish selected raw fields
-                # Pre-populate metadata for any selected fields not yet polled
-                for sel_key in self.selected_field_keys:
-                    if ":" in sel_key:
-                        target_sn, f_path = sel_key.split(":", 1)
-                        if target_sn.strip().upper() != sn_clean:
-                            continue
-                    else:
-                        f_path = sel_key
-                        if not f_path.startswith(f"{dev.device_type}."):
-                            continue
-
-                    if f_path not in dev.fields and not f_path.startswith(f"{dev.device_type}.compound."):
-                        self.client.state.ensure_field_definition(dev.serial_number, f_path)
-
-                for f_key, field in list(dev.fields.items()):
-                    if field.compound_key and f"{sn_clean}:{field.compound_key}" in self._active_compound_keys:
-                        # Suppress duplicate raw field because its compound view is active.
-                        # Clear any previously retained discovery and state topics for this suppressed field.
-                        payload_info = generate_discovery_payload(
-                            field,
-                            dev,
-                            gateway_device=gateway,
-                            base_topic=self.base_topic,
-                            ha_prefix=self.discovery_prefix,
-                        )
-                        self._mqttc.publish(payload_info["config_topic"], "", retain=True)
-                        if payload_info.get("state_topic"):
-                            self._mqttc.publish(payload_info["state_topic"], "", retain=True)
+            # 2. Publish selected raw fields
+            # Pre-populate metadata for any selected fields not yet polled
+            for sel_key in selected_keys:
+                if ":" in sel_key:
+                    target_sn, f_path = sel_key.split(":", 1)
+                    if target_sn.strip().upper() != sn_clean:
+                        continue
+                else:
+                    f_path = sel_key
+                    if not f_path.startswith(f"{dev.device_type}."):
                         continue
 
-                    if is_field_selected(f_key, dev.serial_number, self.selected_field_keys):
-                        payload_info = generate_discovery_payload(
-                            field,
-                            dev,
-                            gateway_device=gateway,
-                            base_topic=self.base_topic,
-                            ha_prefix=self.discovery_prefix,
-                        )
+                if f_path not in dev.fields and not f_path.startswith(f"{dev.device_type}.compound."):
+                    self.client.state.ensure_field_definition(dev.serial_number, f_path)
 
-                        config_topic = payload_info["config_topic"]
-                        config_payload = json.dumps(payload_info["payload"])
+            for f_key, field in list(dev.fields.items()):
+                if field.compound_key and f"{sn_clean}:{field.compound_key}" in new_active_compounds:
+                    # Suppress duplicate raw field because its compound view is active.
+                    # Clear any previously retained discovery and state topics for this suppressed field.
+                    payload_info = generate_discovery_payload(
+                        field,
+                        dev,
+                        gateway_device=gateway,
+                        base_topic=self.base_topic,
+                        ha_prefix=self.discovery_prefix,
+                    )
+                    self._mqttc.publish(payload_info["config_topic"], "", retain=True)
+                    if payload_info.get("state_topic"):
+                        self._mqttc.publish(payload_info["state_topic"], "", retain=True)
+                    continue
 
-                        # Publish discovery configuration (retained)
-                        self._mqttc.publish(config_topic, config_payload, retain=True)
-                        current_discovery_topics.add(config_topic)
-                        published_count += 1
+                if is_field_selected(f_key, dev.serial_number, selected_set):
+                    payload_info = generate_discovery_payload(
+                        field,
+                        dev,
+                        gateway_device=gateway,
+                        base_topic=self.base_topic,
+                        ha_prefix=self.discovery_prefix,
+                    )
 
-                        if payload_info.get("old_sensor_topic"):
-                            self._mqttc.publish(payload_info["old_sensor_topic"], "", retain=True)
+                    config_topic = payload_info["config_topic"]
+                    config_payload = json.dumps(payload_info["payload"])
 
-                        # If field is writable, subscribe to its command topic
-                        cmd_topic = payload_info.get("command_topic")
-                        if cmd_topic:
-                            self._command_topic_to_field[cmd_topic] = field
-                            self._mqttc.subscribe(cmd_topic)
+                    # Publish discovery configuration (retained)
+                    self._mqttc.publish(config_topic, config_payload, retain=True)
+                    current_discovery_topics.add(config_topic)
+                    published_count += 1
 
-                        # Publish initial state if value exists
-                        if field.value is not None:
-                            self._publish_field_state(field, payload_info, retain=True)
+                    if payload_info.get("old_sensor_topic"):
+                        self._mqttc.publish(payload_info["old_sensor_topic"], "", retain=True)
 
-            # Unpublish deselected entities by sending empty retained payload to remove from Home Assistant
-            previously_published = self._published_discovery_topics | self._load_persisted_published_topics()
-            removed_topics = previously_published - current_discovery_topics
-            for rem_topic in removed_topics:
-                logger.info("Removing deselected/orphaned HA MQTT Discovery entity at %s", rem_topic)
-                self._mqttc.publish(rem_topic, "", retain=True)
+                    # If field is writable, subscribe to its command topic
+                    cmd_topic = payload_info.get("command_topic")
+                    if cmd_topic:
+                        new_command_map[cmd_topic] = field
+                        self._mqttc.subscribe(cmd_topic)
 
-            self._published_discovery_topics = current_discovery_topics
-            self._save_persisted_published_topics(current_discovery_topics)
+                    # Publish initial state if value exists
+                    if field.value is not None:
+                        self._publish_field_state(field, payload_info, retain=True)
 
+        persisted_topics = self._load_persisted_published_topics()
+        with self._lock:
+            self._command_topic_to_field = new_command_map
+            self._active_compound_keys = new_active_compounds
+            previously_published = set(self._published_discovery_topics) | persisted_topics
+            self._published_discovery_topics = set(current_discovery_topics)
+
+        # Unpublish deselected entities by sending empty retained payload to remove from Home Assistant
+        removed_topics = previously_published - current_discovery_topics
+        for rem_topic in removed_topics:
+            logger.info("Removing deselected/orphaned HA MQTT Discovery entity at %s", rem_topic)
+            self._mqttc.publish(rem_topic, "", retain=True)
+
+        self._save_persisted_published_topics(current_discovery_topics)
         logger.info("Published %d Home Assistant MQTT Discovery entities (removed %d)", published_count, len(removed_topics))
 
     def _publish_field_state(self, field: StateField, payload_info: Dict[str, Any], retain: bool = False):

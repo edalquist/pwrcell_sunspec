@@ -45,6 +45,7 @@ class PwrCellTunnel:
         self._lock = threading.RLock()
         self._reconnect_lock = threading.Lock()
         self._running = False
+        self._stop_event = threading.Event()
         self._watchdog_thread: Optional[threading.Thread] = None
 
     @property
@@ -63,6 +64,7 @@ class PwrCellTunnel:
             already_running = self._running
             if not already_running:
                 self._running = True
+                self._stop_event.clear()
 
         if already_running:
             return self.get_config()
@@ -209,11 +211,12 @@ class PwrCellTunnel:
                     logger.debug("Error stopping dead SSH tunnel: %s", e)
 
             logger.warning("SSH tunnel session dropped; re-establishing connection to PWRcell...")
-            time.sleep(0.5)
+            if self._stop_event.wait(0.5):
+                return False
 
             for attempt in range(1, 4):
                 with self._lock:
-                    if not self._running:
+                    if not self._running or self._stop_event.is_set():
                         return False
                 try:
                     target_mod = old_mod_port if attempt == 1 else None
@@ -228,14 +231,14 @@ class PwrCellTunnel:
                     return True
                 except Exception as e:
                     logger.warning("Failed to reconnect SSH tunnel (attempt %d/3): %s", attempt, e)
-                    time.sleep(1.0 * attempt)
+                    if self._stop_event.wait(1.0 * attempt):
+                        return False
 
             return False
 
     def _watchdog_loop(self):
         """Background thread checking tunnel health every 2 seconds."""
-        while True:
-            time.sleep(2.0)
+        while not self._stop_event.wait(2.0):
             with self._lock:
                 if not self._running:
                     break
@@ -247,6 +250,7 @@ class PwrCellTunnel:
         """Stop tunnel and watchdog."""
         with self._lock:
             self._running = False
+            self._stop_event.set()
             old_server = self._server
             self._server = None
 

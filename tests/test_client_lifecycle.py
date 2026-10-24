@@ -171,6 +171,63 @@ class TestClientLifecycle(unittest.TestCase):
             self.assertEqual(client.state.devices["000100083F22"].device_type, "battery")
             self.assertEqual(client.state.devices["00010009ABCD"].device_type, "pv_link")
 
+    def test_no_locks_held_across_blocking_stop_operations(self):
+        """Stopping SerializedModbusClient while a worker job acquires client._lock must not deadlock, and PwrCellTunnel.stop() wakes backoff sleeps immediately."""
+        import threading
+        from pwrcell.config import AppConfig, PwrcellConfig, SshTunnel
+        from pwrcell.modbus import SerializedModbusClient
+        from pwrcell.tunnel import PwrCellTunnel
+
+        # 1. SerializedModbusClient.close() must not hold self._lock while waiting on worker.execute_sync,
+        # otherwise a running worker job that acquires self._lock (e.g. _reset_shared_client) deadlocks!
+        mb_client = SerializedModbusClient(host="127.0.0.1", port=5020)
+        mb_client._shared_client = MagicMock()
+        mb_client.worker.start()
+
+        job_entered = threading.Event()
+        allow_job_proceed = threading.Event()
+
+        def blocking_job():
+            job_entered.set()
+            allow_job_proceed.wait(timeout=2.0)
+            # Worker thread acquires mb_client._lock during normal error/reset handling
+            with mb_client._lock:
+                return "ok"
+
+        mb_client.worker.submit(blocking_job, retries=1)
+        self.assertTrue(job_entered.wait(timeout=1.0))
+
+        close_done = threading.Event()
+
+        def run_close():
+            mb_client.close()
+            close_done.set()
+
+        t = threading.Thread(target=run_close, daemon=True)
+        t.start()
+        time.sleep(0.05)
+        allow_job_proceed.set()
+        self.assertTrue(close_done.wait(timeout=1.5), "mb_client.close() deadlocked with worker acquiring mb_client._lock")
+
+        # 2. PwrCellTunnel.stop() must interrupt retry backoff wait in ensure_active() immediately
+        cfg = AppConfig(pwrcell=PwrcellConfig(ssh_tunnel=SshTunnel(host="127.0.0.1", port=22, username="root")))
+        tunnel = PwrCellTunnel(cfg)
+        tunnel._running = True
+        with patch.object(tunnel, "_create_and_start_server", side_effect=RuntimeError("conn refused")):
+            ensure_done = threading.Event()
+
+            def run_ensure():
+                tunnel.ensure_active()
+                ensure_done.set()
+
+            et = threading.Thread(target=run_ensure, daemon=True)
+            et.start()
+            time.sleep(0.1)
+            t0 = time.monotonic()
+            tunnel.stop()
+            self.assertTrue(ensure_done.wait(timeout=0.5), "ensure_active() did not wake promptly on tunnel.stop()")
+            self.assertLess(time.monotonic() - t0, 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

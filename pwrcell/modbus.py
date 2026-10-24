@@ -110,9 +110,11 @@ class SerializedModbusWorker:
                 except queue.Empty:
                     break
             self._queue.put(None)  # Sentinel to terminate thread
-            if self._thread and self._thread.is_alive():
-                self._thread.join(timeout=timeout)
-            logger.info("Stopped Serialized Modbus Worker thread")
+            thread = self._thread
+
+        if thread and thread.is_alive():
+            thread.join(timeout=timeout)
+        logger.info("Stopped Serialized Modbus Worker thread")
 
     def submit(
         self,
@@ -239,13 +241,14 @@ class SerializedModbusClient:
     def close(self):
         """Disconnect all devices and stop worker thread."""
         with self._lock:
-            if self._shared_client:
-                try:
-                    self.worker.execute_sync(self._shared_client.disconnect, description="Disconnect shared Modbus client", timeout=2.0)
-                except Exception as e:
-                    logger.debug("Error closing shared Modbus client: %s", e)
-                self._shared_client = None
+            shared = self._shared_client
+            self._shared_client = None
             self._devices.clear()
+        if shared:
+            try:
+                self.worker.execute_sync(shared.disconnect, description="Disconnect shared Modbus client", timeout=2.0)
+            except Exception as e:
+                logger.debug("Error closing shared Modbus client: %s", e)
         self.worker.stop()
 
     def _get_shared_client(self) -> mb.ModbusClientTCP:
