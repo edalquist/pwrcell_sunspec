@@ -127,7 +127,7 @@ CANONICAL_SYNONYMS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "desc": "AC current on Phase C",
         },
         "grid_imported_energy": {
-            "names": {"whin", "grid_imported_energy_wh", "totwhexp"},
+            "names": {"grid_imported_energy_wh", "totwhexp"},
             "units": "Wh",
             "label": "Grid Imported Energy",
             "ha_platform": "sensor",
@@ -224,13 +224,22 @@ CANONICAL_SYNONYMS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "desc": "Real power discharged (+) or charged (-) by battery",
         },
         "battery_voltage": {
-            "names": {"v", "battery_voltage_v"},
+            "names": {"battery_voltage_v"},
             "units": "V",
             "label": "Battery Terminal Voltage",
             "ha_platform": "sensor",
             "ha_device_class": "voltage",
             "ha_state_class": "measurement",
             "desc": "DC voltage measured at battery terminals",
+        },
+        "rebus_voltage": {
+            "names": {"rebus_v"},
+            "units": "V",
+            "label": "REbus DC Voltage",
+            "ha_platform": "sensor",
+            "ha_device_class": "voltage",
+            "ha_state_class": "measurement",
+            "desc": "REbus 380V DC distribution line voltage measured at battery",
         },
         "battery_current": {
             "names": {"a", "battery_current_a"},
@@ -260,11 +269,18 @@ CANONICAL_SYNONYMS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "desc": "Cumulative electrical energy discharged from battery storage",
         },
         "operating_state": {
-            "names": {"st", "state"},
+            "names": {"state", "battery_state"},
             "units": "",
             "label": "Battery Operating State",
             "ha_platform": "sensor",
             "desc": "Operating status / state enumeration",
+        },
+        "rebus_node_state": {
+            "names": {"st", "rebus_state"},
+            "units": "",
+            "label": "REbus Node State",
+            "ha_platform": "sensor",
+            "desc": "REbus communication node operating status",
         },
         "temp_battery": {
             "names": {"tmp", "temperature_c"},
@@ -287,18 +303,45 @@ CANONICAL_SYNONYMS: Dict[str, Dict[str, Dict[str, Any]]] = {
             "desc": "Photovoltaic DC power generated on this string link",
         },
         "dc_voltage": {
-            "names": {"dcv", "v", "vin"},
+            "names": {"dcv"},
             "units": "V",
-            "label": "DC String Voltage",
+            "label": "DC Output Voltage",
+            "ha_platform": "sensor",
+            "ha_device_class": "voltage",
+            "ha_state_class": "measurement",
+            "desc": "PV Link DC output voltage",
+        },
+        "string_input_voltage": {
+            "names": {"vin", "indcv"},
+            "units": "V",
+            "label": "PV String Input Voltage",
             "ha_platform": "sensor",
             "ha_device_class": "voltage",
             "ha_state_class": "measurement",
             "desc": "Solar PV string input voltage",
         },
+        "rebus_voltage": {
+            "names": {"v", "rebus_v"},
+            "units": "V",
+            "label": "REbus DC Voltage",
+            "ha_platform": "sensor",
+            "ha_device_class": "voltage",
+            "ha_state_class": "measurement",
+            "desc": "REbus 380V DC distribution line voltage measured at PV Link",
+        },
         "dc_current": {
-            "names": {"dca", "i", "iin"},
+            "names": {"dca", "i"},
             "units": "A",
-            "label": "DC String Current",
+            "label": "DC Output Current",
+            "ha_platform": "sensor",
+            "ha_device_class": "current",
+            "ha_state_class": "measurement",
+            "desc": "PV Link DC output current",
+        },
+        "string_input_current": {
+            "names": {"iin", "indca"},
+            "units": "A",
+            "label": "PV String Input Current",
             "ha_platform": "sensor",
             "ha_device_class": "current",
             "ha_state_class": "measurement",
@@ -616,13 +659,42 @@ def find_canonical_concept(dev_type: str, point_name: str, units: Optional[str])
     c_unit = clean_unit(units)
 
     concepts = CANONICAL_SYNONYMS.get(d_type, {})
+    # 1. Exact name + matching unit
     for c_key, c_def in concepts.items():
         if p_name in c_def["names"]:
             exp_unit = clean_unit(c_def.get("units"))
             if not exp_unit or not c_unit or exp_unit == c_unit:
                 return c_key
 
+    # 2. Name match (allows detecting unit mismatches across models)
+    for c_key, c_def in concepts.items():
+        if p_name in c_def["names"]:
+            return c_key
+
     return None
+
+
+def _field_matches_modbus_target(f: Any, target_str: str) -> bool:
+    """Check if a StateField matches a configured Modbus target string like 'battery.model_802.V'."""
+    if not target_str:
+        return False
+    parts = target_str.split(".")
+    target_point = parts[-1]
+    if f.name.lower() != target_point.lower():
+        return False
+    if len(parts) >= 2:
+        model_part = parts[-2].lower()
+        if model_part.startswith("model_"):
+            try:
+                target_m_id = int(model_part.replace("model_", ""))
+                if f.model_id is not None and f.model_id != target_m_id:
+                    return False
+            except ValueError:
+                pass
+        else:
+            if f.model_name and model_part not in (f.model_name.lower(), f"model_{f.model_id}"):
+                return False
+    return True
 
 
 def group_device_fields(
@@ -684,10 +756,10 @@ def group_device_fields(
                 transform = None
                 if f_key == m.mqtt_field or f.name == m.mqtt_field.split(".")[-1]:
                     is_match = True
-                elif f_key == m.modbus_field or f.key.endswith(f".{m.modbus_field.split('.')[-1]}"):
+                elif f_key == m.modbus_field or _field_matches_modbus_target(f, m.modbus_field):
                     is_match = True
                     transform = m.transform
-                elif any(f_key == alt or f.key.endswith(f".{alt.split('.')[-1]}") for alt in m.modbus_candidates):
+                elif any(f_key == alt or _field_matches_modbus_target(f, alt) for alt in m.modbus_candidates):
                     is_match = True
                     transform = m.transform
 
@@ -725,14 +797,37 @@ def group_device_fields(
         # Fallback 1: Group by name + clean unit if duplicates exist across models
         norm_name = f.name.lower()
         c_unit = clean_unit(f.units)
-        auto_c_id = f"{dev_type}.concept.{norm_name}_{c_unit}" if c_unit else f"{dev_type}.concept.{norm_name}"
+        pt_type = getattr(f, "point_type", None)
+        is_sf = (
+            getattr(f, "is_scale_factor", False)
+            or (pt_type == "sunssf")
+            or f.name.endswith(("_SF", "_sf"))
+            or f.name.startswith(("sf_", "SF_", "sunssf_"))
+            or bool(getattr(f, "label", None) and f.label.lower().startswith("scale factor"))
+        )
+        is_model_specific = (
+            is_sf
+            or norm_name in {
+                "modena", "actcrv", "ncrv", "wintms", "rmptms", "rvrttms", "crvnum",
+                "readonly", "subgroup", "npts",
+            }
+        )
+        m_id = getattr(f, "model_id", None)
+        if is_model_specific and m_id:
+            auto_c_id = f"{dev_type}.m{m_id}.concept.{norm_name}_{c_unit}" if c_unit else f"{dev_type}.m{m_id}.concept.{norm_name}"
+            c_key = f"{norm_name}_m{m_id}"
+            c_label = f"{f.label} (M{m_id})" if f.label else f.name
+        else:
+            auto_c_id = f"{dev_type}.concept.{norm_name}_{c_unit}" if c_unit else f"{dev_type}.concept.{norm_name}"
+            c_key = norm_name
+            c_label = f.label
 
         if auto_c_id not in concept_metadata:
             concept_metadata[auto_c_id] = {
                 "id": auto_c_id,
-                "concept_key": norm_name,
+                "concept_key": c_key,
                 "name": f.name,
-                "label": f.label,
+                "label": c_label,
                 "description": f.description,
                 "units": f.units,
                 "ha_platform": f.ha_hint.platform if f.ha_hint else ("sensor" if not f.is_writable else "number"),
@@ -789,6 +884,14 @@ def group_device_fields(
                 or bool(getattr(f, "label", None) and f.label.lower().startswith("scale factor"))
             )
 
+            effective_val = f.value
+            if transform and effective_val is not None:
+                from .mapping import apply_transform
+                try:
+                    effective_val = apply_transform(effective_val, transform)
+                except Exception:
+                    pass
+
             sources.append(
                 UnifiedSource(
                     source_type=src_type,
@@ -798,7 +901,7 @@ def group_device_fields(
                     label=f"{f.label} ({src_id})",
                     model_id=m_id,
                     model_name=m_name,
-                    value=f.value,
+                    value=effective_val,
                     raw_value=f.raw_value,
                     units=f.units or meta.get("units"),
                     is_writable=f.is_writable,

@@ -210,7 +210,7 @@ mappings:
   modbus_candidates:
   - battery.model_802.V
   - battery.model_64252.V
-  - battery.model_64207.V
+  - battery.model_804.V
   transform: none
   transform_desc: ''
   description: Real-time DC battery pack terminal voltage

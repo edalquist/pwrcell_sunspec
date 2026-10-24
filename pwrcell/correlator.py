@@ -290,49 +290,71 @@ def _build_group_comparison_row(dev, g, mapping_id: Optional[str] = None) -> Com
             match_pct = max(0.0, min(100.0, 100.0 - pct_diff))
             mean_val = sum(vals) / len(vals)
 
+            # Check if this is near-zero noise (e.g. idle power standby: -1W to +1W)
+            is_near_zero = (denom <= 5.0 and delta <= 5.0)
+
+            # Check close tolerance (within 5%, or low-power sensor noise <= 5W with <= 15% diff, or near zero)
+            is_close = is_near_zero or (pct_diff <= 5.0) or (delta <= 5.0 and pct_diff <= 15.0)
+
             # Mark outlier/divergent sources
-            if delta > 0.5 and pct_diff > 5.0:
+            if delta > 0.5 and pct_diff > 5.0 and not is_close:
                 for s in polled_sources:
                     if abs(float(s["value"]) - mean_val) > max(0.05 * denom, 0.5):
                         s["is_divergent"] = True
 
-            if min_val < -0.5 and max_val > 0.5:
+            if min_val < -0.5 and max_val > 0.5 and not is_near_zero:
                 status = "POLARITY_MISMATCH"
                 status_label = "Polarity Divergence ✗"
                 is_discrepant = True
                 discrepancy_reason = f"Opposite polarity: min={min_val:.1f}, max={max_val:.1f} (possible missing/inverted transform)"
-            elif abs(min_val) > 0.01 and 9.0 <= abs(max_val / min_val) <= 1100.0 and delta > 1.0:
+            elif not is_near_zero and abs(min_val) > 0.01 and 9.0 <= abs(max_val / min_val) <= 1100.0 and delta > 1.0:
                 ratio = abs(max_val / min_val)
                 status = "SCALE_MISMATCH"
                 status_label = "Scale Mismatch ⚠️"
                 is_discrepant = True
                 discrepancy_reason = f"Values differ by scale factor of ~{round(ratio):.0f}x ({min_val:.1f} vs {max_val:.1f})"
-            elif pct_diff > 5.0 and delta > 0.5:
-                status = "DIVERGENT"
-                status_label = "Divergent ✗"
-                is_discrepant = True
-                discrepancy_reason = f"Values differ by {delta:.2f} {g.units or ''} ({pct_diff:.1f}% difference)"
-            elif pct_diff <= 5.0 and delta > 0.05:
-                status = "CLOSE"
-                status_label = "Close (~)"
-                is_discrepant = False
-                discrepancy_reason = f"Values agree within {pct_diff:.1f}% (Δ {delta:.2f})"
-            else:
+            elif delta <= 0.05:
                 status = "EXACT"
                 status_label = "Exact Match ✓"
                 is_discrepant = False
                 match_pct = 100.0
                 delta = 0.0
                 discrepancy_reason = "All sources agree exactly"
+            elif is_close or pct_diff <= 5.0:
+                status = "CLOSE"
+                status_label = "Close (~)"
+                is_discrepant = False
+                discrepancy_reason = f"Values agree within {pct_diff:.1f}% (Δ {delta:.2f})"
+            else:
+                status = "DIVERGENT"
+                status_label = "Divergent ✗"
+                is_discrepant = True
+                discrepancy_reason = f"Values differ by {delta:.2f} {g.units or ''} ({pct_diff:.1f}% difference)"
         else:
             str_vals = [str(s["value"]).strip().upper() for s in polled_sources]
-            if len(set(str_vals)) == 1:
+            raw_vals = [s.get("raw_value") for s in polled_sources if s.get("raw_value") is not None]
+            has_raw = len(raw_vals) == len(polled_sources)
+
+            def _hashable_val(v: Any) -> Any:
+                if isinstance(v, list):
+                    return tuple(_hashable_val(x) for x in v)
+                if isinstance(v, dict):
+                    return tuple(sorted((k, _hashable_val(val)) for k, val in v.items()))
+                return v
+
+            all_raw_same = has_raw and len(set(_hashable_val(r) for r in raw_vals)) == 1
+
+            if len(set(str_vals)) == 1 or all_raw_same:
                 status = "EXACT"
                 status_label = "Exact Match ✓"
                 is_discrepant = False
                 match_pct = 100.0
                 delta = 0.0
-                discrepancy_reason = "All state / enum values agree"
+                discrepancy_reason = (
+                    "All state / enum values agree"
+                    if len(set(str_vals)) == 1
+                    else f"All raw enum values agree ({raw_vals[0]}) across naming variations"
+                )
             else:
                 status = "DIVERGENT"
                 status_label = "Divergent ✗"
@@ -376,178 +398,6 @@ def _build_group_comparison_row(dev, g, mapping_id: Optional[str] = None) -> Com
     return ComparisonResultRow(
         id=f"{dev.serial_number}:{g.concept_key}",
         mapping_id=mapping_id or g.concept_key,
-        concept_key=g.concept_key,
-        label=g.label,
-        unit=g.units or "",
-        device_sn=dev.serial_number,
-        device_type=dev.device_type,
-        device_name=dev_label,
-        mqtt_key=mqtt_src["field_key"] if mqtt_src else "",
-        mqtt_value=mqtt_src["value"] if mqtt_src else None,
-        modbus_key=mb_src["field_key"] if mb_src else "",
-        modbus_label=mb_src["label"] if mb_src else "",
-        modbus_value=mb_src["value"] if mb_src else None,
-        confidence="HIGH" if status in ("EXACT", "CLOSE") else "CANDIDATE",
-        status=status,
-        status_label=status_label,
-        is_discrepant=is_discrepant,
-        match_pct=match_pct,
-        delta=delta,
-        notes=discrepancy_reason,
-        discrepancy_reason=discrepancy_reason,
-        source_count=len(sources_dicts),
-        polled_count=len(polled_sources),
-        sources=sources_dicts,
-    )
-    """Build a rich ComparisonResultRow evaluating all grouped sources in a UnifiedFieldGroup."""
-    sources_dicts: List[Dict[str, Any]] = []
-    polled_sources: List[Dict[str, Any]] = []
-
-    for s in g.sources:
-        s_dict = {
-            "source_type": s.source_type,
-            "source_id": s.source_id,
-            "field_key": s.field_key,
-            "name": s.name,
-            "label": s.label,
-            "model_id": s.model_id,
-            "model_name": s.model_name,
-            "value": s.value,
-            "raw_value": s.raw_value,
-            "units": s.units,
-            "transform": s.transform,
-            "is_optimal": s.is_optimal,
-            "is_pinned": s.is_pinned,
-            "is_divergent": False,
-        }
-        sources_dicts.append(s_dict)
-        if s.value is not None:
-            polled_sources.append(s_dict)
-
-    # Unit mismatch check across non-empty clean units
-    clean_units_map: Dict[str, str] = {}
-    for s in polled_sources:
-        u = s.get("units")
-        if u and str(u).strip():
-            cu = clean_unit(u)
-            if cu and cu not in clean_units_map:
-                clean_units_map[cu] = str(u).strip()
-
-    unit_mismatch = len(clean_units_map) > 1
-
-    # Check numeric agreement
-    all_numeric = bool(polled_sources) and all(
-        isinstance(s["value"], (int, float)) and not isinstance(s["value"], bool)
-        for s in polled_sources
-    )
-
-    delta: Optional[float] = None
-    match_pct: Optional[float] = None
-    is_discrepant = False
-
-    if len(polled_sources) >= 2:
-        if unit_mismatch:
-            status = "UNIT_MISMATCH"
-            status_label = "Unit Mismatch ⚠️"
-            is_discrepant = True
-            match_pct = 0.0
-            discrepancy_reason = f"Conflicting units across sources: {', '.join(sorted(clean_units_map.values()))}"
-        elif all_numeric:
-            vals = [float(s["value"]) for s in polled_sources]
-            min_val = min(vals)
-            max_val = max(vals)
-            delta = max_val - min_val
-            denom = max(max(abs(v) for v in vals), 1.0)
-            pct_diff = (delta / denom) * 100.0
-            match_pct = max(0.0, min(100.0, 100.0 - pct_diff))
-            mean_val = sum(vals) / len(vals)
-
-            # Mark outlier/divergent sources
-            if delta > 0.5 and pct_diff > 5.0:
-                for s in polled_sources:
-                    if abs(float(s["value"]) - mean_val) > max(0.05 * denom, 0.5):
-                        s["is_divergent"] = True
-
-            if min_val < -0.5 and max_val > 0.5:
-                status = "POLARITY_MISMATCH"
-                status_label = "Polarity Divergence ✗"
-                is_discrepant = True
-                discrepancy_reason = f"Opposite polarity: min={min_val:.1f}, max={max_val:.1f} (possible missing/inverted transform)"
-            elif abs(min_val) > 0.01 and 9.0 <= abs(max_val / min_val) <= 1100.0 and delta > 1.0:
-                ratio = abs(max_val / min_val)
-                status = "SCALE_MISMATCH"
-                status_label = "Scale Mismatch ⚠️"
-                is_discrepant = True
-                discrepancy_reason = f"Values differ by scale factor of ~{round(ratio):.0f}x ({min_val:.1f} vs {max_val:.1f})"
-            elif pct_diff > 5.0 and delta > 0.5:
-                status = "DIVERGENT"
-                status_label = "Divergent ✗"
-                is_discrepant = True
-                discrepancy_reason = f"Values differ by {delta:.2f} {g.units or ''} ({pct_diff:.1f}% difference)"
-            elif pct_diff <= 5.0 and delta > 0.05:
-                status = "CLOSE"
-                status_label = "Close (~)"
-                is_discrepant = False
-                discrepancy_reason = f"Values agree within {pct_diff:.1f}% (Δ {delta:.2f})"
-            else:
-                status = "EXACT"
-                status_label = "Exact Match ✓"
-                is_discrepant = False
-                match_pct = 100.0
-                delta = 0.0
-                discrepancy_reason = "All sources agree exactly"
-        else:
-            str_vals = [str(s["value"]).strip().upper() for s in polled_sources]
-            if len(set(str_vals)) == 1:
-                status = "EXACT"
-                status_label = "Exact Match ✓"
-                is_discrepant = False
-                match_pct = 100.0
-                delta = 0.0
-                discrepancy_reason = "All state / enum values agree"
-            else:
-                status = "DIVERGENT"
-                status_label = "Divergent ✗"
-                is_discrepant = True
-                match_pct = 0.0
-                delta = None
-                discrepancy_reason = f"Conflicting states: {', '.join(sorted(set(str_vals)))}"
-                c = Counter(str_vals)
-                common_val, _ = c.most_common(1)[0]
-                for s in polled_sources:
-                    if str(s["value"]).strip().upper() != common_val:
-                        s["is_divergent"] = True
-    elif len(polled_sources) == 1:
-        if len(sources_dicts) == 1:
-            status = "SINGLE_SOURCE"
-            status_label = "Single Source"
-            is_discrepant = False
-            match_pct = 100.0
-            delta = 0.0
-            discrepancy_reason = "Only one source available in this group"
-        else:
-            status = "PARTIALLY_POLLED"
-            status_label = "Partially Polled"
-            is_discrepant = False
-            match_pct = None
-            delta = None
-            discrepancy_reason = f"1 of {len(sources_dicts)} sources has data; others unpolled"
-    else:
-        status = "NO_DATA"
-        status_label = "No Data"
-        is_discrepant = False
-        match_pct = None
-        delta = None
-        discrepancy_reason = "No polled values for any source"
-
-    mqtt_src = next((s for s in sources_dicts if s["source_type"] == "MQTT"), None)
-    mb_src = next((s for s in sources_dicts if s["source_type"] == "SUNSPEC"), None)
-
-    dev_label = f"{dev.model_name or dev.device_type} ({dev.serial_number[-4:] if len(dev.serial_number) >= 4 else dev.serial_number})"
-
-    return ComparisonResultRow(
-        id=f"{dev.serial_number}:{g.concept_key}",
-        mapping_id=g.concept_key,
         concept_key=g.concept_key,
         label=g.label,
         unit=g.units or "",
