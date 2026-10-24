@@ -371,6 +371,17 @@ class PwrcellClient:
                 if 1 in tcp_dev.models or "common" in tcp_dev.models:
                     model_inst = self.modbus.read_model_block(tcp_dev, 1)
                     if model_inst and hasattr(tcp_dev, "common") and tcp_dev.common:
+                        sn_pt = getattr(tcp_dev.common[0], "SN", None)
+                        live_sn = str(sn_pt.value).strip() if (sn_pt is not None and getattr(sn_pt, "value", None) is not None) else ""
+                        if live_sn and live_sn not in ("0", "None") and live_sn.upper() != dev.serial_number.strip().upper():
+                            logger.warning(
+                                "Device serial mismatch on slave %d (cached=%s, live=%s); triggering Modbus device rescan",
+                                dev.slave_id,
+                                dev.serial_number,
+                                live_sn,
+                            )
+                            self.rescan_devices()
+                            break
                         self.state.update_device_metadata(
                             dev.serial_number,
                             model_name=str(tcp_dev.common[0].Md.value).strip() or dev.model_name,
@@ -412,8 +423,20 @@ class PwrcellClient:
             self._load_from_device_config(device_config)
         elif self.modbus:
             logger.info("No saved devices found, performing Modbus device scan")
-            discovered = self.modbus.scan_range(1, 100)
+            self.rescan_devices(1, 100)
+
+    def rescan_devices(self, start: int = 1, end: int = 100) -> int:
+        """Perform a fresh Modbus scan across start..end, replacing stale cached devices if new devices are found."""
+        if not self.modbus:
+            return len(self.state.get_devices_snapshot())
+        discovered = self.modbus.scan_range(start, end)
+        if discovered:
+            with self.state._lock:
+                self.state.devices.clear()
+                self.state.devices_by_slave_id.clear()
             self._save_scanned_devices(discovered)
+            self.poller.refresh_model_resolutions()
+        return len(discovered)
 
     def _is_empty_device_config(self, cfg: DeviceConfig) -> bool:
         return not (cfg.rebus_beacon or cfg.inverter or cfg.battery or cfg.pv_link or cfg.icm)

@@ -268,6 +268,43 @@ class TestClientLifecycle(unittest.TestCase):
             live_client._poll_device_models_live()
         mock_modbus.scan_device.assert_not_called()
 
+    def test_discovery_cache_revalidation_on_serial_mismatch_and_rescan(self):
+        """If Model 1 on a cached slave ID reports a different serial number than cached in devices.yaml, rescan_devices() replaces stale devices."""
+        from types import SimpleNamespace
+        from pwrcell.config import DeviceConfig
+
+        live_client = PwrcellClient(is_mock=False)
+        live_client._running = True
+        # Cached stale device on slave 8
+        live_client.state.register_device("OLD_SERIAL_999", 8, "inverter", "Inverter")
+
+        # Live hardware on slave 8 actually has NEW_SERIAL_123
+        live_tcp_dev = SimpleNamespace(
+            models={1: [object()], 102: [object()]},
+            common=[
+                SimpleNamespace(
+                    SN=SimpleNamespace(value="NEW_SERIAL_123"),
+                    Md=SimpleNamespace(value="PWRcell X7602"),
+                    Vr=SimpleNamespace(value="1.5"),
+                )
+            ],
+        )
+        mock_modbus = MagicMock()
+        mock_modbus.get_or_create_device.return_value = live_tcp_dev
+        mock_modbus.read_model_block.return_value = SimpleNamespace(points={})
+        mock_modbus.scan_range.return_value = {8: live_tcp_dev}
+        live_client.modbus = mock_modbus
+
+        with patch.object(DeviceConfig, "write") as mock_write, \
+             patch.object(live_client.poller, "poll_device_model"):
+            live_client._poll_device_models_live()
+            mock_modbus.scan_range.assert_called_once()
+            mock_write.assert_called_once()
+
+        self.assertNotIn("OLD_SERIAL_999", live_client.state.devices)
+        self.assertIn("NEW_SERIAL_123", live_client.state.devices)
+        self.assertEqual(live_client.state.devices["NEW_SERIAL_123"].device_type, "inverter")
+
 
 if __name__ == "__main__":
     unittest.main()

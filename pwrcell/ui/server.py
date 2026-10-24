@@ -134,6 +134,15 @@ def create_app(client: PwrcellClient) -> Flask:
         devices_list.sort(key=lambda d: (sort_order.get(d["device_type"], 99), d["serial_number"]))
         return jsonify(devices_list)
 
+    @app.route("/api/devices/rescan", methods=["POST"])
+    def rescan_devices():
+        body = request.get_json(silent=True) or {}
+        start = int(body.get("start", 1))
+        end = int(body.get("end", 100))
+        count = client.rescan_devices(start=start, end=end)
+        devices_list = [dev.to_dict(catalog=client.catalog) for dev in client.state.get_devices_snapshot()]
+        return jsonify({"success": True, "discovered_count": count, "devices": devices_list})
+
     @app.route("/api/devices/<serial_number>")
     def get_device_details(serial_number: str):
         dev = client.state.get_device(serial_number)
