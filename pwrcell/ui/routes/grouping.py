@@ -40,8 +40,6 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
     @bp.route("/api/compare")
     def get_compare():
         from ...tools.correlator import evaluate_comparisons, log_unrecognized_proto_fields
-        if not client.is_mock:
-            client.poll_telemetry_models_live()
         results = evaluate_comparisons(client.state)
         unrecognized = client.get_unrecognized_proto_fields()
         log_unrecognized_proto_fields(unrecognized)

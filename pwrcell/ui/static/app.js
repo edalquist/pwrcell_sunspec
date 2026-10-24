@@ -4109,6 +4109,7 @@ async function fetchExportYaml() {
 
 // Grouped Registers & Telemetry Compare Modal
 let compareTimer = null;
+let isFetchingCompare = false;
 const compareState = {
   activeTab: 'discrepancies',
   selectedDevice: '',
@@ -4120,7 +4121,9 @@ const compareState = {
   hasInitializedTab: false,
 };
 
-async function fetchAndRenderCompare() {
+async function fetchAndRenderCompare(forceSuggestions = false) {
+  if (isFetchingCompare) return;
+  isFetchingCompare = true;
   try {
     const res = await fetch(apiPath('api/compare'));
     const data = await res.json();
@@ -4149,19 +4152,22 @@ async function fetchAndRenderCompare() {
     if (el.cntCmpMatches) el.cntCmpMatches.textContent = matchCount;
     if (el.cntCmpAll) el.cntCmpAll.textContent = allCount;
 
-    // Fetch and sync grouping suggestions
-    try {
-      const suggRes = await fetch(apiPath('api/grouping/suggestions'));
-      const suggData = await suggRes.json();
-      compareState.suggestions = suggData.suggestions || [];
-      const suggCount = suggData.count !== undefined ? suggData.count : compareState.suggestions.length;
-      if (el.cntCmpSuggestions) el.cntCmpSuggestions.textContent = suggCount;
-      if (el.cntHeaderSuggestions) el.cntHeaderSuggestions.textContent = suggCount;
-      if (el.btnOpenSuggestions) {
-        el.btnOpenSuggestions.style.display = suggCount > 0 ? 'inline-flex' : 'none';
+    // Fetch and sync grouping suggestions only when requested, on suggestions tab, or on initial load
+    const shouldFetchSuggestions = forceSuggestions || compareState.activeTab === 'suggestions' || !compareState.hasInitializedTab;
+    if (shouldFetchSuggestions) {
+      try {
+        const suggRes = await fetch(apiPath('api/grouping/suggestions'));
+        const suggData = await suggRes.json();
+        compareState.suggestions = suggData.suggestions || [];
+        const suggCount = suggData.count !== undefined ? suggData.count : compareState.suggestions.length;
+        if (el.cntCmpSuggestions) el.cntCmpSuggestions.textContent = suggCount;
+        if (el.cntHeaderSuggestions) el.cntHeaderSuggestions.textContent = suggCount;
+        if (el.btnOpenSuggestions) {
+          el.btnOpenSuggestions.style.display = suggCount > 0 ? 'inline-flex' : 'none';
+        }
+      } catch (e) {
+        console.warn('Failed to fetch grouping suggestions:', e);
       }
-    } catch (e) {
-      console.warn('Failed to fetch grouping suggestions:', e);
     }
 
     // Default tab on first load
@@ -4246,6 +4252,8 @@ async function fetchAndRenderCompare() {
     if (el.compareTableBody) {
       el.compareTableBody.innerHTML = `<tr><td colspan="3" class="empty-state">Error fetching comparisons: ${err}</td></tr>`;
     }
+  } finally {
+    isFetchingCompare = false;
   }
 }
 
@@ -4673,9 +4681,9 @@ function openCompareModal(initialTab = null) {
   } else {
     compareState.hasInitializedTab = false;
   }
-  fetchAndRenderCompare();
+  fetchAndRenderCompare(true);
   if (compareTimer) clearInterval(compareTimer);
-  compareTimer = setInterval(fetchAndRenderCompare, 2000);
+  compareTimer = setInterval(() => fetchAndRenderCompare(false), 5000);
 }
 
 function closeCompareModal() {
