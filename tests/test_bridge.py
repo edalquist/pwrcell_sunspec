@@ -467,6 +467,62 @@ class TestHomeAssistantBridge(unittest.TestCase):
         # System mode must remain unchanged
         self.assertEqual(self.client.state.get_compound_view("system_mode").latest_value, "SELF_SUPPLY")
 
+    def test_writable_exposure_allowlist_and_safety_shutdown_exclusion(self):
+        """Only explicitly allow-listed points are exposed as writable in HA discovery, and SAFETY_SHUTDOWN is excluded from HA select options."""
+        from pwrcell.ha import is_ha_writable_allowed
+        from pwrcell.state import StateField
+
+        inv = self.client.state.get_inverter()
+        bat = self.client.state.get_battery()
+        beacon = self.client.state.get_beacon()
+
+        # 1. Non-allowlisted RW register (e.g. grid code / volt-var curve point V1 on model 126) must be exposed as read-only sensor
+        grid_code_field = StateField(
+            key="inverter.volt_var.V1",
+            device_sn=inv.serial_number,
+            device_type="inverter",
+            name="V1",
+            label="Volt-Var V1",
+            description="Volt-Var curve point 1",
+            value=240.0,
+            raw_value=2400,
+            units="V",
+            access="RW",
+            point_type="uint16",
+            model_id=126,
+        )
+        self.assertFalse(is_ha_writable_allowed(grid_code_field))
+        grid_payload = generate_discovery_payload(grid_code_field, inv)
+        self.assertEqual(grid_payload["platform"], "sensor")
+        self.assertIsNone(grid_payload["command_topic"])
+        self.assertNotIn("command_topic", grid_payload["payload"])
+
+        # 2. Allow-listed battery reserve register (SoCRsvMin on model 802) is exposed as writable number with bounds
+        soc_rsv_field = bat.fields.get("battery.battery.SoCRsvMin")
+        self.assertIsNotNone(soc_rsv_field)
+        self.assertTrue(is_ha_writable_allowed(soc_rsv_field))
+        rsv_payload = generate_discovery_payload(soc_rsv_field, bat)
+        self.assertEqual(rsv_payload["platform"], "number")
+        self.assertIsNotNone(rsv_payload["command_topic"])
+        self.assertIn("min", rsv_payload["payload"])
+        self.assertIn("max", rsv_payload["payload"])
+
+        # 3. Allow-listed system_mode (both compound and raw SysMd) is exposed as writable select WITHOUT SAFETY_SHUTDOWN
+        c_sys_mode = self.client.state.get_compound_view("system_mode")
+        self.assertTrue(is_ha_writable_allowed(c_sys_mode))
+        c_payload = generate_discovery_payload(c_sys_mode, inv)
+        self.assertEqual(c_payload["platform"], "select")
+        self.assertIsNotNone(c_payload["command_topic"])
+        self.assertNotIn("SAFETY_SHUTDOWN", c_payload["payload"]["options"])
+        self.assertIn("SELF_SUPPLY", c_payload["payload"]["options"])
+
+        raw_sysmd = beacon.fields.get("rebus_beacon.REbus_dir.SysMd")
+        if raw_sysmd:
+            self.assertTrue(is_ha_writable_allowed(raw_sysmd))
+            raw_payload = generate_discovery_payload(raw_sysmd, beacon)
+            self.assertEqual(raw_payload["platform"], "select")
+            self.assertNotIn("SAFETY_SHUTDOWN", raw_payload["payload"].get("options", []))
+
 
 if __name__ == "__main__":
     unittest.main()

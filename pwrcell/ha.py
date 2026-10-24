@@ -33,6 +33,40 @@ ORIGIN_INFO: Dict[str, str] = {
     "support_url": "https://github.com/edalquist/pwrcell_sunspec",
 }
 
+# Explicit allow-list of controllable point names/IDs safe to expose as writable in Home Assistant
+HA_WRITABLE_ALLOWLIST: Set[str] = {
+    "system_mode",
+    "SysMd",
+    "SoCRsvMin",
+    "SoCRsvMax",
+    "SoCMax",
+    "SoCMin",
+    "WChaRteMax",
+    "WDisChaRteMax",
+}
+
+# Dangerous operating modes excluded from Home Assistant select options
+HA_EXCLUDED_SELECT_OPTIONS: Set[str] = {
+    "SAFETY_SHUTDOWN",
+}
+
+
+def is_ha_writable_allowed(field: Any) -> bool:
+    """Return True if the field is both writable and in the Home Assistant writable allow-list."""
+    if not getattr(field, "is_writable", False):
+        return False
+    if getattr(field, "is_compound", False):
+        mapping_id = getattr(field, "mapping_id", None) or getattr(field, "name", "")
+        return mapping_id in HA_WRITABLE_ALLOWLIST
+    pt_name = getattr(field, "name", "") or str(getattr(field, "key", "")).split(".")[-1]
+    return pt_name in HA_WRITABLE_ALLOWLIST
+
+
+def _filter_ha_options(options: Optional[List[str]]) -> Optional[List[str]]:
+    if not options:
+        return options
+    return [opt for opt in options if opt not in HA_EXCLUDED_SELECT_OPTIONS]
+
 
 def get_default_seed_config_path() -> Path:
     repo_root = Path(__file__).resolve().parent.parent
@@ -306,10 +340,10 @@ def generate_discovery_payload(
 ) -> Dict[str, Any]:
     """Generate modern Home Assistant MQTT Discovery configuration dictionary and topics."""
     is_compound = getattr(field, "is_compound", False)
-    is_writable = getattr(field, "is_writable", False)
+    is_writable = is_ha_writable_allowed(field)
 
     if is_compound:
-        platform = field.ha_platform
+        platform = field.ha_platform if (is_writable or field.ha_platform == "sensor") else "sensor"
         if is_writable and platform == "sensor":
             if getattr(field, "ha_options", None) or getattr(field, "ha_device_class", None) == "enum":
                 platform = "select"
@@ -317,7 +351,7 @@ def generate_discovery_payload(
                 platform = "number"
     else:
         hint = field.ha_hint
-        if hint and hint.platform:
+        if hint and hint.platform and (is_writable or hint.platform == "sensor"):
             platform = hint.platform
         elif is_writable:
             if getattr(field, "is_enum", False) or getattr(field, "symbols", None):
@@ -374,7 +408,7 @@ def generate_discovery_payload(
         if platform == "select":
             payload["command_topic"] = command_topic
             if getattr(field, "ha_options", None):
-                payload["options"] = field.ha_options
+                payload["options"] = _filter_ha_options(field.ha_options)
             if getattr(field, "entity_category", None):
                 payload["entity_category"] = field.entity_category
         elif platform == "number":
@@ -405,12 +439,12 @@ def generate_discovery_payload(
         if platform == "select":
             payload["command_topic"] = command_topic
             if hint.options:
-                payload["options"] = hint.options
+                payload["options"] = _filter_ha_options(hint.options)
             elif getattr(field, "symbols", None):
-                payload["options"] = [
+                payload["options"] = _filter_ha_options([
                     s.name if hasattr(s, "name") else s["name"]
                     for s in sorted(field.symbols, key=lambda x: getattr(x, "value", x.get("value") if isinstance(x, dict) else 0))
-                ]
+                ])
             if hint.entity_category:
                 payload["entity_category"] = hint.entity_category
         elif platform == "number":
@@ -450,15 +484,23 @@ def generate_discovery_payload(
         if platform == "select":
             payload["command_topic"] = command_topic
             if getattr(field, "symbols", None):
-                payload["options"] = [
+                payload["options"] = _filter_ha_options([
                     s.name if hasattr(s, "name") else s["name"]
                     for s in sorted(field.symbols, key=lambda x: getattr(x, "value", x.get("value") if isinstance(x, dict) else 0))
-                ]
+                ])
         elif platform == "number":
             payload["command_topic"] = command_topic
             payload["mode"] = "auto"
             if field.units:
                 payload["unit_of_measurement"] = field.units
+            sf_val = device.get_scale_factor_value(field) if hasattr(device, "get_scale_factor_value") else None
+            bounds = field.get_bounds(sf_value=sf_val) if hasattr(field, "get_bounds") else {}
+            if bounds.get("min_value") is not None:
+                payload["min"] = bounds["min_value"]
+            if bounds.get("max_value") is not None:
+                payload["max"] = bounds["max_value"]
+            if isinstance(bounds.get("step"), (int, float)):
+                payload["step"] = bounds["step"]
     elif field.units:
         payload["unit_of_measurement"] = field.units
 
