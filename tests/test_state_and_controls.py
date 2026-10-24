@@ -446,6 +446,14 @@ class TestStateAndControls(unittest.TestCase):
         )
         self.assertEqual(f4.value, 23492000)
 
+        # N=3 consecutive consistent lower positive readings (e.g. after a single high glitch or legitimate reset) must recover instead of latching forever
+        f_drop1 = self.state.set_field(device_sn=self.inv.serial_number, name="WhIn", value=500000, units="Wh", ha_hint=hint)
+        self.assertEqual(f_drop1.value, 23492000)
+        f_drop2 = self.state.set_field(device_sn=self.inv.serial_number, name="WhIn", value=500010, units="Wh", ha_hint=hint)
+        self.assertEqual(f_drop2.value, 23492000)
+        f_drop3 = self.state.set_field(device_sn=self.inv.serial_number, name="WhIn", value=500020, units="Wh", ha_hint=hint)
+        self.assertEqual(f_drop3.value, 500020)
+
     def test_pvlink_daily_energy_reset_allowed(self):
         """Verify that PV link daily/session energy counters are allowed to reset at sunrise."""
         from pwrcell.catalog import HomeAssistantHint
@@ -595,6 +603,110 @@ class TestStateAndControls(unittest.TestCase):
         evt_field = self.bat.fields.get("battery.battery.Evt1")
         self.assertIsNotNone(evt_field)
         self.assertEqual(evt_field.active_flags, ["COMMUNICATION_ERROR"])
+
+    def test_write_scaled_numeric_register_preserves_decimals_and_ha_bounds(self):
+        """Writing a decimal to a scaled RW register (e.g. SF=-1) must preserve the scaled value and compute raw register value, and HA discovery must use real bounds."""
+        from unittest.mock import MagicMock
+        from pwrcell.ha import generate_discovery_payload
+
+        # Model 802 has SoCMax (uint16, RW, sf='SoC_SF', units='%WHRtg')
+        self.state.update_from_modbus_points(
+            serial_number=self.bat.serial_number,
+            model_id=802,
+            raw_values={"SoCMax": 900, "SoC_SF": -1},
+            computed_values={"SoCMax": 90.0, "SoC_SF": -1},
+        )
+        socmax_field = self.bat.fields.get("battery.battery.SoCMax")
+        self.assertIsNotNone(socmax_field)
+        self.assertEqual(socmax_field.value, 90.0)
+
+        # Verify HA discovery payload uses real scaled bounds (min=0.0, max=6553.5, step=0.1)
+        disc = generate_discovery_payload(socmax_field, self.bat)
+        self.assertEqual(disc["platform"], "number")
+        self.assertEqual(disc["payload"]["step"], 0.1)
+        self.assertEqual(disc["payload"]["min"], 0.0)
+        self.assertEqual(disc["payload"]["max"], 6553.5)
+
+        # Attach mock modbus client to verify what value is sent to write_point_value
+        mock_mb = MagicMock()
+        mock_mb.write_point_value.return_value = 50.5
+        self.controls.modbus_client = mock_mb
+
+        res = self.controls.write_field("battery.battery.SoCMax", 50.5)
+        self.assertEqual(res, 50.5)
+        self.assertEqual(socmax_field.value, 50.5)
+        self.assertEqual(socmax_field.raw_value, 505)
+        # write_point_value assigns point.cvalue = value, so it expects the scaled engineering value 50.5
+        mock_mb.write_point_value.assert_called_once()
+        _, kwargs = mock_mb.write_point_value.call_args
+        self.assertEqual(kwargs["value"], 50.5)
+
+    def test_write_readback_verification_publishes_clamped_value(self):
+        """If the device clamps or overrides a written value on read-back, log a warning and publish the read-back value."""
+        from unittest.mock import MagicMock
+
+        self.state.update_from_modbus_points(
+            serial_number=self.bat.serial_number,
+            model_id=802,
+            raw_values={"SoCMax": 900, "SoC_SF": -1},
+            computed_values={"SoCMax": 90.0, "SoC_SF": -1},
+        )
+        socmax_field = self.bat.fields.get("battery.battery.SoCMax")
+
+        # Simulate device clamping 95.0 down to 80.0 on read-back
+        mock_mb = MagicMock()
+        mock_mb.write_point_value.return_value = 80.0
+        self.controls.modbus_client = mock_mb
+
+        res = self.controls.write_field("battery.battery.SoCMax", 95.0)
+        self.assertEqual(res, 80.0)
+        self.assertEqual(socmax_field.value, 80.0)
+        self.assertEqual(socmax_field.raw_value, 800)
+
+    def test_type_aware_sentinels_do_not_drop_valid_uint32_or_scaled_values(self):
+        """A uint32/acc32 register at 32768 or 65535, or a scaled float like 32767.4, must NOT be dropped as a 16-bit sentinel."""
+        from pwrcell.bridge import format_state_value
+        from pwrcell.state import is_sunspec_sentinel
+
+        # 1. Type-aware sentinel helper
+        self.assertTrue(is_sunspec_sentinel(0x8000, "int16"))
+        self.assertTrue(is_sunspec_sentinel(-32768, "int16"))
+        self.assertTrue(is_sunspec_sentinel(0xFFFF, "uint16"))
+        self.assertFalse(is_sunspec_sentinel(0x7FFF, "int16"))  # 32767 is max int16, not sentinel
+        self.assertFalse(is_sunspec_sentinel(0xFFFF, "uint32"))
+        self.assertFalse(is_sunspec_sentinel(0x8000, "acc32"))
+        self.assertTrue(is_sunspec_sentinel(0xFFFFFFFF, "acc32"))
+        self.assertTrue(is_sunspec_sentinel(0x80000000, "int32"))
+
+        # 2. Model 64209 WhIn is uint32/acc32: raw value 65535 or 32768 is a valid cumulative Wh reading
+        self.state.update_from_modbus_points(
+            serial_number=self.bat.serial_number,
+            model_id=64209,
+            raw_values={"WhIn": 65535, "WhOut": 32768},
+            computed_values={"WhIn": 65535, "WhOut": 32768},
+        )
+        self.assertEqual(self.bat.fields["battery.battery_status.WhIn"].value, 65535)
+        self.assertEqual(self.bat.fields["battery.battery_status.WhOut"].value, 32768)
+
+        # 3. Post-scaling values that happen to have int(val) == 32767 or 65535 are NOT dropped
+        f_power = self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="W",
+            value=32767.4,
+            raw_value=327674,
+            units="W",
+        )
+        self.assertEqual(f_power.value, 32767.4)
+        self.assertEqual(format_state_value(32767.4), "32767.4")
+        self.assertEqual(format_state_value(65535), "65535")
+
+    def test_register_device_blank_serials_do_not_collide(self):
+        """Two devices with empty/blank serial numbers on different slave IDs must be assigned distinct synthetic serials."""
+        d1 = self.state.register_device(serial_number="", slave_id=11, device_type="pv_link", model_name="PV Link")
+        d2 = self.state.register_device(serial_number="0", slave_id=12, device_type="pv_link", model_name="PV Link")
+        self.assertNotEqual(d1.serial_number, d2.serial_number)
+        self.assertIn(d1.serial_number, self.state.devices)
+        self.assertIn(d2.serial_number, self.state.devices)
 
 
 if __name__ == "__main__":

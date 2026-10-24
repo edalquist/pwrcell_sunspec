@@ -244,21 +244,30 @@ class TestTieredModbusPoller(unittest.TestCase):
         self.assertEqual(safe_point_cvalue(p), 381.6)
 
     def test_safe_point_cvalue_catches_overflow_error(self):
-        """Verify safe_point_cvalue catches OverflowError: math range error from pysunspec2."""
+        """Verify safe_point_cvalue catches OverflowError/ValueError/TypeError/ZeroDivisionError and logs at debug, while propagating unexpected exceptions."""
         from pwrcell.poller import safe_point_cvalue
 
         p = MagicMock()
         p.sf_required = False
+        p.pdef = {"name": "V"}
         type(p).cvalue = unittest.mock.PropertyMock(side_effect=OverflowError("math range error"))
 
-        self.assertIsNone(safe_point_cvalue(p))
+        with self.assertLogs("pwrcell.poller", level="DEBUG") as cm:
+            self.assertIsNone(safe_point_cvalue(p))
+        self.assertTrue(any("math range error" in line for line in cm.output))
+
+        # Unexpected exception (e.g. RuntimeError) must NOT be silently swallowed
+        type(p).cvalue = unittest.mock.PropertyMock(side_effect=RuntimeError("unexpected bug"))
+        with self.assertRaises(RuntimeError):
+            safe_point_cvalue(p)
 
     def test_model_64207_sentinel_scale_factors_in_state(self):
-        """Verify model 64207 points with sentinel scale factors are handled safely in StateStore."""
+        """Verify model 64207 points with cvalue from safe_point_cvalue (or raw fallback without home-grown scaling) are handled safely in StateStore."""
         state = self.client.state
         dev = state.register_device("000100034AC7", 3, "pv_link", "PV Link")
 
-        # Simulate polling Model 64207 with invalid scale factor registers (32767)
+        # Simulate polling Model 64207 where safe_point_cvalue returned None for V and T (due to invalid VT_sf=32767)
+        # and 0.0 for I (due to valid I_sf=-2)
         raw_values = {
             "P": 0,
             "E": 2153252067,
@@ -268,20 +277,45 @@ class TestTieredModbusPoller(unittest.TestCase):
             "St": 12546,
             "Ev": 34048,
             "RB": 8225,
-            "VT_sf": 32767,  # Sentinel!
+            "VT_sf": 32767,
             "I_sf": -2,
         }
-        state.update_from_modbus_points("000100034AC7", 64207, raw_values=raw_values)
+        computed_values = {
+            "P": 0,
+            "E": 2153252067,
+            "V": None,
+            "I": 0.0,
+            "T": None,
+            "St": 12546,
+            "Ev": 34048,
+            "RB": 8225,
+            "VT_sf": None,
+            "I_sf": -2,
+        }
+        state.update_from_modbus_points(
+            "000100034AC7",
+            64207,
+            raw_values=raw_values,
+            computed_values=computed_values,
+        )
 
-        # Points V and T depend on VT_sf which was 32767. Their value MUST be None, not 3816 * 10^32767!
+        # Points V and T have computed_values=None. Their value MUST be None!
         v_field = dev.fields.get("pv_link.REbus_status.V")
         self.assertIsNotNone(v_field)
         self.assertIsNone(v_field.value)
 
-        # Point I depends on I_sf which was -2. It should be scaled normally: 0 * 10^-2 = 0.0
+        # Point I has computed_values=0.0
         i_field = dev.fields.get("pv_link.REbus_status.I")
         self.assertIsNotNone(i_field)
         self.assertEqual(i_field.value, 0.0)
+
+        # Verify that without computed_values, update_from_modbus_points does NOT re-implement home-grown SF scaling
+        state.update_from_modbus_points(
+            "000100034AC7",
+            64207,
+            raw_values={"V": 380, "VT_sf": -1},
+        )
+        self.assertEqual(dev.fields["pv_link.REbus_status.V"].value, 380)
 
         # Bitfield RB should be properly decoded into symbols
         rb_field = dev.fields.get("pv_link.REbus_status.RB")
@@ -303,6 +337,52 @@ class TestTieredModbusPoller(unittest.TestCase):
         self.assertEqual(DEFAULT_FAST_MODELS, resolve_paths_to_models(DEFAULT_FAST_PATHS))
         self.assertEqual(DEFAULT_CONFIG_MODELS, resolve_paths_to_models(DEFAULT_CONFIG_PATHS))
         self.assertEqual(DEFAULT_SLOW_MODELS, resolve_paths_to_models(DEFAULT_SLOW_PATHS))
+
+    def test_poll_device_model_reads_multiple_instances(self):
+        """Verify poll_device_model reads all instances of a repeating SunSpec model without key collisions."""
+        state = self.client.state
+        dev = state.register_device("000100034AC7", 3, "pv_link", "PV Link")
+
+        m_inst0 = MagicMock()
+        p0 = MagicMock()
+        p0.value = 1200
+        p0.cvalue = 1200.0
+        p0.sf_required = False
+        m_inst0.points = {"DCW": p0}
+
+        m_inst1 = MagicMock()
+        p1 = MagicMock()
+        p1.value = 850
+        p1.cvalue = 850.0
+        p1.sf_required = False
+        m_inst1.points = {"DCW": p1}
+
+        tcp_dev = MagicMock()
+        tcp_dev.models = {404: [m_inst0, m_inst1]}
+
+        mock_mb = MagicMock()
+        mock_mb.get_or_create_device.return_value = tcp_dev
+        mock_mb.read_model_block.side_effect = lambda d, mid, index=0: d.models[mid][index]
+        self.client.modbus = mock_mb
+
+        ok = self.client.poller.poll_device_model(3, "000100034AC7", 404)
+        self.assertTrue(ok)
+        self.assertIn("pv_link.string_combiner.DCW", dev.fields)
+        self.assertIn("pv_link.string_combiner_1.DCW", dev.fields)
+        self.assertEqual(dev.fields["pv_link.string_combiner.DCW"].value, 1200.0)
+        self.assertEqual(dev.fields["pv_link.string_combiner_1.DCW"].value, 850.0)
+
+    def test_resolve_paths_to_models_exact_match_no_prefix_collision(self):
+        """Verify resolving 'battery.battery' does NOT match 'battery.battery_status' (64209) when only battery_status is in state."""
+        from pwrcell.poller import resolve_paths_to_models
+        from pwrcell.state import StateStore
+
+        empty_state = StateStore(catalog=self.client.catalog)
+        bat = empty_state.register_device("BAT_TEST", 9, "battery", "Battery")
+        empty_state.update_from_modbus_points("BAT_TEST", 64209, raw_values={"WhIn": 100})
+
+        resolved = resolve_paths_to_models(["battery.battery"], catalog=self.client.catalog, state_store=empty_state)
+        self.assertEqual(resolved.get("battery"), [802])
 
 
 if __name__ == "__main__":

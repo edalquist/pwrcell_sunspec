@@ -621,12 +621,12 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertEqual(data["field"]["name"], "W")
         self.assertEqual(data["point_def"]["type"], "int16")
         self.assertEqual(data["point_def"]["size"], 1)
-        self.assertEqual(data["point_def"]["offset"], 14)
+        self.assertEqual(data["point_def"]["offset"], 12)
 
         # Scale factor register verification
         self.assertIsNotNone(data["scale_factor"])
         self.assertEqual(data["scale_factor"]["name"], "W_SF")
-        self.assertEqual(data["scale_factor"]["offset"], 15)
+        self.assertEqual(data["scale_factor"]["offset"], 13)
         self.assertEqual(data["scale_factor"]["type"], "sunssf")
         self.assertIn("formula", data["scale_factor"])
 

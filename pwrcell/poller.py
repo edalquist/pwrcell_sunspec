@@ -21,7 +21,33 @@ import time
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
-from .state import SUNSPEC_SENTINELS
+from .catalog import (
+    MODEL_BATTERY_BASE,
+    MODEL_BATTERY_STATUS,
+    MODEL_BATTERY_WARRANTY,
+    MODEL_COMMON,
+    MODEL_CONTROLS,
+    MODEL_EI_CONFIG,
+    MODEL_FLASH_READER,
+    MODEL_INVERTER_SPLIT_PHASE,
+    MODEL_INVERTER_STATUS,
+    MODEL_IP_SETTINGS,
+    MODEL_LITHIUM_ION_STRING,
+    MODEL_NAMEPLATE,
+    MODEL_PVLINK_STATUS,
+    MODEL_PVRSS_CONFIG,
+    MODEL_PVRSS_TELEMETRY,
+    MODEL_REBUS_ARB,
+    MODEL_REBUS_DIR,
+    MODEL_REBUS_STATUS,
+    MODEL_RECONNECT,
+    MODEL_SCHEDULE,
+    MODEL_STRING_COMBINER,
+    MODEL_TZ_CONFIG,
+    MODEL_VOLT_VAR,
+    MODEL_VOLT_WATT,
+    is_sunspec_sentinel,
+)
 
 if TYPE_CHECKING:
     from .client import PwrcellClient
@@ -32,6 +58,11 @@ logger = logging.getLogger(__name__)
 def safe_point_cvalue(point: Any) -> Any:
     """Safely obtain computed point value from SunSpec point, preventing math range errors and sentinel corruption."""
     try:
+        pt_type = getattr(point, "ptype", None) or getattr(getattr(point, "point_type", None), "type", None)
+        raw_val = getattr(point, "value", None)
+        if raw_val is not None and is_sunspec_sentinel(raw_val, pt_type):
+            return None
+
         # Check scale factor beforehand if point requires one
         if getattr(point, "sf_required", False):
             sf_name = getattr(point, "sf", None)
@@ -44,19 +75,20 @@ def safe_point_cvalue(point: Any) -> Any:
                     sf_pt = point.model.points.get(sf_name)
             if sf_pt is not None:
                 sf_val = getattr(sf_pt, "value", None)
-                if sf_val is None or sf_val in SUNSPEC_SENTINELS or not (-10 <= sf_val <= 10):
+                if sf_val is None or is_sunspec_sentinel(sf_val, "sunssf") or not (-10 <= sf_val <= 10):
                     return None
             elif getattr(point, "sf_value", None) is not None:
                 sf_v = point.sf_value
-                if sf_v in SUNSPEC_SENTINELS or not (-10 <= sf_v <= 10):
+                if is_sunspec_sentinel(sf_v, "sunssf") or not (-10 <= sf_v <= 10):
                     return None
 
         val = point.cvalue
         if val is not None and isinstance(val, (int, float)):
-            if math.isnan(val) or math.isinf(val) or abs(val) > 1e12 or int(val) in SUNSPEC_SENTINELS:
+            if math.isnan(val) or math.isinf(val) or abs(val) > 1e12:
                 return None
         return val
-    except (OverflowError, ValueError, Exception):
+    except (OverflowError, ValueError, TypeError, ZeroDivisionError) as e:
+        logger.debug("Error computing cvalue for point %s: %s", getattr(point, "pdef", {}).get("name", point), e)
         return None
 
 
@@ -70,47 +102,47 @@ class PollingTier(str, Enum):
 # PWRcell device type to model name/ID dictionary fallback
 PWRCELL_DEVICE_MODEL_MAP: Dict[str, Dict[str, int]] = {
     "inverter": {
-        "inverter": 102,
-        "REbus_status": 64207,
-        "inverter_status": 64208,
-        "REbus_exp": 64208,
-        "EIconfig": 64206,
-        "REbus_arb": 64202,
-        "reconnect": 64203,
-        "nameplate": 120,
-        "controls": 123,
-        "volt_var": 126,
-        "volt_watt": 132,
-        "common": 1,
+        "inverter": MODEL_INVERTER_SPLIT_PHASE,
+        "REbus_status": MODEL_REBUS_STATUS,
+        "inverter_status": MODEL_INVERTER_STATUS,
+        "REbus_exp": MODEL_INVERTER_STATUS,
+        "EIconfig": MODEL_EI_CONFIG,
+        "REbus_arb": MODEL_REBUS_ARB,
+        "reconnect": MODEL_RECONNECT,
+        "nameplate": MODEL_NAMEPLATE,
+        "controls": MODEL_CONTROLS,
+        "volt_var": MODEL_VOLT_VAR,
+        "volt_watt": MODEL_VOLT_WATT,
+        "common": MODEL_COMMON,
     },
     "battery": {
-        "battery": 802,
-        "model_64252": 64252,
-        "DCB105_warranty": 64252,
-        "battery_status": 64209,
-        "model_64209": 64209,
-        "REbus_status": 64207,
-        "lithium_ion_string": 804,
-        "common": 1,
+        "battery": MODEL_BATTERY_BASE,
+        "model_64252": MODEL_BATTERY_WARRANTY,
+        "DCB105_warranty": MODEL_BATTERY_WARRANTY,
+        "battery_status": MODEL_BATTERY_STATUS,
+        "model_64209": MODEL_BATTERY_STATUS,
+        "REbus_status": MODEL_REBUS_STATUS,
+        "lithium_ion_string": MODEL_LITHIUM_ION_STRING,
+        "common": MODEL_COMMON,
     },
     "pv_link": {
-        "string_combiner": 404,
-        "REbus_status": 64207,
-        "pvlink_status": 64251,
-        "flash_reader": 64258,
-        "pvrss_config": 64263,
-        "pvrss_telemetry": 64264,
-        "common": 1,
+        "string_combiner": MODEL_STRING_COMBINER,
+        "REbus_status": MODEL_REBUS_STATUS,
+        "pvlink_status": MODEL_PVLINK_STATUS,
+        "flash_reader": MODEL_FLASH_READER,
+        "pvrss_config": MODEL_PVRSS_CONFIG,
+        "pvrss_telemetry": MODEL_PVRSS_TELEMETRY,
+        "common": MODEL_COMMON,
     },
     "rebus_beacon": {
-        "REbus_dir": 64200,
-        "tz_config": 64260,
-        "schedule": 133,
-        "ip_settings": 16,
-        "common": 1,
+        "REbus_dir": MODEL_REBUS_DIR,
+        "tz_config": MODEL_TZ_CONFIG,
+        "schedule": MODEL_SCHEDULE,
+        "ip_settings": MODEL_IP_SETTINGS,
+        "common": MODEL_COMMON,
     },
     "icm": {
-        "common": 1,
+        "common": MODEL_COMMON,
     },
 }
 
@@ -134,6 +166,50 @@ DEFAULT_SLOW_PATHS: List[str] = [
     "inverter.inverter_status",
     "pv_link.string_combiner",
 ]
+
+
+def resolve_subgroup_to_model_id(
+    dev_type: str,
+    sub_group: str,
+    catalog: Optional[Any] = None,
+    state_store: Optional[Any] = None,
+    exact_path: Optional[str] = None,
+) -> Optional[int]:
+    """Resolve a single (device_type, sub_group) or exact field path to a SunSpec model ID."""
+    sub = sub_group.strip()
+    if not sub:
+        return None
+    if sub.isdigit():
+        return int(sub)
+    if sub.startswith("model_") and sub[6:].isdigit():
+        return int(sub[6:])
+
+    # Strip repeating instance suffix e.g. string_combiner_1 -> string_combiner
+    base_sub = sub.rsplit("_", 1)[0] if ("_" in sub and sub.rsplit("_", 1)[1].isdigit() and not sub.startswith("model_")) else sub
+
+    if state_store and hasattr(state_store, "devices"):
+        for dev in state_store.devices.values():
+            if dev.device_type == dev_type:
+                for f in dev.fields.values():
+                    if f.model_id and (
+                        f.model_name in (sub, base_sub)
+                        or f.key.startswith(f"{dev_type}.{sub}.")
+                        or (exact_path and (f.key == exact_path or f.key.startswith(f"{exact_path}.")))
+                    ):
+                        return f.model_id
+
+    dev_map = PWRCELL_DEVICE_MODEL_MAP.get(dev_type, {})
+    if sub in dev_map:
+        return dev_map[sub]
+    if base_sub in dev_map:
+        return dev_map[base_sub]
+
+    if catalog and hasattr(catalog, "get_model_by_name"):
+        m_def = catalog.get_model_by_name(sub) or catalog.get_model_by_name(base_sub)
+        if m_def:
+            return m_def.model_id
+
+    return None
 
 
 def resolve_paths_to_models(
@@ -208,42 +284,15 @@ def resolve_paths_to_models(
                         result.setdefault(d_t, set()).update(mids)
             continue
 
-        # Check numeric model ID (e.g. '404' or 'model_404')
-        if sub_group.isdigit():
-            result.setdefault(dev_type, set()).add(int(sub_group))
-            continue
-        if sub_group.startswith("model_") and sub_group[6:].isdigit():
-            result.setdefault(dev_type, set()).add(int(sub_group[6:]))
-            continue
-
-        # Check state_store for existing fields matching this path or sub_group
-        found_in_state = False
-        if state_store and hasattr(state_store, "devices"):
-            for dev in state_store.devices.values():
-                if dev.device_type == dev_type:
-                    for f in dev.fields.values():
-                        if f.model_id and (
-                            f.model_name == sub_group
-                            or f.key.startswith(f"{dev_type}.{sub_group}.")
-                            or f.key.startswith(p)
-                        ):
-                            result.setdefault(dev_type, set()).add(f.model_id)
-                            found_in_state = True
-        if found_in_state:
-            continue
-
-        # Check PWRCELL_DEVICE_MODEL_MAP
-        dev_map = PWRCELL_DEVICE_MODEL_MAP.get(dev_type, {})
-        if sub_group in dev_map:
-            result.setdefault(dev_type, set()).add(dev_map[sub_group])
-            continue
-
-        # Check Catalog
-        if catalog and hasattr(catalog, "get_model_by_name"):
-            m_def = catalog.get_model_by_name(sub_group)
-            if m_def:
-                result.setdefault(dev_type, set()).add(m_def.model_id)
-                continue
+        mid = resolve_subgroup_to_model_id(
+            dev_type,
+            sub_group,
+            catalog=catalog,
+            state_store=state_store,
+            exact_path=p,
+        )
+        if mid is not None:
+            result.setdefault(dev_type, set()).add(mid)
 
     return {d: sorted(list(mids)) for d, mids in result.items() if mids}
 
@@ -415,17 +464,23 @@ class TieredModbusPoller:
                     return False
 
             if model_id in tcp_dev.models:
-                model_inst = self.client.modbus.read_model_block(tcp_dev, model_id)
-                if model_inst:
-                    raw_pts = {p_name: p.value for p_name, p in model_inst.points.items()}
-                    comp_pts = {p_name: safe_point_cvalue(p) for p_name, p in model_inst.points.items()}
-                    self.client.state.update_from_modbus_points(
-                        serial_number,
-                        model_id,
-                        raw_values=raw_pts,
-                        computed_values=comp_pts,
-                    )
-                    return True
+                models_list = tcp_dev.models.get(model_id) or []
+                num_instances = len(models_list) if isinstance(models_list, (list, tuple)) else 1
+                any_read = False
+                for idx in range(max(1, num_instances)):
+                    model_inst = self.client.modbus.read_model_block(tcp_dev, model_id, index=idx)
+                    if model_inst:
+                        raw_pts = {p_name: p.value for p_name, p in model_inst.points.items()}
+                        comp_pts = {p_name: safe_point_cvalue(p) for p_name, p in model_inst.points.items()}
+                        self.client.state.update_from_modbus_points(
+                            serial_number,
+                            model_id,
+                            raw_values=raw_pts,
+                            computed_values=comp_pts,
+                            instance_index=idx,
+                        )
+                        any_read = True
+                return any_read
         except Exception as e:
             self.poll_counts["errors"] = self.poll_counts.get("errors", 0) + 1
             if self.poll_counts["errors"] % 20 == 1:

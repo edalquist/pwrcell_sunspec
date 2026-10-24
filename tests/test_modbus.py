@@ -50,12 +50,18 @@ class TestSerializedModbusWorker(unittest.TestCase):
         self.assertEqual(attempts, 3)
 
     def test_failure_propagates_exception(self):
+        attempts = 0
+
         def failing_task():
+            nonlocal attempts
+            attempts += 1
             raise ValueError("Permanent failure")
 
-        fut = self.worker.submit(failing_task, retries=2, backoff_sec=0.01)
+        fut = self.worker.submit(failing_task, retries=3, backoff_sec=0.01)
         with self.assertRaises(ValueError):
             fut.result(timeout=2.0)
+        # Deterministic errors (ValueError) must NOT be retried
+        self.assertEqual(attempts, 1)
 
     def test_worker_retries_under_one(self):
         attempts = 0
@@ -133,11 +139,12 @@ class TestModbusScanRange(unittest.TestCase):
 
         mgr.scan_device = MagicMock(side_effect=mock_scan_device)
 
-        discovered = mgr.scan_range(start_id=1, end_id=10, stop_on_duplicate_serial=True)
+        with self.assertLogs("pwrcell.modbus", level="WARNING") as cm:
+            discovered = mgr.scan_range(start_id=1, end_id=10, stop_on_duplicate_serial=True)
 
         # None, "None", and "" must NOT trigger duplicate stop.
         # Slave 4 is discovered.
-        # Slave 5 has duplicate "PWR-1001", which triggers stop.
+        # Slave 5 has duplicate "PWR-1001", which triggers warning and stop.
         # Discovered should contain slaves 1, 2, 3, 4.
         self.assertIn(1, discovered)
         self.assertIn(2, discovered)
@@ -145,6 +152,73 @@ class TestModbusScanRange(unittest.TestCase):
         self.assertIn(4, discovered)
         self.assertNotIn(5, discovered)
         self.assertEqual(len(discovered), 4)
+        self.assertTrue(any("duplicate serial" in line.lower() for line in cm.output))
+
+    def test_write_point_value_warns_on_readback_mismatch(self):
+        from unittest.mock import MagicMock
+        from pwrcell.modbus import SerializedModbusClient
+
+        mgr = SerializedModbusClient(host="localhost", port=5020)
+        mgr.worker.start()
+        try:
+            mgr._ensure_device_connected = MagicMock()
+            mock_point = MagicMock()
+            mock_model = MagicMock()
+            mock_model.points = {"SoCMax": mock_point}
+
+            # When model.read() is called, simulate device clamping cvalue to 80.0 instead of 95.0
+            def on_read():
+                mock_point.cvalue = 80.0
+
+            mock_model.read.side_effect = on_read
+            mock_dev = MagicMock()
+            mock_dev.slave_id = 9
+            mock_dev.models = {802: [mock_model]}
+
+            with self.assertLogs("pwrcell.modbus", level="WARNING") as cm:
+                readback = mgr.write_point_value(mock_dev, 802, "SoCMax", 95.0)
+            self.assertEqual(readback, 80.0)
+            self.assertTrue(any("mismatch" in line.lower() for line in cm.output))
+        finally:
+            mgr.close()
+
+    def test_scan_range_breaks_on_max_consecutive_misses(self):
+        from unittest.mock import MagicMock
+        from pwrcell.modbus import SerializedModbusClient
+
+        mgr = SerializedModbusClient(host="localhost", port=5020)
+        scanned_ids = []
+
+        def mock_scan_device(slave_id, full_model_read=False):
+            scanned_ids.append(slave_id)
+            return None
+
+        mgr.scan_device = MagicMock(side_effect=mock_scan_device)
+        discovered = mgr.scan_range(start_id=1, end_id=100, max_consecutive_misses=5)
+        self.assertEqual(discovered, {})
+        self.assertEqual(scanned_ids, [1, 2, 3, 4, 5])
+
+    def test_drain_stale_socket_bytes_reconnects_on_eof(self):
+        from unittest.mock import MagicMock
+        from pwrcell.modbus import SerializedModbusClient
+
+        mgr = SerializedModbusClient(host="localhost", port=5020)
+        fake_sock = MagicMock()
+        # recv returning b"" means peer closed the connection (EOF)
+        fake_sock.recv.return_value = b""
+
+        fake_client = MagicMock()
+        fake_client.ipport = 5020
+        fake_client.socket = fake_sock
+        fake_client.is_connected.return_value = True
+        mgr._shared_client = fake_client
+
+        dev = MagicMock()
+        dev.slave_id = 8
+        mgr._ensure_device_connected(dev)
+
+        fake_client.disconnect.assert_called_once()
+        fake_client.connect.assert_called_once()
 
 
 if __name__ == "__main__":

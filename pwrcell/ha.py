@@ -377,6 +377,13 @@ def generate_discovery_payload(
                 payload["unit_of_measurement"] = field.ha_unit or field.units
             if field.ha_device_class:
                 payload["device_class"] = field.ha_device_class
+            bounds = field.get_bounds() if hasattr(field, "get_bounds") else {}
+            if bounds.get("min_value") is not None:
+                payload["min"] = bounds["min_value"]
+            if bounds.get("max_value") is not None:
+                payload["max"] = bounds["max_value"]
+            if isinstance(bounds.get("step"), (int, float)):
+                payload["step"] = bounds["step"]
         else:
             if field.ha_device_class:
                 payload["device_class"] = field.ha_device_class
@@ -406,12 +413,17 @@ def generate_discovery_payload(
                 payload["unit_of_measurement"] = hint.unit_of_measurement or field.units
             if hint.device_class:
                 payload["device_class"] = hint.device_class
-            if hint.min_value is not None:
-                payload["min"] = hint.min_value
-            if hint.max_value is not None:
-                payload["max"] = hint.max_value
-            if hint.step is not None:
-                payload["step"] = hint.step
+            sf_val = device.get_scale_factor_value(field) if hasattr(device, "get_scale_factor_value") else None
+            bounds = field.get_bounds(sf_value=sf_val) if hasattr(field, "get_bounds") else {}
+            min_v = bounds.get("min_value") if bounds.get("min_value") is not None else hint.min_value
+            max_v = bounds.get("max_value") if bounds.get("max_value") is not None else hint.max_value
+            step_v = bounds.get("step") if isinstance(bounds.get("step"), (int, float)) else hint.step
+            if min_v is not None:
+                payload["min"] = min_v
+            if max_v is not None:
+                payload["max"] = max_v
+            if step_v is not None:
+                payload["step"] = step_v
             if hint.entity_category:
                 payload["entity_category"] = hint.entity_category
         else:
