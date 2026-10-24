@@ -1034,7 +1034,7 @@ class StateStore:
             try:
                 listener(field_obj)
             except Exception as e:
-                logger.debug("Error in state change listener: %s", e)
+                logger.warning("Error in state change listener: %s", e)
 
     def notify_compound_change(self, c_view: Any):
         """Notify registered compound listeners of a compound view change."""
@@ -1044,7 +1044,7 @@ class StateStore:
             try:
                 listener(c_view)
             except Exception as e:
-                logger.debug("Error in compound change listener: %s", e)
+                logger.warning("Error in compound change listener: %s", e)
 
     def set_field(
         self,
@@ -1278,14 +1278,14 @@ class StateStore:
             try:
                 listener(field_obj)
             except Exception as e:
-                logger.debug("Error in state change listener: %s", e)
+                logger.warning("Error in state change listener: %s", e)
 
         if affected_view and compound_listeners:
             for c_listener in compound_listeners:
                 try:
                     c_listener(affected_view)
                 except Exception as e:
-                    logger.debug("Error in compound change listener: %s", e)
+                    logger.warning("Error in compound change listener: %s", e)
 
         return field_obj
 

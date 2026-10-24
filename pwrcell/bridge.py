@@ -7,6 +7,7 @@ updates, and handles incoming commands for writable controls.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import os
@@ -98,6 +99,7 @@ class HomeAssistantBridge:
         self._payload_info_cache: Dict[str, Dict[str, Any]] = {}
         self._device_online_state: Dict[str, str] = {}
         self._mqttc: Optional[mqtt.Client] = None
+        self._cmd_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="PwrCellHACmd")
         self._lock = threading.RLock()
         self._running = False
 
@@ -181,11 +183,13 @@ class HomeAssistantBridge:
         """Disconnect from Home Assistant MQTT broker and publish offline status."""
         with self._lock:
             if not self._running:
+                self._cmd_executor.shutdown(wait=False)
                 return
             self._running = False
             mqttc = self._mqttc
             self._mqttc = None
 
+        self._cmd_executor.shutdown(wait=False)
         if mqttc:
             try:
                 # Publish graceful offline status
@@ -568,13 +572,12 @@ class HomeAssistantBridge:
             logger.warning("No registered field for command topic %s", topic)
             return
 
-        # Offload blocking Modbus write operation to worker thread to prevent freezing Paho's network loop
-        threading.Thread(
-            target=self._execute_command_async,
-            args=(target_field.key, payload_str),
-            daemon=True,
-            name=f"HACommand_{target_field.key}",
-        ).start()
+        # Offload blocking Modbus write operation to single-worker executor to order commands and avoid freezing Paho's network loop
+        try:
+            self._cmd_executor.submit(self._execute_command_async, target_field.key, payload_str)
+        except RuntimeError:
+            self._cmd_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="PwrCellHACmd")
+            self._cmd_executor.submit(self._execute_command_async, target_field.key, payload_str)
 
     def _execute_command_async(self, field_key: str, payload_str: str):
         try:

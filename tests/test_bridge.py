@@ -393,6 +393,52 @@ class TestHomeAssistantBridge(unittest.TestCase):
         republished_topics = [c[0][0] for c in mock_mqttc.publish.call_args_list]
         self.assertIn(config_topic, republished_topics)
 
+    def test_command_executor_and_listener_warning_logging(self):
+        """Incoming HA commands must be dispatched via bounded ThreadPoolExecutor (not per-message Thread), and listener errors must log at WARNING."""
+        from unittest.mock import patch
+
+        inv = self.client.state.get_inverter()
+        sn = inv.serial_number
+        self.bridge.selected_field_keys = [f"{sn}:inverter.live.system_mode"]
+        self.bridge.publish_discovery()
+        cmd_topic = f"pwrcell/{sn.lower()}/compound_system_mode/set"
+
+        # 1. Verify _cmd_executor exists (max_workers=1) and commands are submitted to it
+        self.assertIsNotNone(getattr(self.bridge, "_cmd_executor", None))
+        self.assertEqual(self.bridge._cmd_executor._max_workers, 1)
+        msg = MagicMock()
+        msg.topic = cmd_topic
+        msg.payload = b"SELF_SUPPLY"
+        msg.retain = False
+
+        with patch.object(self.bridge._cmd_executor, "submit", wraps=self.bridge._cmd_executor.submit) as mock_submit:
+            self.bridge._on_message(self.mock_mqttc, None, msg)
+            mock_submit.assert_called_once_with(self.bridge._execute_command_async, "inverter.compound.system_mode", "SELF_SUPPLY")
+
+        # Wait briefly for single-worker executor
+        import time
+        time.sleep(0.2)
+        c_view = self.client.state.get_compound_view("system_mode")
+        self.assertEqual(c_view.latest_value, "SELF_SUPPLY")
+
+        # 2. Verify failing state listener logs at WARNING instead of swallowing at DEBUG
+        def broken_listener(_field):
+            raise RuntimeError("listener boom")
+
+        self.client.state.subscribe(broken_listener)
+        try:
+            with self.assertLogs("pwrcell.state", level="WARNING") as cm:
+                self.client.state.set_field(
+                    device_sn=sn,
+                    name="A",
+                    sub_group="inverter",
+                    value=99.9,
+                    units="A",
+                )
+            self.assertTrue(any("listener boom" in line for line in cm.output))
+        finally:
+            self.client.state.unsubscribe(broken_listener)
+
 
 if __name__ == "__main__":
     unittest.main()
