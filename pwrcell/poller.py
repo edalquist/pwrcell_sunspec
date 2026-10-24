@@ -142,6 +142,50 @@ DEFAULT_SLOW_PATHS: List[str] = [
 ]
 
 
+def resolve_subgroup_to_model_id(
+    dev_type: str,
+    sub_group: str,
+    catalog: Optional[Any] = None,
+    state_store: Optional[Any] = None,
+    exact_path: Optional[str] = None,
+) -> Optional[int]:
+    """Resolve a single (device_type, sub_group) or exact field path to a SunSpec model ID."""
+    sub = sub_group.strip()
+    if not sub:
+        return None
+    if sub.isdigit():
+        return int(sub)
+    if sub.startswith("model_") and sub[6:].isdigit():
+        return int(sub[6:])
+
+    # Strip repeating instance suffix e.g. string_combiner_1 -> string_combiner
+    base_sub = sub.rsplit("_", 1)[0] if ("_" in sub and sub.rsplit("_", 1)[1].isdigit() and not sub.startswith("model_")) else sub
+
+    if state_store and hasattr(state_store, "devices"):
+        for dev in state_store.devices.values():
+            if dev.device_type == dev_type:
+                for f in dev.fields.values():
+                    if f.model_id and (
+                        f.model_name in (sub, base_sub)
+                        or f.key.startswith(f"{dev_type}.{sub}.")
+                        or (exact_path and (f.key == exact_path or f.key.startswith(f"{exact_path}.")))
+                    ):
+                        return f.model_id
+
+    dev_map = PWRCELL_DEVICE_MODEL_MAP.get(dev_type, {})
+    if sub in dev_map:
+        return dev_map[sub]
+    if base_sub in dev_map:
+        return dev_map[base_sub]
+
+    if catalog and hasattr(catalog, "get_model_by_name"):
+        m_def = catalog.get_model_by_name(sub) or catalog.get_model_by_name(base_sub)
+        if m_def:
+            return m_def.model_id
+
+    return None
+
+
 def resolve_paths_to_models(
     paths: List[str],
     catalog: Optional[Any] = None,
@@ -214,42 +258,15 @@ def resolve_paths_to_models(
                         result.setdefault(d_t, set()).update(mids)
             continue
 
-        # Check numeric model ID (e.g. '404' or 'model_404')
-        if sub_group.isdigit():
-            result.setdefault(dev_type, set()).add(int(sub_group))
-            continue
-        if sub_group.startswith("model_") and sub_group[6:].isdigit():
-            result.setdefault(dev_type, set()).add(int(sub_group[6:]))
-            continue
-
-        # Check state_store for existing fields matching this path or sub_group
-        found_in_state = False
-        if state_store and hasattr(state_store, "devices"):
-            for dev in state_store.devices.values():
-                if dev.device_type == dev_type:
-                    for f in dev.fields.values():
-                        if f.model_id and (
-                            f.model_name == sub_group
-                            or f.key.startswith(f"{dev_type}.{sub_group}.")
-                            or f.key.startswith(p)
-                        ):
-                            result.setdefault(dev_type, set()).add(f.model_id)
-                            found_in_state = True
-        if found_in_state:
-            continue
-
-        # Check PWRCELL_DEVICE_MODEL_MAP
-        dev_map = PWRCELL_DEVICE_MODEL_MAP.get(dev_type, {})
-        if sub_group in dev_map:
-            result.setdefault(dev_type, set()).add(dev_map[sub_group])
-            continue
-
-        # Check Catalog
-        if catalog and hasattr(catalog, "get_model_by_name"):
-            m_def = catalog.get_model_by_name(sub_group)
-            if m_def:
-                result.setdefault(dev_type, set()).add(m_def.model_id)
-                continue
+        mid = resolve_subgroup_to_model_id(
+            dev_type,
+            sub_group,
+            catalog=catalog,
+            state_store=state_store,
+            exact_path=p,
+        )
+        if mid is not None:
+            result.setdefault(dev_type, set()).add(mid)
 
     return {d: sorted(list(mids)) for d, mids in result.items() if mids}
 

@@ -1256,14 +1256,16 @@ def resolve_minimal_models_for_paths(
             if found_field_models:
                 solver_items[p] = found_field_models
             else:
-                from .poller import PWRCELL_DEVICE_MODEL_MAP
-                dev_map = PWRCELL_DEVICE_MODEL_MAP.get(d_type, {})
-                if sub in dev_map:
-                    fixed_models.add(dev_map[sub])
-                elif catalog and hasattr(catalog, "get_model_by_name"):
-                    m_info = catalog.get_model_by_name(sub)
-                    if m_info:
-                        fixed_models.add(m_info.model_id)
+                from .poller import resolve_subgroup_to_model_id
+                mid = resolve_subgroup_to_model_id(
+                    d_type,
+                    sub,
+                    catalog=catalog,
+                    state_store=state_store,
+                    exact_path=p,
+                )
+                if mid is not None:
+                    fixed_models.add(mid)
 
         # Run Set Cover solver for this device type
         opt = solve_minimal_model_set(solver_items, allow_mqtt=False)

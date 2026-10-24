@@ -372,6 +372,18 @@ class TestTieredModbusPoller(unittest.TestCase):
         self.assertEqual(dev.fields["pv_link.string_combiner.DCW"].value, 1200.0)
         self.assertEqual(dev.fields["pv_link.string_combiner_1.DCW"].value, 850.0)
 
+    def test_resolve_paths_to_models_exact_match_no_prefix_collision(self):
+        """Verify resolving 'battery.battery' does NOT match 'battery.battery_status' (64209) when only battery_status is in state."""
+        from pwrcell.poller import resolve_paths_to_models
+        from pwrcell.state import StateStore
+
+        empty_state = StateStore(catalog=self.client.catalog)
+        bat = empty_state.register_device("BAT_TEST", 9, "battery", "Battery")
+        empty_state.update_from_modbus_points("BAT_TEST", 64209, raw_values={"WhIn": 100})
+
+        resolved = resolve_paths_to_models(["battery.battery"], catalog=self.client.catalog, state_store=empty_state)
+        self.assertEqual(resolved.get("battery"), [802])
+
 
 if __name__ == "__main__":
     unittest.main()
