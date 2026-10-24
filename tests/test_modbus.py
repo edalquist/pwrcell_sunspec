@@ -50,12 +50,18 @@ class TestSerializedModbusWorker(unittest.TestCase):
         self.assertEqual(attempts, 3)
 
     def test_failure_propagates_exception(self):
+        attempts = 0
+
         def failing_task():
+            nonlocal attempts
+            attempts += 1
             raise ValueError("Permanent failure")
 
-        fut = self.worker.submit(failing_task, retries=2, backoff_sec=0.01)
+        fut = self.worker.submit(failing_task, retries=3, backoff_sec=0.01)
         with self.assertRaises(ValueError):
             fut.result(timeout=2.0)
+        # Deterministic errors (ValueError) must NOT be retried
+        self.assertEqual(attempts, 1)
 
     def test_worker_retries_under_one(self):
         attempts = 0
@@ -173,6 +179,22 @@ class TestModbusScanRange(unittest.TestCase):
             self.assertTrue(any("mismatch" in line.lower() for line in cm.output))
         finally:
             mgr.close()
+
+    def test_scan_range_breaks_on_max_consecutive_misses(self):
+        from unittest.mock import MagicMock
+        from pwrcell.modbus import SerializedModbusClient
+
+        mgr = SerializedModbusClient(host="localhost", port=5020)
+        scanned_ids = []
+
+        def mock_scan_device(slave_id, full_model_read=False):
+            scanned_ids.append(slave_id)
+            return None
+
+        mgr.scan_device = MagicMock(side_effect=mock_scan_device)
+        discovered = mgr.scan_range(start_id=1, end_id=100, max_consecutive_misses=5)
+        self.assertEqual(discovered, {})
+        self.assertEqual(scanned_ids, [1, 2, 3, 4, 5])
 
 
 if __name__ == "__main__":

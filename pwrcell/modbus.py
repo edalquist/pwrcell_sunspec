@@ -31,6 +31,27 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+def is_transport_error(exc: Exception) -> bool:
+    """Return True if exc represents a transient socket/connection/timeout transport error."""
+    if isinstance(exc, (socket.timeout, TimeoutError, ConnectionError, OSError)):
+        return True
+    msg = str(exc).lower()
+    for token in (
+        "timeout",
+        "timed out",
+        "connection",
+        "broken pipe",
+        "reset by peer",
+        "socket",
+        "eof",
+        "not connected",
+    ):
+        if token in msg:
+            return True
+    return False
+
+
+
 def configure_sunspec_model_paths(models_dir: Optional[Path | str] = None):
     """Configure pysunspec2 to include custom PWRcell SunSpec model definitions."""
     repo_root = Path(__file__).resolve().parent.parent
@@ -163,7 +184,7 @@ class SerializedModbusWorker:
             except Exception as exc:
                 last_exception = exc
                 err_msg = str(exc)
-                if attempt < attempts:
+                if attempt < attempts and is_transport_error(exc):
                     logger.info(
                         "Transient Modbus error on '%s' (attempt %d/%d, retrying): %s",
                         job.description,
@@ -181,6 +202,7 @@ class SerializedModbusWorker:
                         attempts,
                         err_msg,
                     )
+                    break
 
         if last_exception and not job.future.done():
             job.future.set_exception(last_exception)
@@ -193,7 +215,7 @@ class SerializedModbusClient:
         self,
         host: str = "127.0.0.1",
         port: int = 502,
-        timeout: float = 60.0,
+        timeout: float = 5.0,
         tunnel: Optional[Any] = None,
     ):
         self.host = host
@@ -280,8 +302,10 @@ class SerializedModbusClient:
             self._drain_stale_socket_bytes(shared)
 
     def _handle_socket_error(self, exc: Exception):
-        """Disconnect dead or desynchronized socket on any communication failure so next retry starts fresh."""
-        logger.debug("Modbus communication error encountered (%s); closing socket to reset stream", exc)
+        """Disconnect dead or desynchronized socket on transport failure so next retry starts fresh."""
+        if not is_transport_error(exc):
+            return
+        logger.debug("Modbus transport error encountered (%s); closing socket to reset stream", exc)
         if self._shared_client:
             try:
                 self._shared_client.disconnect()
@@ -338,17 +362,28 @@ class SerializedModbusClient:
         start_id: int = 1,
         end_id: int = 100,
         stop_on_duplicate_serial: bool = True,
+        max_consecutive_misses: int = 15,
     ) -> Dict[int, ss2_client.SunSpecModbusClientDeviceTCP]:
         """Scan a range of slave IDs sequentially, returning discovered devices."""
         discovered: Dict[int, ss2_client.SunSpecModbusClientDeviceTCP] = {}
         found_serials: Dict[str, List[int]] = {}
+        consecutive_misses = 0
 
         logger.info("Scanning Modbus slave IDs %d..%d on %s:%d", start_id, end_id, self.host, self.port)
 
         for slave_id in range(start_id, end_id + 1):
             dev = self.scan_device(slave_id, full_model_read=False)
             if not dev:
+                consecutive_misses += 1
+                if max_consecutive_misses > 0 and consecutive_misses >= max_consecutive_misses:
+                    logger.info(
+                        "Stopping scan after %d consecutive empty slave IDs (last tried: %d)",
+                        consecutive_misses,
+                        slave_id,
+                    )
+                    break
                 continue
+            consecutive_misses = 0
 
             # Read common model to get serial number and model name
             common_model = dev.models.get(1) or dev.models.get("common")
