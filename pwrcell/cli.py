@@ -139,7 +139,7 @@ def cmd_status(args, config: AppConfig):
 
 
 def cmd_compare(args, config: AppConfig):
-    from .correlator import evaluate_comparisons, format_comparison_table, log_unrecognized_proto_fields
+    from .tools.correlator import evaluate_comparisons, format_comparison_table, log_unrecognized_proto_fields
     print(f"Connecting to PWRcell (mock={args.mock}) for telemetry comparison...")
     with create_client(config=config, mock=args.mock) as client:
         start_wait = time.time()
@@ -178,7 +178,7 @@ def cmd_export_default_config(args):
 
 
 def cmd_clean_discovery(args, config: AppConfig):
-    from .clean_discovery import purge_pwrcell_discovery_topics
+    from .tools.clean_discovery import purge_pwrcell_discovery_topics
     from .config import MqttConfig
     mqtt_cfg = config.mqtt or MqttConfig()
     host = args.host or mqtt_cfg.host or "127.0.0.1"
