@@ -244,14 +244,22 @@ class TestTieredModbusPoller(unittest.TestCase):
         self.assertEqual(safe_point_cvalue(p), 381.6)
 
     def test_safe_point_cvalue_catches_overflow_error(self):
-        """Verify safe_point_cvalue catches OverflowError: math range error from pysunspec2."""
+        """Verify safe_point_cvalue catches OverflowError/ValueError/TypeError/ZeroDivisionError and logs at debug, while propagating unexpected exceptions."""
         from pwrcell.poller import safe_point_cvalue
 
         p = MagicMock()
         p.sf_required = False
+        p.pdef = {"name": "V"}
         type(p).cvalue = unittest.mock.PropertyMock(side_effect=OverflowError("math range error"))
 
-        self.assertIsNone(safe_point_cvalue(p))
+        with self.assertLogs("pwrcell.poller", level="DEBUG") as cm:
+            self.assertIsNone(safe_point_cvalue(p))
+        self.assertTrue(any("math range error" in line for line in cm.output))
+
+        # Unexpected exception (e.g. RuntimeError) must NOT be silently swallowed
+        type(p).cvalue = unittest.mock.PropertyMock(side_effect=RuntimeError("unexpected bug"))
+        with self.assertRaises(RuntimeError):
+            safe_point_cvalue(p)
 
     def test_model_64207_sentinel_scale_factors_in_state(self):
         """Verify model 64207 points with cvalue from safe_point_cvalue (or raw fallback without home-grown scaling) are handled safely in StateStore."""

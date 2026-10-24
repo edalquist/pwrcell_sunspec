@@ -61,7 +61,8 @@ def safe_point_cvalue(point: Any) -> Any:
             if math.isnan(val) or math.isinf(val) or abs(val) > 1e12:
                 return None
         return val
-    except (OverflowError, ValueError, Exception):
+    except (OverflowError, ValueError, TypeError, ZeroDivisionError) as e:
+        logger.debug("Error computing cvalue for point %s: %s", getattr(point, "pdef", {}).get("name", point), e)
         return None
 
 
