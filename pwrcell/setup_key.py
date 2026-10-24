@@ -55,9 +55,10 @@ def setup_ssh_key_from_options(
 
     target = Path(target_key_path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with open(target, "w", encoding="utf-8") as f:
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(normalized)
-    os.chmod(target, 0o600)
     print(f"[INFO] Successfully normalized and saved SSH private key to {target} ({len(normalized)} bytes)")
     return str(target)
 

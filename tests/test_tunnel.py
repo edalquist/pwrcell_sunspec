@@ -138,6 +138,35 @@ class TestPwrCellTunnel(unittest.TestCase):
         self.assertEqual(client.port, 5021)
         client.close()
 
+    def test_setup_ssh_key_creates_file_with_0600_mode(self):
+        """SSH private key must be opened with 0600 permissions before key bytes are written."""
+        import json
+        import os
+        import stat
+        from pwrcell.setup_key import setup_ssh_key_from_options
+
+        with tempfile.TemporaryDirectory() as tmp:
+            opts_path = Path(tmp) / "options.json"
+            target_path = Path(tmp) / "ssh" / "id_rsa_pwrcell"
+            opts_path.write_text(
+                json.dumps({"ssh_key": "-----BEGIN OPENSSH PRIVATE KEY-----\\nAAAA\\n-----END OPENSSH PRIVATE KEY-----"}),
+                encoding="utf-8",
+            )
+            orig_os_open = os.open
+            opened_modes = []
+
+            def tracking_os_open(path, flags, mode=0o777, *args, **kwargs):
+                if str(path) == str(target_path):
+                    opened_modes.append(mode)
+                return orig_os_open(path, flags, mode, *args, **kwargs)
+
+            with patch("pwrcell.setup_key.os.open", side_effect=tracking_os_open):
+                saved = setup_ssh_key_from_options(str(opts_path), str(target_path))
+
+            self.assertEqual(saved, str(target_path))
+            self.assertEqual(opened_modes, [0o600])
+            self.assertEqual(stat.S_IMODE(target_path.stat().st_mode), 0o600)
+
 
 if __name__ == "__main__":
     unittest.main()
