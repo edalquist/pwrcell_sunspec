@@ -182,6 +182,97 @@ class TestCorrelator(unittest.TestCase):
         matches = find_heuristic_matches(self.state, target_value=978.0, tolerance_pct=1.0)
         self.assertTrue(any("sum of 5" in m["device"].lower() for m in matches))
 
+    def test_evaluate_grouped_registers_discrepancy_and_outliers(self):
+        """Test comparing all grouped registers in a concept, detecting discrepancies and outliers."""
+        from pwrcell.state import FieldSource
+
+        # 1. Matching sources: AC frequency in Model 102 and Model 64208 both 60.0 Hz
+        self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="Hz",
+            label="Frequency (M102)",
+            value=60.0,
+            raw_value=6000,
+            units="Hz",
+            model_id=102,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inverter",
+        )
+        self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="Hz",
+            label="Frequency (M64208)",
+            value=60.0,
+            raw_value=6000,
+            units="Hz",
+            model_id=64208,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inverter_status",
+        )
+
+        results = evaluate_comparisons(self.state)
+        hz_row = next((r for r in results if r.concept_key == "ac_frequency" and r.device_sn == self.inv.serial_number), None)
+        self.assertIsNotNone(hz_row)
+        self.assertEqual(hz_row.status, "EXACT")
+        self.assertFalse(hz_row.is_discrepant)
+        self.assertEqual(hz_row.source_count, 2)
+        self.assertEqual(len(hz_row.sources), 2)
+        self.assertFalse(any(s["is_divergent"] for s in hz_row.sources))
+
+        # 2. Divergent sources: introduce a discrepancy where M64208 Hz drops to 45.0 Hz
+        self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="Hz",
+            label="Frequency (M64208)",
+            value=45.0,
+            raw_value=4500,
+            units="Hz",
+            model_id=64208,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inverter_status",
+        )
+
+        results_div = evaluate_comparisons(self.state)
+        hz_div = next((r for r in results_div if r.concept_key == "ac_frequency" and r.device_sn == self.inv.serial_number), None)
+        self.assertIsNotNone(hz_div)
+        self.assertEqual(hz_div.status, "DIVERGENT")
+        self.assertTrue(hz_div.is_discrepant)
+        self.assertEqual(hz_div.delta, 15.0)
+        self.assertIn("15.00 Hz", hz_div.discrepancy_reason)
+        # Verify outliers tagged
+        self.assertTrue(any(s["is_divergent"] for s in hz_div.sources))
+
+        # 3. Unit mismatch: one register in grid_power has W and another has Wh
+        self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="CTPow",
+            label="CT Power (M64208)",
+            value=100.0,
+            raw_value=100,
+            units="W",
+            model_id=64208,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inverter_status",
+        )
+        self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="CTPow",
+            label="CT Power (M64202 Wh)",
+            value=100.0,
+            raw_value=100,
+            units="Wh",
+            model_id=64202,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="REbus_arb",
+        )
+
+        results_unit = evaluate_comparisons(self.state)
+        unit_row = next((r for r in results_unit if r.concept_key == "grid_power" and r.device_sn == self.inv.serial_number), None)
+        self.assertIsNotNone(unit_row)
+        self.assertEqual(unit_row.status, "UNIT_MISMATCH")
+        self.assertTrue(unit_row.is_discrepant)
+        self.assertIn("Conflicting units", unit_row.discrepancy_reason)
+
 
 if __name__ == "__main__":
     unittest.main()

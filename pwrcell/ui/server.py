@@ -352,8 +352,24 @@ def create_app(client: PwrcellClient) -> Flask:
         results = evaluate_comparisons(client.state)
         unrecognized = client.get_unrecognized_proto_fields()
         log_unrecognized_proto_fields(unrecognized)
+
+        discrepant_count = sum(1 for r in results if getattr(r, "is_discrepant", False) or r.status in ("DIVERGENT", "UNIT_MISMATCH", "POLARITY_MISMATCH", "SCALE_MISMATCH"))
+        exact_count = sum(1 for r in results if r.status == "EXACT")
+        close_count = sum(1 for r in results if r.status == "CLOSE")
+        multi_count = sum(1 for r in results if (getattr(r, "source_count", 0) > 1 or len(getattr(r, "sources", [])) > 1))
+        single_count = sum(1 for r in results if r.status == "SINGLE_SOURCE")
+        stats = {
+            "total_groups": len(results),
+            "multi_source_groups": multi_count,
+            "discrepancies_count": discrepant_count,
+            "exact_match_count": exact_count,
+            "close_match_count": close_count,
+            "single_source_count": single_count,
+        }
+
         return jsonify({
             "comparisons": [r.to_dict() for r in results],
+            "stats": stats,
             "unrecognized_proto_fields": unrecognized,
         })
 

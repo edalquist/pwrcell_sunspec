@@ -14,10 +14,12 @@ import math
 import os
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from .mapping import MappingRegistry, ModbusCandidateDef, TelemetryMappingDef as ConfigMappingDef, apply_transform
+from .optimizer import group_device_fields, clean_unit
 from .state import FieldSource, StateField, StateStore
 
 logger = logging.getLogger(__name__)
@@ -93,7 +95,7 @@ KNOWN_TELEMETRY_MAPPINGS: List[TelemetryMappingDef] = _load_correlator_mappings(
 
 @dataclass
 class ComparisonResultRow:
-    """Evaluated side-by-side comparison between MQTT and a candidate Modbus register."""
+    """Evaluated side-by-side comparison between MQTT and Modbus registers, or across all grouped registers."""
     mapping_id: str
     label: str
     unit: str
@@ -103,16 +105,33 @@ class ComparisonResultRow:
     modbus_label: str
     modbus_value: Any
     confidence: str
-    status: str  # 'EXACT', 'CLOSE', 'DIVERGENT', 'MQTT_MISSING', 'MODBUS_MISSING'
+    status: str  # 'EXACT', 'CLOSE', 'DIVERGENT', 'UNIT_MISMATCH', 'POLARITY_MISMATCH', 'SCALE_MISMATCH', 'MQTT_MISSING', 'MODBUS_MISSING', 'SINGLE_SOURCE', 'PARTIALLY_POLLED', 'NO_DATA'
     match_pct: Optional[float]
     delta: Optional[float]
     notes: str
+    # Multi-register grouped concept fields:
+    id: str = ""
+    concept_key: str = ""
+    device_sn: str = ""
+    device_type: str = ""
+    device_name: str = ""
+    status_label: str = ""
+    is_discrepant: bool = False
+    discrepancy_reason: str = ""
+    source_count: int = 0
+    polled_count: int = 0
+    sources: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
+            "id": self.id or self.mapping_id,
             "mapping_id": self.mapping_id,
+            "concept_key": self.concept_key or self.mapping_id,
             "label": self.label,
             "unit": self.unit,
+            "device_sn": self.device_sn,
+            "device_type": self.device_type,
+            "device_name": self.device_name,
             "mqtt_key": self.mqtt_key,
             "mqtt_value": self.mqtt_value,
             "modbus_key": self.modbus_key,
@@ -120,9 +139,15 @@ class ComparisonResultRow:
             "modbus_value": self.modbus_value,
             "confidence": self.confidence,
             "status": self.status,
+            "status_label": self.status_label or self.status,
+            "is_discrepant": self.is_discrepant,
             "match_pct": round(self.match_pct, 1) if self.match_pct is not None else None,
             "delta": round(self.delta, 2) if self.delta is not None else None,
             "notes": self.notes,
+            "discrepancy_reason": self.discrepancy_reason or self.notes,
+            "source_count": self.source_count or len(self.sources),
+            "polled_count": self.polled_count,
+            "sources": self.sources,
         }
 
 
@@ -130,16 +155,16 @@ def evaluate_comparisons(
     state_store: StateStore,
     mappings: Optional[List[TelemetryMappingDef]] = None,
 ) -> List[ComparisonResultRow]:
-    """Evaluate all known telemetry mappings against current live state in StateStore."""
+    """Evaluate all grouped registers across all devices and telemetry mappings against current live state."""
     results: List[ComparisonResultRow] = []
+
+    # 1. Global / Cross-Device Telemetry Mappings (MQTT Push vs Modbus Registers)
     active_mappings = mappings if mappings is not None else _load_correlator_mappings()
+    telemetry_ids = {m.mapping_id for m in active_mappings}
 
     for mapping in active_mappings:
-        # 1. Fetch MQTT Field
         mqtt_field = _find_field(state_store, mapping.mqtt_key)
         mqtt_val = mqtt_field.value if mqtt_field else None
-
-        # 2. Evaluate Primary Candidate
         cand = mapping.primary_candidate
         mb_fields = _find_fields(state_store, cand.field_key)
 
@@ -148,10 +173,10 @@ def evaluate_comparisons(
             candidate=cand,
             mqtt_val=mqtt_val,
             mb_fields=mb_fields,
+            state_store=state_store,
         )
         results.append(row)
 
-        # Also evaluate alternatives if primary is missing or divergent
         for alt in mapping.alternative_candidates:
             alt_mb_fields = _find_fields(state_store, alt.field_key)
             if alt_mb_fields and (not mb_fields or row.status in ("DIVERGENT", "MODBUS_MISSING")):
@@ -160,10 +185,392 @@ def evaluate_comparisons(
                     candidate=alt,
                     mqtt_val=mqtt_val,
                     mb_fields=alt_mb_fields,
+                    state_store=state_store,
                 )
                 results.append(alt_row)
 
+    # 2. Evaluate all Unified Field Groups across all registered devices
+    if state_store.devices:
+        for dev in state_store.devices.values():
+            groups = group_device_fields(dev)
+            for g in groups:
+                # If this concept is already a top-level telemetry mapping, give the device-level
+                # row a qualified mapping_id so it doesn't overwrite the global mapping in legacy maps
+                is_telemetry = g.concept_key in telemetry_ids
+                mapping_id = f"{dev.serial_number}_{g.concept_key}" if is_telemetry else g.concept_key
+
+                row = _build_group_comparison_row(dev, g, mapping_id=mapping_id)
+                results.append(row)
+
+    # Sort results with discrepancies first, then multi-source, then matching
+    status_priority = {
+        "DIVERGENT": 1,
+        "UNIT_MISMATCH": 1,
+        "POLARITY_MISMATCH": 1,
+        "SCALE_MISMATCH": 1,
+        "CLOSE": 2,
+        "EXACT": 3,
+        "PARTIALLY_POLLED": 4,
+        "SINGLE_SOURCE": 5,
+        "NO_DATA": 6,
+    }
+    results.sort(key=lambda r: (
+        status_priority.get(r.status, 99),
+        0 if r.is_discrepant else 1,
+        -(r.delta if r.delta is not None else -1),
+        (r.match_pct if r.match_pct is not None else 999),
+        r.device_type,
+        r.label.lower(),
+    ))
+
     return results
+
+
+def _build_group_comparison_row(dev, g, mapping_id: Optional[str] = None) -> ComparisonResultRow:
+    """Build a rich ComparisonResultRow evaluating all grouped sources in a UnifiedFieldGroup."""
+    sources_dicts: List[Dict[str, Any]] = []
+    polled_sources: List[Dict[str, Any]] = []
+
+    for s in g.sources:
+        s_dict = {
+            "source_type": s.source_type,
+            "source_id": s.source_id,
+            "field_key": s.field_key,
+            "name": s.name,
+            "label": s.label,
+            "model_id": s.model_id,
+            "model_name": s.model_name,
+            "value": s.value,
+            "raw_value": s.raw_value,
+            "units": s.units,
+            "transform": s.transform,
+            "is_optimal": s.is_optimal,
+            "is_pinned": s.is_pinned,
+            "is_divergent": False,
+        }
+        sources_dicts.append(s_dict)
+        if s.value is not None:
+            polled_sources.append(s_dict)
+
+    # Unit mismatch check across non-empty clean units
+    clean_units_map: Dict[str, str] = {}
+    for s in polled_sources:
+        u = s.get("units")
+        if u and str(u).strip():
+            cu = clean_unit(u)
+            if cu and cu not in clean_units_map:
+                clean_units_map[cu] = str(u).strip()
+
+    unit_mismatch = len(clean_units_map) > 1
+
+    # Check numeric agreement
+    all_numeric = bool(polled_sources) and all(
+        isinstance(s["value"], (int, float)) and not isinstance(s["value"], bool)
+        for s in polled_sources
+    )
+
+    delta: Optional[float] = None
+    match_pct: Optional[float] = None
+    is_discrepant = False
+
+    if len(polled_sources) >= 2:
+        if unit_mismatch:
+            status = "UNIT_MISMATCH"
+            status_label = "Unit Mismatch ⚠️"
+            is_discrepant = True
+            match_pct = 0.0
+            discrepancy_reason = f"Conflicting units across sources: {', '.join(sorted(clean_units_map.values()))}"
+        elif all_numeric:
+            vals = [float(s["value"]) for s in polled_sources]
+            min_val = min(vals)
+            max_val = max(vals)
+            delta = max_val - min_val
+            denom = max(max(abs(v) for v in vals), 1.0)
+            pct_diff = (delta / denom) * 100.0
+            match_pct = max(0.0, min(100.0, 100.0 - pct_diff))
+            mean_val = sum(vals) / len(vals)
+
+            # Mark outlier/divergent sources
+            if delta > 0.5 and pct_diff > 5.0:
+                for s in polled_sources:
+                    if abs(float(s["value"]) - mean_val) > max(0.05 * denom, 0.5):
+                        s["is_divergent"] = True
+
+            if min_val < -0.5 and max_val > 0.5:
+                status = "POLARITY_MISMATCH"
+                status_label = "Polarity Divergence ✗"
+                is_discrepant = True
+                discrepancy_reason = f"Opposite polarity: min={min_val:.1f}, max={max_val:.1f} (possible missing/inverted transform)"
+            elif abs(min_val) > 0.01 and 9.0 <= abs(max_val / min_val) <= 1100.0 and delta > 1.0:
+                ratio = abs(max_val / min_val)
+                status = "SCALE_MISMATCH"
+                status_label = "Scale Mismatch ⚠️"
+                is_discrepant = True
+                discrepancy_reason = f"Values differ by scale factor of ~{round(ratio):.0f}x ({min_val:.1f} vs {max_val:.1f})"
+            elif pct_diff > 5.0 and delta > 0.5:
+                status = "DIVERGENT"
+                status_label = "Divergent ✗"
+                is_discrepant = True
+                discrepancy_reason = f"Values differ by {delta:.2f} {g.units or ''} ({pct_diff:.1f}% difference)"
+            elif pct_diff <= 5.0 and delta > 0.05:
+                status = "CLOSE"
+                status_label = "Close (~)"
+                is_discrepant = False
+                discrepancy_reason = f"Values agree within {pct_diff:.1f}% (Δ {delta:.2f})"
+            else:
+                status = "EXACT"
+                status_label = "Exact Match ✓"
+                is_discrepant = False
+                match_pct = 100.0
+                delta = 0.0
+                discrepancy_reason = "All sources agree exactly"
+        else:
+            str_vals = [str(s["value"]).strip().upper() for s in polled_sources]
+            if len(set(str_vals)) == 1:
+                status = "EXACT"
+                status_label = "Exact Match ✓"
+                is_discrepant = False
+                match_pct = 100.0
+                delta = 0.0
+                discrepancy_reason = "All state / enum values agree"
+            else:
+                status = "DIVERGENT"
+                status_label = "Divergent ✗"
+                is_discrepant = True
+                match_pct = 0.0
+                delta = None
+                discrepancy_reason = f"Conflicting states: {', '.join(sorted(set(str_vals)))}"
+                c = Counter(str_vals)
+                common_val, _ = c.most_common(1)[0]
+                for s in polled_sources:
+                    if str(s["value"]).strip().upper() != common_val:
+                        s["is_divergent"] = True
+    elif len(polled_sources) == 1:
+        if len(sources_dicts) == 1:
+            status = "SINGLE_SOURCE"
+            status_label = "Single Source"
+            is_discrepant = False
+            match_pct = 100.0
+            delta = 0.0
+            discrepancy_reason = "Only one source available in this group"
+        else:
+            status = "PARTIALLY_POLLED"
+            status_label = "Partially Polled"
+            is_discrepant = False
+            match_pct = None
+            delta = None
+            discrepancy_reason = f"1 of {len(sources_dicts)} sources has data; others unpolled"
+    else:
+        status = "NO_DATA"
+        status_label = "No Data"
+        is_discrepant = False
+        match_pct = None
+        delta = None
+        discrepancy_reason = "No polled values for any source"
+
+    mqtt_src = next((s for s in sources_dicts if s["source_type"] == "MQTT"), None)
+    mb_src = next((s for s in sources_dicts if s["source_type"] == "SUNSPEC"), None)
+
+    dev_label = f"{dev.model_name or dev.device_type} ({dev.serial_number[-4:] if len(dev.serial_number) >= 4 else dev.serial_number})"
+
+    return ComparisonResultRow(
+        id=f"{dev.serial_number}:{g.concept_key}",
+        mapping_id=mapping_id or g.concept_key,
+        concept_key=g.concept_key,
+        label=g.label,
+        unit=g.units or "",
+        device_sn=dev.serial_number,
+        device_type=dev.device_type,
+        device_name=dev_label,
+        mqtt_key=mqtt_src["field_key"] if mqtt_src else "",
+        mqtt_value=mqtt_src["value"] if mqtt_src else None,
+        modbus_key=mb_src["field_key"] if mb_src else "",
+        modbus_label=mb_src["label"] if mb_src else "",
+        modbus_value=mb_src["value"] if mb_src else None,
+        confidence="HIGH" if status in ("EXACT", "CLOSE") else "CANDIDATE",
+        status=status,
+        status_label=status_label,
+        is_discrepant=is_discrepant,
+        match_pct=match_pct,
+        delta=delta,
+        notes=discrepancy_reason,
+        discrepancy_reason=discrepancy_reason,
+        source_count=len(sources_dicts),
+        polled_count=len(polled_sources),
+        sources=sources_dicts,
+    )
+    """Build a rich ComparisonResultRow evaluating all grouped sources in a UnifiedFieldGroup."""
+    sources_dicts: List[Dict[str, Any]] = []
+    polled_sources: List[Dict[str, Any]] = []
+
+    for s in g.sources:
+        s_dict = {
+            "source_type": s.source_type,
+            "source_id": s.source_id,
+            "field_key": s.field_key,
+            "name": s.name,
+            "label": s.label,
+            "model_id": s.model_id,
+            "model_name": s.model_name,
+            "value": s.value,
+            "raw_value": s.raw_value,
+            "units": s.units,
+            "transform": s.transform,
+            "is_optimal": s.is_optimal,
+            "is_pinned": s.is_pinned,
+            "is_divergent": False,
+        }
+        sources_dicts.append(s_dict)
+        if s.value is not None:
+            polled_sources.append(s_dict)
+
+    # Unit mismatch check across non-empty clean units
+    clean_units_map: Dict[str, str] = {}
+    for s in polled_sources:
+        u = s.get("units")
+        if u and str(u).strip():
+            cu = clean_unit(u)
+            if cu and cu not in clean_units_map:
+                clean_units_map[cu] = str(u).strip()
+
+    unit_mismatch = len(clean_units_map) > 1
+
+    # Check numeric agreement
+    all_numeric = bool(polled_sources) and all(
+        isinstance(s["value"], (int, float)) and not isinstance(s["value"], bool)
+        for s in polled_sources
+    )
+
+    delta: Optional[float] = None
+    match_pct: Optional[float] = None
+    is_discrepant = False
+
+    if len(polled_sources) >= 2:
+        if unit_mismatch:
+            status = "UNIT_MISMATCH"
+            status_label = "Unit Mismatch ⚠️"
+            is_discrepant = True
+            match_pct = 0.0
+            discrepancy_reason = f"Conflicting units across sources: {', '.join(sorted(clean_units_map.values()))}"
+        elif all_numeric:
+            vals = [float(s["value"]) for s in polled_sources]
+            min_val = min(vals)
+            max_val = max(vals)
+            delta = max_val - min_val
+            denom = max(max(abs(v) for v in vals), 1.0)
+            pct_diff = (delta / denom) * 100.0
+            match_pct = max(0.0, min(100.0, 100.0 - pct_diff))
+            mean_val = sum(vals) / len(vals)
+
+            # Mark outlier/divergent sources
+            if delta > 0.5 and pct_diff > 5.0:
+                for s in polled_sources:
+                    if abs(float(s["value"]) - mean_val) > max(0.05 * denom, 0.5):
+                        s["is_divergent"] = True
+
+            if min_val < -0.5 and max_val > 0.5:
+                status = "POLARITY_MISMATCH"
+                status_label = "Polarity Divergence ✗"
+                is_discrepant = True
+                discrepancy_reason = f"Opposite polarity: min={min_val:.1f}, max={max_val:.1f} (possible missing/inverted transform)"
+            elif abs(min_val) > 0.01 and 9.0 <= abs(max_val / min_val) <= 1100.0 and delta > 1.0:
+                ratio = abs(max_val / min_val)
+                status = "SCALE_MISMATCH"
+                status_label = "Scale Mismatch ⚠️"
+                is_discrepant = True
+                discrepancy_reason = f"Values differ by scale factor of ~{round(ratio):.0f}x ({min_val:.1f} vs {max_val:.1f})"
+            elif pct_diff > 5.0 and delta > 0.5:
+                status = "DIVERGENT"
+                status_label = "Divergent ✗"
+                is_discrepant = True
+                discrepancy_reason = f"Values differ by {delta:.2f} {g.units or ''} ({pct_diff:.1f}% difference)"
+            elif pct_diff <= 5.0 and delta > 0.05:
+                status = "CLOSE"
+                status_label = "Close (~)"
+                is_discrepant = False
+                discrepancy_reason = f"Values agree within {pct_diff:.1f}% (Δ {delta:.2f})"
+            else:
+                status = "EXACT"
+                status_label = "Exact Match ✓"
+                is_discrepant = False
+                match_pct = 100.0
+                delta = 0.0
+                discrepancy_reason = "All sources agree exactly"
+        else:
+            str_vals = [str(s["value"]).strip().upper() for s in polled_sources]
+            if len(set(str_vals)) == 1:
+                status = "EXACT"
+                status_label = "Exact Match ✓"
+                is_discrepant = False
+                match_pct = 100.0
+                delta = 0.0
+                discrepancy_reason = "All state / enum values agree"
+            else:
+                status = "DIVERGENT"
+                status_label = "Divergent ✗"
+                is_discrepant = True
+                match_pct = 0.0
+                delta = None
+                discrepancy_reason = f"Conflicting states: {', '.join(sorted(set(str_vals)))}"
+                c = Counter(str_vals)
+                common_val, _ = c.most_common(1)[0]
+                for s in polled_sources:
+                    if str(s["value"]).strip().upper() != common_val:
+                        s["is_divergent"] = True
+    elif len(polled_sources) == 1:
+        if len(sources_dicts) == 1:
+            status = "SINGLE_SOURCE"
+            status_label = "Single Source"
+            is_discrepant = False
+            match_pct = 100.0
+            delta = 0.0
+            discrepancy_reason = "Only one source available in this group"
+        else:
+            status = "PARTIALLY_POLLED"
+            status_label = "Partially Polled"
+            is_discrepant = False
+            match_pct = None
+            delta = None
+            discrepancy_reason = f"1 of {len(sources_dicts)} sources has data; others unpolled"
+    else:
+        status = "NO_DATA"
+        status_label = "No Data"
+        is_discrepant = False
+        match_pct = None
+        delta = None
+        discrepancy_reason = "No polled values for any source"
+
+    mqtt_src = next((s for s in sources_dicts if s["source_type"] == "MQTT"), None)
+    mb_src = next((s for s in sources_dicts if s["source_type"] == "SUNSPEC"), None)
+
+    dev_label = f"{dev.model_name or dev.device_type} ({dev.serial_number[-4:] if len(dev.serial_number) >= 4 else dev.serial_number})"
+
+    return ComparisonResultRow(
+        id=f"{dev.serial_number}:{g.concept_key}",
+        mapping_id=g.concept_key,
+        concept_key=g.concept_key,
+        label=g.label,
+        unit=g.units or "",
+        device_sn=dev.serial_number,
+        device_type=dev.device_type,
+        device_name=dev_label,
+        mqtt_key=mqtt_src["field_key"] if mqtt_src else "",
+        mqtt_value=mqtt_src["value"] if mqtt_src else None,
+        modbus_key=mb_src["field_key"] if mb_src else "",
+        modbus_label=mb_src["label"] if mb_src else "",
+        modbus_value=mb_src["value"] if mb_src else None,
+        confidence="HIGH" if status in ("EXACT", "CLOSE") else "CANDIDATE",
+        status=status,
+        status_label=status_label,
+        is_discrepant=is_discrepant,
+        match_pct=match_pct,
+        delta=delta,
+        notes=discrepancy_reason,
+        discrepancy_reason=discrepancy_reason,
+        source_count=len(sources_dicts),
+        polled_count=len(polled_sources),
+        sources=sources_dicts,
+    )
 
 
 def _build_comparison_row(
@@ -172,6 +579,7 @@ def _build_comparison_row(
     mqtt_val: Any,
     mb_field: Optional[StateField] = None,
     mb_fields: Optional[List[StateField]] = None,
+    state_store: Optional[StateStore] = None,
 ) -> ComparisonResultRow:
     """Build a comparison row and compute delta and match percentage."""
     if mb_fields is None:
@@ -195,6 +603,8 @@ def _build_comparison_row(
     else:
         has_mb_val = (mb_field is not None and mb_field.value is not None)
 
+    dev_type = mapping.mqtt_key.split(".")[0] if "." in mapping.mqtt_key else "system"
+
     if mqtt_val is None:
         mb_val_display = None
         if has_mb_val:
@@ -204,9 +614,14 @@ def _build_comparison_row(
             else:
                 mb_val_display = mb_field.value
         return ComparisonResultRow(
+            id=f"telemetry:{mapping.mapping_id}",
             mapping_id=mapping.mapping_id,
+            concept_key=mapping.mapping_id,
             label=mapping.label,
             unit=mapping.unit,
+            device_sn="",
+            device_type=dev_type,
+            device_name=f"{dev_type.capitalize()} Telemetry",
             mqtt_key=mapping.mqtt_key,
             mqtt_value=None,
             modbus_key=candidate.field_key,
@@ -214,16 +629,27 @@ def _build_comparison_row(
             modbus_value=mb_val_display,
             confidence=candidate.confidence,
             status="MQTT_MISSING",
+            status_label="MQTT Waiting",
+            is_discrepant=False,
             match_pct=None,
             delta=None,
             notes=notes,
+            discrepancy_reason="Waiting for MQTT push telemetry",
+            source_count=1 if has_mb_val else 0,
+            polled_count=1 if has_mb_val else 0,
+            sources=[],
         )
 
     if not has_mb_val:
         return ComparisonResultRow(
+            id=f"telemetry:{mapping.mapping_id}",
             mapping_id=mapping.mapping_id,
+            concept_key=mapping.mapping_id,
             label=mapping.label,
             unit=mapping.unit,
+            device_sn="",
+            device_type=dev_type,
+            device_name=f"{dev_type.capitalize()} Telemetry",
             mqtt_key=mapping.mqtt_key,
             mqtt_value=mqtt_val,
             modbus_key=candidate.field_key,
@@ -231,9 +657,32 @@ def _build_comparison_row(
             modbus_value=None,
             confidence=candidate.confidence,
             status="MODBUS_MISSING",
+            status_label="Modbus Not Polled",
+            is_discrepant=False,
             match_pct=None,
             delta=None,
             notes=notes,
+            discrepancy_reason="Modbus register not polled yet",
+            source_count=1,
+            polled_count=1,
+            sources=[
+                {
+                    "source_type": "MQTT",
+                    "source_id": "MQTT",
+                    "field_key": mapping.mqtt_key,
+                    "name": mapping.mqtt_key.split(".")[-1],
+                    "label": f"{mapping.label} (Push)",
+                    "model_id": None,
+                    "model_name": None,
+                    "value": mqtt_val,
+                    "raw_value": mqtt_val,
+                    "units": mapping.unit,
+                    "transform": None,
+                    "is_optimal": True,
+                    "is_pinned": False,
+                    "is_divergent": False,
+                }
+            ],
         )
 
     if should_sum:
@@ -298,10 +747,54 @@ def _build_comparison_row(
             status = "DIVERGENT"
             match_pct = 0.0
 
+    is_discrepant = status == "DIVERGENT"
+    discrepancy_reason = notes or ("All sources agree exactly" if status == "EXACT" else f"Values differ by {delta} {mapping.unit}")
+
+    # Construct rich sources list
+    sources = [
+        {
+            "source_type": "MQTT",
+            "source_id": "MQTT",
+            "field_key": mapping.mqtt_key,
+            "name": mapping.mqtt_key.split(".")[-1],
+            "label": f"{mapping.label} (Push)",
+            "model_id": None,
+            "model_name": None,
+            "value": mqtt_val,
+            "raw_value": mqtt_val,
+            "units": mapping.unit,
+            "transform": None,
+            "is_optimal": True,
+            "is_pinned": False,
+            "is_divergent": is_discrepant,
+        },
+        {
+            "source_type": "SUNSPEC",
+            "source_id": candidate.field_key.split(".")[-2].replace("model_", "M") if "." in candidate.field_key else "SUNSPEC",
+            "field_key": candidate.field_key,
+            "name": candidate.field_key.split(".")[-1],
+            "label": modbus_label,
+            "model_id": None,
+            "model_name": None,
+            "value": mb_val,
+            "raw_value": raw_mb_val,
+            "units": mapping.unit,
+            "transform": str(candidate.transform) if candidate.transform else None,
+            "is_optimal": False,
+            "is_pinned": False,
+            "is_divergent": is_discrepant,
+        }
+    ]
+
     return ComparisonResultRow(
+        id=f"telemetry:{mapping.mapping_id}",
         mapping_id=mapping.mapping_id,
+        concept_key=mapping.mapping_id,
         label=mapping.label,
         unit=mapping.unit,
+        device_sn="",
+        device_type=dev_type,
+        device_name=f"{dev_type.capitalize()} Telemetry",
         mqtt_key=mapping.mqtt_key,
         mqtt_value=mqtt_val,
         modbus_key=candidate.field_key,
@@ -309,9 +802,15 @@ def _build_comparison_row(
         modbus_value=mb_val,
         confidence=candidate.confidence,
         status=status,
+        status_label="Exact Match ✓" if status == "EXACT" else ("Close (~)" if status == "CLOSE" else "Divergent ✗"),
+        is_discrepant=is_discrepant,
         match_pct=match_pct,
         delta=delta,
         notes=notes,
+        discrepancy_reason=discrepancy_reason,
+        source_count=len(sources),
+        polled_count=len(sources),
+        sources=sources,
     )
 
 
@@ -446,30 +945,18 @@ def format_comparison_table(
     C_CYAN = "\033[36m"
 
     lines = []
-    header = f"{C_BOLD}{'Metric / Concept':<26} {'MQTT Push':<16} {'Modbus Candidate Register':<34} {'Modbus Val':<14} {'Match':<8} {'Status'}{C_RESET}"
-    sep = "─" * 110
 
-    lines.append(header)
-    lines.append(sep)
+    # Calculate summary metrics
+    discrepant_count = sum(1 for r in results if r.is_discrepant or r.status in ("DIVERGENT", "UNIT_MISMATCH", "POLARITY_MISMATCH", "SCALE_MISMATCH"))
+    exact_count = sum(1 for r in results if r.status == "EXACT")
+    multi_count = sum(1 for r in results if r.source_count > 1 or len(r.sources) > 1)
+
+    lines.append(f"{C_BOLD}=== PWRcell Grouped Registers & Telemetry Comparison ==={C_RESET}")
+    lines.append(f"Total: {len(results)} groups | Multi-source: {multi_count} | {C_RED if discrepant_count > 0 else C_GREEN}Discrepancies: {discrepant_count}{C_RESET} | Exact: {exact_count}")
+    lines.append("─" * 110)
 
     for r in results:
-        # Format MQTT value
-        if r.mqtt_value is None:
-            mqtt_str = f"{C_GRAY}--{C_RESET}"
-        elif isinstance(r.mqtt_value, float):
-            mqtt_str = f"{r.mqtt_value:.1f} {r.unit}"
-        else:
-            mqtt_str = f"{r.mqtt_value} {r.unit}".strip()
-
-        # Format Modbus value
-        if r.modbus_value is None:
-            mb_str = f"{C_GRAY}--{C_RESET}"
-        elif isinstance(r.modbus_value, float):
-            mb_str = f"{r.modbus_value:.1f} {r.unit}"
-        else:
-            mb_str = f"{r.modbus_value} {r.unit}".strip()
-
-        # Format Status & Match
+        # Status styling
         if r.status == "EXACT":
             st_color = C_GREEN
             st_text = "EXACT MATCH ✓"
@@ -478,32 +965,63 @@ def format_comparison_table(
             st_color = C_YELLOW
             st_text = "CLOSE (~)"
             match_str = f"{r.match_pct:.0f}%" if r.match_pct is not None else "--"
-        elif r.status == "DIVERGENT":
+        elif r.status in ("DIVERGENT", "UNIT_MISMATCH", "POLARITY_MISMATCH", "SCALE_MISMATCH"):
             st_color = C_RED
-            st_text = "DIVERGENT ✗"
+            st_text = f"{r.status} ✗"
             match_str = f"{r.match_pct:.0f}%" if r.match_pct is not None else "0%"
         elif r.status == "MODBUS_MISSING":
             st_color = C_GRAY
             st_text = "MODBUS NOT POLLED"
             match_str = "--"
+        elif r.status == "SINGLE_SOURCE":
+            st_color = C_GRAY
+            st_text = "SINGLE SOURCE"
+            match_str = "--"
+        elif r.status == "PARTIALLY_POLLED":
+            st_color = C_CYAN
+            st_text = "PARTIALLY POLLED"
+            match_str = "--"
         else:
             st_color = C_GRAY
-            st_text = "MQTT WAITING"
+            st_text = "WAITING / NO DATA"
             match_str = "--"
 
-        modbus_display_key = r.modbus_key
-        if len(modbus_display_key) > 33:
-            modbus_display_key = "..." + modbus_display_key[-30:]
+        # If rich multi-source sources exist
+        if r.sources and len(r.sources) > 1:
+            dev_prefix = f"[{r.device_name}] " if r.device_name else ""
+            lines.append(
+                f"{st_color}{st_text:<18}{C_RESET} {C_BOLD}{dev_prefix}{r.label}{C_RESET} "
+                f"({r.concept_key}) [{r.unit or ''}]"
+            )
+            for s in r.sources:
+                s_id = s.get("source_id", "SRC")
+                s_key = s.get("field_key", "")
+                val = s.get("value")
+                val_str = f"{val} {s.get('units') or ''}".strip() if val is not None else f"{C_GRAY}--{C_RESET}"
+                raw_str = f" (raw: {s.get('raw_value')})" if s.get("raw_value") is not None and s.get("raw_value") != val else ""
+                tf_str = f" [⚙ {s.get('transform')}]" if s.get("transform") else ""
+                opt_str = f" {C_CYAN}★ Optimal{C_RESET}" if s.get("is_optimal") else ""
+                outlier_str = f" {C_RED}[OUTLIER]{C_RESET}" if s.get("is_divergent") else ""
 
-        line = (
-            f"{r.label:<26} "
-            f"{mqtt_str:<25} "
-            f"{modbus_display_key:<34} "
-            f"{mb_str:<23} "
-            f"{match_str:<8} "
-            f"{st_color}{st_text}{C_RESET}"
-        )
-        lines.append(line)
+                lines.append(f"   • {C_CYAN}[{s_id:<6}]{C_RESET} {s_key:<42} : {val_str}{raw_str}{tf_str}{opt_str}{outlier_str}")
+
+            if r.is_discrepant and r.discrepancy_reason:
+                lines.append(f"   {C_RED}⚠️  Discrepancy: {r.discrepancy_reason}{C_RESET}")
+            lines.append(" " * 4)
+        else:
+            # Format single line
+            mqtt_str = f"{r.mqtt_value} {r.unit}".strip() if r.mqtt_value is not None else f"{C_GRAY}--{C_RESET}"
+            mb_str = f"{r.modbus_value} {r.unit}".strip() if r.modbus_value is not None else f"{C_GRAY}--{C_RESET}"
+            mb_key = r.modbus_key if len(r.modbus_key) <= 33 else "..." + r.modbus_key[-30:]
+            line = (
+                f"{r.label:<26} "
+                f"{mqtt_str:<18} "
+                f"{mb_key:<34} "
+                f"{mb_str:<16} "
+                f"{match_str:<8} "
+                f"{st_color}{st_text}{C_RESET}"
+            )
+            lines.append(line)
 
     if unrecognized_fields is not None:
         lines.append("")

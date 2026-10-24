@@ -176,10 +176,25 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertIn("comparisons", data)
+        self.assertIn("stats", data)
         self.assertIn("unrecognized_proto_fields", data)
         self.assertIsInstance(data["comparisons"], list)
         self.assertIsInstance(data["unrecognized_proto_fields"], list)
         self.assertGreater(len(data["comparisons"]), 0)
+
+        # Check stats summary
+        self.assertIn("total_groups", data["stats"])
+        self.assertIn("discrepancies_count", data["stats"])
+        self.assertIn("multi_source_groups", data["stats"])
+
+        # Check multi-source comparison row structure
+        multi_rows = [r for r in data["comparisons"] if len(r.get("sources", [])) > 1]
+        self.assertGreater(len(multi_rows), 0)
+        sample = multi_rows[0]
+        self.assertIn("status_label", sample)
+        self.assertIn("is_discrepant", sample)
+        self.assertIn("source_count", sample)
+        self.assertIsInstance(sample["sources"], list)
 
     def test_poller_endpoints(self):
         # 1. GET /api/poller/status

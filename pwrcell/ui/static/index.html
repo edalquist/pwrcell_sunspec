@@ -313,29 +313,51 @@
     </div>
   </div>
 
-  <!-- Telemetry Comparison Modal -->
+  <!-- Grouped Registers & Telemetry Comparison Modal -->
   <div class="modal-backdrop" id="compareModal">
-    <div class="modal modal-lg">
+    <div class="modal modal-lg compare-modal-dialog">
       <div class="modal-header">
-        <h3>⚡ Telemetry Comparison: MQTT Push vs Modbus Registers</h3>
+        <h3>⚡ Grouped Registers & Telemetry Comparison</h3>
         <button class="modal-close" id="btnCloseCompare">&times;</button>
       </div>
       <div class="modal-body">
-        <p class="modal-desc">Real-time side-by-side verification between Generac high-frequency push MQTT messages (/energy_recordset_live) and polled SunSpec Modbus registers.</p>
+        <p class="modal-desc">Compare all grouped SunSpec Modbus registers and live MQTT push telemetry. Discrepancies quickly identify potential incorrect field groupings or scaling/transform errors.</p>
+        
+        <!-- Compare Toolbar & Filter Tabs -->
+        <div class="compare-toolbar">
+          <div class="compare-filter-tabs">
+            <button class="compare-tab active" data-tab="discrepancies" id="tabCmpDiscrepancies">
+              <span class="warning-badge-icon">⚠️</span> Discrepancies (<span id="cntCmpDiscrepancies">0</span>)
+            </button>
+            <button class="compare-tab" data-tab="multisource" id="tabCmpMulti">
+              Multi-Source (<span id="cntCmpMulti">0</span>)
+            </button>
+            <button class="compare-tab" data-tab="matches" id="tabCmpMatches">
+              Matches (<span id="cntCmpMatches">0</span>)
+            </button>
+            <button class="compare-tab" data-tab="all" id="tabCmpAll">
+              All Groups (<span id="cntCmpAll">0</span>)
+            </button>
+          </div>
+          <div class="compare-filter-controls">
+            <select class="compare-device-select" id="cmpDeviceSelect">
+              <option value="">All Devices</option>
+            </select>
+            <input type="text" class="compare-search-input" id="cmpSearchInput" placeholder="Filter concept or register..." />
+          </div>
+        </div>
+
         <div class="compare-table-container">
           <table class="field-table compare-table">
             <thead>
               <tr>
-                <th>Metric / Concept</th>
-                <th>MQTT Push Value</th>
-                <th>Modbus Register</th>
-                <th>Modbus Value</th>
-                <th>Match</th>
-                <th>Status</th>
+                <th style="width: 25%;">Device & Concept</th>
+                <th style="width: 22%;">Agreement / Status</th>
+                <th style="width: 53%;">Grouped Register Sources & Live Values</th>
               </tr>
             </thead>
             <tbody id="compareTableBody">
-              <tr><td colspan="6" class="empty-state">Loading live comparison telemetry...</td></tr>
+              <tr><td colspan="3" class="empty-state">Loading live comparison telemetry...</td></tr>
             </tbody>
           </table>
         </div>

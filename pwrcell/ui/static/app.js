@@ -100,6 +100,16 @@ const el = {
   btnCloseCompare: document.getElementById('btnCloseCompare'),
   btnCloseCompareFooter: document.getElementById('btnCloseCompareFooter'),
   compareTableBody: document.getElementById('compareTableBody'),
+  tabCmpDiscrepancies: document.getElementById('tabCmpDiscrepancies'),
+  tabCmpMulti: document.getElementById('tabCmpMulti'),
+  tabCmpMatches: document.getElementById('tabCmpMatches'),
+  tabCmpAll: document.getElementById('tabCmpAll'),
+  cntCmpDiscrepancies: document.getElementById('cntCmpDiscrepancies'),
+  cntCmpMulti: document.getElementById('cntCmpMulti'),
+  cntCmpMatches: document.getElementById('cntCmpMatches'),
+  cntCmpAll: document.getElementById('cntCmpAll'),
+  cmpDeviceSelect: document.getElementById('cmpDeviceSelect'),
+  cmpSearchInput: document.getElementById('cmpSearchInput'),
   unrecCompareSection: document.getElementById('unrecCompareSection'),
   unrecCount: document.getElementById('unrecCount'),
   unrecTableBody: document.getElementById('unrecTableBody'),
@@ -3371,6 +3381,46 @@ function setupEventListeners() {
     el.btnOpenCompare.addEventListener('click', openCompareModal);
     el.btnCloseCompare.addEventListener('click', closeCompareModal);
     el.btnCloseCompareFooter.addEventListener('click', closeCompareModal);
+
+    // Tab buttons
+    const bindTab = (btn, tabName) => {
+      if (btn) {
+        btn.addEventListener('click', () => {
+          compareState.activeTab = tabName;
+          updateCompareTabActiveStyles();
+          if (compareState.data) {
+            const rows = Array.isArray(compareState.data) ? compareState.data : (compareState.data.comparisons || []);
+            renderCompareTableRows(rows);
+          }
+        });
+      }
+    };
+    bindTab(el.tabCmpDiscrepancies, 'discrepancies');
+    bindTab(el.tabCmpMulti, 'multisource');
+    bindTab(el.tabCmpMatches, 'matches');
+    bindTab(el.tabCmpAll, 'all');
+
+    // Device selector
+    if (el.cmpDeviceSelect) {
+      el.cmpDeviceSelect.addEventListener('change', (e) => {
+        compareState.selectedDevice = e.target.value;
+        if (compareState.data) {
+          const rows = Array.isArray(compareState.data) ? compareState.data : (compareState.data.comparisons || []);
+          renderCompareTableRows(rows);
+        }
+      });
+    }
+
+    // Search input
+    if (el.cmpSearchInput) {
+      el.cmpSearchInput.addEventListener('input', (e) => {
+        compareState.searchQuery = e.target.value;
+        if (compareState.data) {
+          const rows = Array.isArray(compareState.data) ? compareState.data : (compareState.data.comparisons || []);
+          renderCompareTableRows(rows);
+        }
+      });
+    }
   }
 
   // On-demand Modbus Keypad / Config Sync
@@ -3399,53 +3449,81 @@ function setupEventListeners() {
   }
 }
 
-// Telemetry Compare Modal
+// Grouped Registers & Telemetry Compare Modal
 let compareTimer = null;
+const compareState = {
+  activeTab: 'discrepancies',
+  selectedDevice: '',
+  searchQuery: '',
+  data: null,
+  hasInitializedTab: false,
+};
 
 async function fetchAndRenderCompare() {
   try {
     const res = await fetch(apiPath('api/compare'));
     const data = await res.json();
+    compareState.data = data;
     const rows = Array.isArray(data) ? data : (data.comparisons || []);
+    const stats = (!Array.isArray(data) && data.stats) ? data.stats : {};
     const unrec = (!Array.isArray(data) && data.unrecognized_proto_fields) ? data.unrecognized_proto_fields : [];
 
-    if (!rows || rows.length === 0) {
-      el.compareTableBody.innerHTML = '<tr><td colspan="6" class="empty-state">No comparison mappings found</td></tr>';
-    } else {
-      el.compareTableBody.innerHTML = '';
-      rows.forEach(r => {
-        const tr = document.createElement('tr');
-        let statusBadge = '';
-        if (r.status === 'EXACT') statusBadge = '<span class="status-badge exact">EXACT MATCH ✓</span>';
-        else if (r.status === 'CLOSE') statusBadge = '<span class="status-badge close">CLOSE (~)</span>';
-        else if (r.status === 'DIVERGENT') statusBadge = '<span class="status-badge divergent">DIVERGENT ✗</span>';
-        else statusBadge = `<span class="status-badge missing">${r.status.replace('_', ' ')}</span>`;
+    // Calculate or update stats counts
+    const discrepantCount = stats.discrepancies_count !== undefined
+      ? stats.discrepancies_count
+      : rows.filter(r => r.is_discrepant || ['DIVERGENT', 'UNIT_MISMATCH', 'POLARITY_MISMATCH', 'SCALE_MISMATCH'].includes(r.status)).length;
 
-        const mqttDisplay = r.mqtt_value !== null ? `${formatFieldValue(r.mqtt_value)} ${r.unit}` : '<span class="text-muted">--</span>';
-        const mbDisplay = r.modbus_value !== null ? `${formatFieldValue(r.modbus_value)} ${r.unit}` : '<span class="text-muted">--</span>';
-        const matchDisplay = r.match_pct !== null ? `${r.match_pct}%` : '&mdash;';
+    const multiCount = stats.multi_source_groups !== undefined
+      ? stats.multi_source_groups
+      : rows.filter(r => (r.sources && r.sources.length > 1) || r.source_count > 1).length;
 
-        tr.innerHTML = `
-          <td>
-            <div class="field-cell-main">
-              <strong>${r.label}</strong>
-              <span class="field-key">${r.notes || r.mapping_id}</span>
-            </div>
-          </td>
-          <td><span class="field-value-badge">${mqttDisplay}</span></td>
-          <td>
-            <div class="field-cell-main">
-              <span>${r.modbus_label}</span>
-              <span class="field-key">${r.modbus_key}</span>
-            </div>
-          </td>
-          <td><span class="field-value-badge">${mbDisplay}</span></td>
-          <td><strong>${matchDisplay}</strong></td>
-          <td>${statusBadge}</td>
-        `;
-        el.compareTableBody.appendChild(tr);
-      });
+    const matchCount = (stats.exact_match_count !== undefined && stats.close_match_count !== undefined)
+      ? (stats.exact_match_count + stats.close_match_count)
+      : rows.filter(r => ['EXACT', 'CLOSE'].includes(r.status)).length;
+
+    const allCount = stats.total_groups !== undefined ? stats.total_groups : rows.length;
+
+    if (el.cntCmpDiscrepancies) el.cntCmpDiscrepancies.textContent = discrepantCount;
+    if (el.cntCmpMulti) el.cntCmpMulti.textContent = multiCount;
+    if (el.cntCmpMatches) el.cntCmpMatches.textContent = matchCount;
+    if (el.cntCmpAll) el.cntCmpAll.textContent = allCount;
+
+    // Default to 'discrepancies' tab if discrepancies exist on first load, otherwise 'multisource'
+    if (!compareState.hasInitializedTab) {
+      if (discrepantCount > 0) {
+        compareState.activeTab = 'discrepancies';
+      } else if (multiCount > 0) {
+        compareState.activeTab = 'multisource';
+      } else {
+        compareState.activeTab = 'all';
+      }
+      compareState.hasInitializedTab = true;
+      updateCompareTabActiveStyles();
     }
+
+    // Populate device dropdown if empty
+    if (el.cmpDeviceSelect) {
+      const currentVal = el.cmpDeviceSelect.value || compareState.selectedDevice;
+      const devicesMap = new Map();
+      rows.forEach(r => {
+        if (r.device_sn) {
+          const label = r.device_name || `${r.device_type} (${r.device_sn.slice(-4)})`;
+          devicesMap.set(r.device_sn, label);
+        }
+      });
+      if (devicesMap.size > 0 && el.cmpDeviceSelect.options.length <= 1) {
+        el.cmpDeviceSelect.innerHTML = '<option value="">All Devices</option>';
+        devicesMap.forEach((label, sn) => {
+          const opt = document.createElement('option');
+          opt.value = sn;
+          opt.textContent = label;
+          if (sn === currentVal) opt.selected = true;
+          el.cmpDeviceSelect.appendChild(opt);
+        });
+      }
+    }
+
+    renderCompareTableRows(rows);
 
     // Render Unrecognized / Unmapped Protobuf Telemetry
     if (el.unrecCompareSection && el.unrecTableBody) {
@@ -3478,12 +3556,217 @@ async function fetchAndRenderCompare() {
       }
     }
   } catch (err) {
-    el.compareTableBody.innerHTML = `<tr><td colspan="6" class="empty-state">Error fetching comparisons: ${err}</td></tr>`;
+    if (el.compareTableBody) {
+      el.compareTableBody.innerHTML = `<tr><td colspan="3" class="empty-state">Error fetching comparisons: ${err}</td></tr>`;
+    }
   }
+}
+
+function updateCompareTabActiveStyles() {
+  const tabs = [
+    { btn: el.tabCmpDiscrepancies, name: 'discrepancies' },
+    { btn: el.tabCmpMulti, name: 'multisource' },
+    { btn: el.tabCmpMatches, name: 'matches' },
+    { btn: el.tabCmpAll, name: 'all' },
+  ];
+  tabs.forEach(t => {
+    if (t.btn) {
+      if (t.name === compareState.activeTab) t.btn.classList.add('active');
+      else t.btn.classList.remove('active');
+    }
+  });
+}
+
+function renderCompareTableRows(rows) {
+  if (!el.compareTableBody) return;
+
+  const tab = compareState.activeTab;
+  const devFilter = compareState.selectedDevice.trim().toUpperCase();
+  const query = compareState.searchQuery.trim().toLowerCase();
+
+  const filtered = rows.filter(r => {
+    // 1. Tab filter
+    if (tab === 'discrepancies') {
+      const isDisc = r.is_discrepant || ['DIVERGENT', 'UNIT_MISMATCH', 'POLARITY_MISMATCH', 'SCALE_MISMATCH'].includes(r.status);
+      if (!isDisc) return false;
+    } else if (tab === 'multisource') {
+      const isMulti = (r.sources && r.sources.length > 1) || r.source_count > 1;
+      if (!isMulti) return false;
+    } else if (tab === 'matches') {
+      if (!['EXACT', 'CLOSE'].includes(r.status)) return false;
+    }
+
+    // 2. Device filter
+    if (devFilter) {
+      const rowSn = (r.device_sn || '').toUpperCase();
+      const rowDev = (r.device_type || '').toUpperCase();
+      if (rowSn !== devFilter && rowDev !== devFilter) return false;
+    }
+
+    // 3. Search query filter
+    if (query) {
+      const matchLabel = (r.label || '').toLowerCase().includes(query);
+      const matchKey = (r.concept_key || r.mapping_id || '').toLowerCase().includes(query);
+      const matchDevice = (r.device_name || r.device_type || '').toLowerCase().includes(query);
+      const matchSource = (r.sources || []).some(s =>
+        (s.field_key || '').toLowerCase().includes(query) ||
+        (s.name || '').toLowerCase().includes(query) ||
+        (s.label || '').toLowerCase().includes(query)
+      );
+      if (!matchLabel && !matchKey && !matchDevice && !matchSource) return false;
+    }
+
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    let emptyMsg = 'No comparisons found matching filters';
+    if (tab === 'discrepancies') {
+      emptyMsg = '🎉 No register grouping discrepancies detected! All grouped registers agree.';
+    }
+    el.compareTableBody.innerHTML = `<tr><td colspan="3" class="empty-state">${emptyMsg}</td></tr>`;
+    return;
+  }
+
+  el.compareTableBody.innerHTML = '';
+  filtered.forEach(r => {
+    const tr = document.createElement('tr');
+
+    // Status Badge
+    let statusClass = 'missing';
+    let statusText = r.status_label || r.status || 'UNKNOWN';
+    const st = (r.status || '').toLowerCase();
+
+    if (st === 'exact') statusClass = 'exact';
+    else if (st === 'close') statusClass = 'close';
+    else if (st === 'divergent') statusClass = 'divergent';
+    else if (st === 'unit_mismatch') statusClass = 'unit_mismatch';
+    else if (st === 'polarity_mismatch') statusClass = 'polarity_mismatch';
+    else if (st === 'scale_mismatch') statusClass = 'scale_mismatch';
+    else if (st === 'partially_polled') statusClass = 'partially_polled';
+    else if (st === 'single_source') statusClass = 'single_source';
+
+    const statusBadge = `<span class="status-badge ${statusClass}">${escapeHtml(statusText)}</span>`;
+
+    // Agreement & Discrepancy column content
+    let agreementHtml = `<div class="compare-status-wrap">${statusBadge}</div>`;
+    if (r.is_discrepant && r.discrepancy_reason) {
+      agreementHtml += `<div class="compare-discrepancy-note">⚠️ ${escapeHtml(r.discrepancy_reason)}</div>`;
+    }
+    if (r.delta !== null && r.delta !== undefined && (r.sources && r.sources.length > 1)) {
+      const deltaFormatted = formatFieldValue(r.delta);
+      const pctFormatted = r.match_pct !== null && r.match_pct !== undefined ? `${r.match_pct}% match` : '';
+      agreementHtml += `<div class="compare-delta-note">Δ ${deltaFormatted} ${escapeHtml(r.unit || '')} ${pctFormatted ? `(${pctFormatted})` : ''}</div>`;
+    }
+
+    // Device & Concept column content
+    const devBadge = r.device_name ? `<span class="compare-device-pill">${escapeHtml(r.device_name)}</span>` : '';
+    const conceptCol = `
+      <div class="field-cell-main">
+        ${devBadge}
+        <strong>${escapeHtml(r.label || r.concept_key)}</strong>
+        <span class="field-key">${escapeHtml(r.concept_key || r.mapping_id || '')}</span>
+      </div>
+    `;
+
+    // Sources column content
+    let sourcesCol = '';
+    const sources = r.sources || [];
+    if (sources.length > 0) {
+      const cardsHtml = sources.map(s => {
+        const isDivergent = s.is_divergent || false;
+        const srcChipClass = s.source_type === 'MQTT' ? 'src-mqtt' : 'src-sunspec';
+        const valDisplay = s.value !== null && s.value !== undefined
+          ? `${formatFieldValue(s.value)} ${escapeHtml(s.units || r.unit || '')}`
+          : '<span class="text-muted">--</span>';
+
+        const rawDisplay = (s.raw_value !== null && s.raw_value !== undefined && s.raw_value !== s.value)
+          ? `<span class="compare-source-raw" title="Raw unscaled value">raw: ${formatFieldValue(s.raw_value)}</span>`
+          : '';
+
+        const tfDisplay = s.transform
+          ? `<span class="compare-source-tag transform" title="Transform: ${escapeHtml(s.transform)}">⚙ ${escapeHtml(s.transform)}</span>`
+          : '';
+
+        const optDisplay = s.is_optimal
+          ? `<span class="compare-source-tag optimal" title="Selected optimal source">★ Optimal</span>`
+          : '';
+
+        const pinDisplay = s.is_pinned
+          ? `<span class="compare-source-tag pinned" title="Manually pinned by user">📌 Pinned</span>`
+          : '';
+
+        return `
+          <div class="compare-source-card ${isDivergent ? 'is-divergent' : ''}">
+            <div class="compare-source-left">
+              <span class="source-chip ${srcChipClass}">${escapeHtml(s.source_id || 'SRC')}</span>
+              <div class="compare-source-meta">
+                <span class="compare-source-name">${escapeHtml(s.label || s.name || '')}</span>
+                <span class="compare-source-key">${escapeHtml(s.field_key || '')}</span>
+              </div>
+            </div>
+            <div class="compare-source-right">
+              <span class="compare-source-value ${isDivergent ? 'val-divergent' : ''}">${valDisplay}</span>
+              ${rawDisplay}
+              ${tfDisplay}
+              ${optDisplay}
+              ${pinDisplay}
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      sourcesCol = `<div class="compare-sources-list">${cardsHtml}</div>`;
+    } else {
+      // Legacy fallback row
+      const mqttDisplay = r.mqtt_value !== null && r.mqtt_value !== undefined
+        ? `${formatFieldValue(r.mqtt_value)} ${escapeHtml(r.unit || '')}`
+        : '<span class="text-muted">--</span>';
+      const mbDisplay = r.modbus_value !== null && r.modbus_value !== undefined
+        ? `${formatFieldValue(r.modbus_value)} ${escapeHtml(r.unit || '')}`
+        : '<span class="text-muted">--</span>';
+
+      sourcesCol = `
+        <div class="compare-sources-list">
+          <div class="compare-source-card">
+            <div class="compare-source-left">
+              <span class="source-chip src-mqtt">MQTT</span>
+              <div class="compare-source-meta">
+                <span class="compare-source-key">${escapeHtml(r.mqtt_key || 'MQTT Push')}</span>
+              </div>
+            </div>
+            <div class="compare-source-right">
+              <span class="compare-source-value">${mqttDisplay}</span>
+            </div>
+          </div>
+          <div class="compare-source-card">
+            <div class="compare-source-left">
+              <span class="source-chip src-sunspec">MODBUS</span>
+              <div class="compare-source-meta">
+                <span class="compare-source-name">${escapeHtml(r.modbus_label || '')}</span>
+                <span class="compare-source-key">${escapeHtml(r.modbus_key || '')}</span>
+              </div>
+            </div>
+            <div class="compare-source-right">
+              <span class="compare-source-value">${mbDisplay}</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    tr.innerHTML = `
+      <td>${conceptCol}</td>
+      <td>${agreementHtml}</td>
+      <td>${sourcesCol}</td>
+    `;
+    el.compareTableBody.appendChild(tr);
+  });
 }
 
 function openCompareModal() {
   el.compareModal.classList.add('open');
+  compareState.hasInitializedTab = false;
   fetchAndRenderCompare();
   if (compareTimer) clearInterval(compareTimer);
   compareTimer = setInterval(fetchAndRenderCompare, 2000);
@@ -3493,6 +3776,9 @@ function closeCompareModal() {
   el.compareModal.classList.remove('open');
   if (compareTimer) {
     clearInterval(compareTimer);
+    compareTimer = null;
+  }
+}
     compareTimer = null;
   }
 }
