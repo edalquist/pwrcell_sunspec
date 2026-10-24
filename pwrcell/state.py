@@ -1059,8 +1059,6 @@ class StateStore:
 
             if not label:
                 label = name
-            if raw_value is None and value is not None:
-                raw_value = value
 
             # Validate value against physical plausibility and sentinels
             if value is not None:
@@ -1070,6 +1068,10 @@ class StateStore:
                     device_class=ha_hint.device_class if ha_hint else None,
                     name=name,
                 )
+            if isinstance(raw_value, float) and (math.isnan(raw_value) or math.isinf(raw_value)):
+                raw_value = None
+            if raw_value is None and value is not None:
+                raw_value = value
 
             # Resolve model metadata if not explicitly provided
             if model_id is None and sub_group:
@@ -1119,15 +1121,7 @@ class StateStore:
                             )
                             return existing
 
-                if (
-                    isinstance(existing.value, float)
-                    and isinstance(value, float)
-                    and math.isnan(existing.value)
-                    and math.isnan(value)
-                ):
-                    changed = False
-                else:
-                    changed = (existing.value != value)
+                changed = (existing.value != value)
                 existing.value = value
                 existing.raw_value = raw_value
                 if units is not None:

@@ -276,22 +276,26 @@ class TestStateAndControls(unittest.TestCase):
 
         self.state.subscribe(listener)
         try:
-            # Set NaN first time -> should notify
-            self.state.set_field(
+            # Set NaN first time -> normalized to None on creation and notifies once
+            f1 = self.state.set_field(
                 device_sn=self.inv.serial_number,
                 name="nan_test",
                 value=float("nan"),
                 raw_value=float("nan"),
             )
+            self.assertIsNone(f1.value)
+            self.assertIsNone(f1.raw_value)
             self.assertEqual(len(notified), 1)
 
-            # Set NaN second time -> should NOT notify because NaN == NaN logically in state store
-            self.state.set_field(
+            # Set NaN second time -> normalized to None again; None == None so does not re-notify
+            f2 = self.state.set_field(
                 device_sn=self.inv.serial_number,
                 name="nan_test",
                 value=float("nan"),
                 raw_value=float("nan"),
             )
+            self.assertIsNone(f2.value)
+            self.assertIsNone(f2.raw_value)
             self.assertEqual(len(notified), 1)
         finally:
             self.state.unsubscribe(listener)
