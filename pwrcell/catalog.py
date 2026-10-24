@@ -18,6 +18,26 @@ import zipfile
 logger = logging.getLogger(__name__)
 
 
+def is_scale_factor_point(
+    name: Optional[str] = None,
+    point_type: Optional[str] = None,
+    label: Optional[str] = None,
+    explicit: bool = False,
+) -> bool:
+    """Return True if the point metadata indicates a SunSpec scale factor register."""
+    if explicit or point_type == "sunssf":
+        return True
+    if name and (
+        name.endswith(("_sf", "_SF"))
+        or name.startswith(("sf_", "SF_", "sunssf_"))
+    ):
+        return True
+    if label and "scale factor" in label.lower():
+        return True
+    return False
+
+
+
 @dataclass(frozen=True)
 class SunspecSymbol:
     """Represents a single symbol/option in an enum or bitfield."""
@@ -71,11 +91,10 @@ class SunspecPointDef:
 
     @property
     def is_scale_factor(self) -> bool:
-        return (
-            self.type == "sunssf"
-            or self.name.endswith(("_sf", "_SF"))
-            or self.name.startswith(("sf_", "SF_", "sunssf_"))
-            or (self.label and self.label.lower().startswith("scale factor"))
+        return is_scale_factor_point(
+            name=self.name,
+            point_type=self.type,
+            label=self.label,
         )
 
     @property

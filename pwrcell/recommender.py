@@ -17,6 +17,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .catalog import is_scale_factor_point
 from .optimizer import clean_unit, group_device_fields
 from .state import StateStore, UnifiedDevice
 
@@ -166,13 +167,12 @@ def find_suggested_groupings(
                 continue
             if len(g.sources) == 1:
                 s = g.sources[0]
-                if getattr(s, "is_scale_factor", False):
-                    continue
-                if s.name.endswith(("_SF", "_sf")) or s.name.startswith(("sf_", "SF_", "sunssf_")):
-                    continue
-                if getattr(s, "point_type", None) == "sunssf":
-                    continue
-                if s.label and "scale factor" in s.label.lower():
+                if is_scale_factor_point(
+                    name=s.name,
+                    point_type=getattr(s, "point_type", None),
+                    label=s.label,
+                    explicit=bool(getattr(s, "is_scale_factor", False)),
+                ):
                     continue
                 if s.value is not None:
                     single_source_candidates.append((g, s))
