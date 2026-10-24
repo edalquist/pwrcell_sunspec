@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 import threading
 import time
@@ -105,7 +106,6 @@ class HomeAssistantBridge:
         with self._lock:
             if self._running:
                 return
-            self._running = True
 
             # Load selected entities from ha_config.yaml (or default seed), fallback to recommended
             raw_keys = load_ha_config()
@@ -144,6 +144,7 @@ class HomeAssistantBridge:
             # Subscribe to StateStore updates and compound view updates
             self.client.state.subscribe(self._on_field_update)
             self.client.state.subscribe_compound(self._on_compound_update)
+            self._running = True
 
     def stop(self):
         """Disconnect from Home Assistant MQTT broker and publish offline status."""

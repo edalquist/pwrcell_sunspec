@@ -274,6 +274,36 @@ class TestHomeAssistantBridge(unittest.TestCase):
         self.assertEqual(state_call[0][1], "63050200")
         self.assertNotIn("e+", state_call[0][1])
 
+    def test_start_with_empty_client_name_and_running_flag(self):
+        """Verify bridge.start() falls back to HOSTNAME / default without NameError and only marks _running on success."""
+        from unittest.mock import patch
+        from pwrcell.config import MqttConfig
+
+        # 1. Empty host should not leave _running=True without an active MQTT client
+        no_host_bridge = HomeAssistantBridge(
+            client=self.client,
+            mqtt_config=MqttConfig(host="", port=1883, client_name=""),
+            published_topics_path=self.topics_file,
+        )
+
+        # 2. Empty client_name with valid host should succeed without NameError
+        bridge = HomeAssistantBridge(
+            client=self.client,
+            mqtt_config=MqttConfig(host="127.0.0.1", port=1883, client_name=""),
+            published_topics_path=self.topics_file,
+        )
+        mock_client_inst = MagicMock()
+        with patch("pwrcell.bridge.load_ha_config", return_value=[]), patch("pwrcell.bridge.mqtt.Client", return_value=mock_client_inst):
+            no_host_bridge.start()
+            self.assertFalse(no_host_bridge._running)
+
+            bridge.start()
+            self.assertTrue(bridge._running)
+            mock_client_inst.loop_start.assert_called_once()
+            mock_client_inst.connect.assert_called_once_with("127.0.0.1", 1883)
+            bridge.stop()
+            self.assertFalse(bridge._running)
+
 
 if __name__ == "__main__":
     unittest.main()
