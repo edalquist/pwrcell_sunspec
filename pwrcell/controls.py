@@ -21,30 +21,101 @@ from .state import StateStore
 
 logger = logging.getLogger(__name__)
 
-# Canonical SunSpec Model 64200 SysMd integer-to-name map (note: 0 is SAFETY_SHUTDOWN, unlike MQTT proto where 0 is UNKNOWN and 16 is SAFETY_SHUTDOWN)
-SUNSPEC_SYS_MD_NAMES: Dict[int, str] = {
-    0: "SAFETY_SHUTDOWN",
-    1: "GRID_TIE",
-    2: "SELF_SUPPLY",
-    3: "CLEAN_BACKUP",
-    4: "PRIORITY_BACKUP",
-    5: "REMOTE_ARBITRAGE",
-    6: "SELL",
-}
+def get_system_operating_modes(catalog: Optional[ModelCatalog] = None) -> Dict[str, int]:
+    """Derive system operating mode symbol mappings dynamically from SunSpec metamodels."""
+    cat = catalog or get_catalog()
+    modes: Dict[str, int] = {}
+    if cat:
+        # Combine symbols from both REbus_dir (64200) and inverter_status (64208)
+        for model_id in (MODEL_INVERTER_STATUS, MODEL_REBUS_DIR):
+            pt = cat.get_point(model_id, "SysMd")
+            if pt:
+                for s in pt.symbols:
+                    modes[s.name.upper()] = s.value
+    if not modes:
+        modes = {
+            "SAFETY_SHUTDOWN": 0,
+            "GRID_TIE": 1,
+            "GRID_CONNECT": 1,
+            "SELF_SUPPLY": 2,
+            "CLEAN_BACKUP": 3,
+            "PRIORITY_BACKUP": 4,
+            "REMOTE_ARBITRAGE": 5,
+            "ARBITRAGE": 5,
+            "SELL": 6,
+            "FULL_EXPORT": 6,
+        }
+    return modes
 
-# System operating mode mapping (includes SunSpec XML symbol aliases)
-OPERATING_MODES: Dict[str, int] = {
-    "SAFETY_SHUTDOWN": 0,
-    "GRID_TIE": 1,
-    "GRID_CONNECT": 1,
-    "SELF_SUPPLY": 2,
-    "CLEAN_BACKUP": 3,
-    "PRIORITY_BACKUP": 4,
-    "REMOTE_ARBITRAGE": 5,
-    "ARBITRAGE": 5,
-    "SELL": 6,
-    "FULL_EXPORT": 6,
-}
+
+def get_sunspec_sys_md_names(catalog: Optional[ModelCatalog] = None) -> Dict[int, str]:
+    """Derive integer-to-canonical-name mapping for system modes from SunSpec metamodels."""
+    cat = catalog or get_catalog()
+    names: Dict[int, str] = {}
+    if cat:
+        # Prefer inverter_status (64208) canonical naming (GRID_TIE, SELL, REMOTE_ARBITRAGE)
+        for model_id in (MODEL_INVERTER_STATUS, MODEL_REBUS_DIR):
+            pt = cat.get_point(model_id, "SysMd")
+            if pt:
+                for s in pt.symbols:
+                    if s.value not in names:
+                        names[s.value] = s.name.upper()
+    if not names:
+        names = {
+            0: "SAFETY_SHUTDOWN",
+            1: "GRID_TIE",
+            2: "SELF_SUPPLY",
+            3: "CLEAN_BACKUP",
+            4: "PRIORITY_BACKUP",
+            5: "REMOTE_ARBITRAGE",
+            6: "SELL",
+        }
+    return names
+
+
+class _DynamicDict(dict):
+    """Lazy dictionary that resolves dynamically from a loader callback."""
+    def __init__(self, loader):
+        super().__init__()
+        self._loader = loader
+        self._loaded = False
+
+    def _ensure(self):
+        if not self._loaded:
+            self.update(self._loader())
+            self._loaded = True
+
+    def __getitem__(self, k):
+        self._ensure()
+        return super().__getitem__(k)
+
+    def get(self, k, default=None):
+        self._ensure()
+        return super().get(k, default)
+
+    def __contains__(self, k):
+        self._ensure()
+        return super().__contains__(k)
+
+    def items(self):
+        self._ensure()
+        return super().items()
+
+    def keys(self):
+        self._ensure()
+        return super().keys()
+
+    def values(self):
+        self._ensure()
+        return super().values()
+
+    def __len__(self):
+        self._ensure()
+        return super().__len__()
+
+
+SUNSPEC_SYS_MD_NAMES = _DynamicDict(get_sunspec_sys_md_names)
+OPERATING_MODES = _DynamicDict(get_system_operating_modes)
 
 
 class ControlDispatcher:
