@@ -80,6 +80,7 @@ class TelemetryMappingDef:
     mqtt_field: str  # State store key e.g. 'inverter.live.grid_power_w'
     modbus_field: str  # Primary candidate register e.g. 'inverter.model_64208.CTPow'
     modbus_candidates: List[str] = field(default_factory=list)
+    synonyms: List[str] = field(default_factory=list)
     transform: str = "none"  # 'negate', 'none', 'wh_to_kwh'
     transform_desc: str = ""
     unit: str = ""
@@ -123,9 +124,10 @@ class TelemetryMappingDef:
             id=data["id"],
             label=data.get("label", data["id"]),
             device_type=data.get("device_type", "inverter"),
-            mqtt_field=data["mqtt_field"],
-            modbus_field=data["modbus_field"],
+            mqtt_field=data.get("mqtt_field", ""),
+            modbus_field=data.get("modbus_field", ""),
             modbus_candidates=data.get("modbus_candidates", []),
+            synonyms=data.get("synonyms", []),
             transform=data.get("transform", "none"),
             transform_desc=data.get("transform_desc", ""),
             unit=data.get("unit", ""),
@@ -134,6 +136,32 @@ class TelemetryMappingDef:
             ha_device_class=data.get("ha_device_class"),
             ha_state_class=data.get("ha_state_class"),
         )
+
+
+def clean_unit(unit: Optional[str]) -> str:
+    """Normalize unit string for fuzzy matching across models."""
+    if not unit:
+        return ""
+    u = unit.strip().replace("°", "").replace("Deg", "").replace("deg", "")
+    mapping = {
+        "c": "C",
+        "f": "F",
+        "w": "W",
+        "wh": "Wh",
+        "kwh": "kWh",
+        "v": "V",
+        "a": "A",
+        "hz": "Hz",
+        "pct": "%",
+        "percent": "%",
+        "%": "%",
+        "%whrtg": "%",
+        "sec": "s",
+        "s": "s",
+        "va": "VA",
+        "var": "VAr",
+    }
+    return mapping.get(u.lower(), u)
 
 
 def get_default_mappings() -> List[TelemetryMappingDef]:
@@ -149,6 +177,7 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
             modbus_candidates=[
                 "inverter.model_64208.CTPow",
             ],
+            synonyms=["ctpow", "grid_power_w", "grid_power", "ct_power"],
             transform="negate",
             transform_desc="-1 * CTPow (CT meter polarity inverted: positive = grid import)",
             description="Net power imported (+) or exported (-) to the utility grid",
@@ -168,12 +197,96 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
                 "inverter.model_64208.SysMd",
                 "inverter.model_64202.SysMd",
             ],
+            synonyms=["sysmd", "system_mode", "operating_mode"],
             transform="none",
             transform_desc="",
             description="PWRcell operating mode (Grid Tie, Self Supply, Clean Backup, Priority Backup, Sell)",
             ha_platform="select",
             ha_device_class=None,
             ha_state_class=None,
+        ),
+        TelemetryMappingDef(
+            id="ac_frequency",
+            label="AC Frequency",
+            device_type="inverter",
+            unit="Hz",
+            mqtt_field="inverter.live.ac_frequency_hz",
+            modbus_field="inverter.model_102.Hz",
+            modbus_candidates=[
+                "inverter.model_102.Hz",
+                "inverter.model_101.Hz",
+                "inverter.model_103.Hz",
+                "inverter.model_64208.Hz",
+            ],
+            synonyms=["hz", "ac_frequency_hz", "ac_freq", "freq"],
+            transform="none",
+            description="AC line grid frequency",
+            ha_platform="sensor",
+            ha_device_class="frequency",
+            ha_state_class="measurement",
+        ),
+        TelemetryMappingDef(
+            id="phase_a_voltage",
+            label="Phase A Voltage",
+            device_type="inverter",
+            unit="V",
+            mqtt_field="inverter.live.ac_voltage_v",
+            modbus_field="inverter.model_102.PhVphA",
+            modbus_candidates=[
+                "inverter.model_102.PhVphA",
+                "inverter.model_101.PhV",
+            ],
+            synonyms=["phvpha", "ac_voltage_v", "phv"],
+            transform="none",
+            description="AC voltage on Phase A",
+            ha_platform="sensor",
+            ha_device_class="voltage",
+            ha_state_class="measurement",
+        ),
+        TelemetryMappingDef(
+            id="phase_b_voltage",
+            label="Phase B Voltage",
+            device_type="inverter",
+            unit="V",
+            mqtt_field="",
+            modbus_field="inverter.model_102.PhVphB",
+            modbus_candidates=["inverter.model_102.PhVphB"],
+            synonyms=["phvphb"],
+            transform="none",
+            description="AC voltage on Phase B",
+            ha_platform="sensor",
+            ha_device_class="voltage",
+            ha_state_class="measurement",
+        ),
+        TelemetryMappingDef(
+            id="phase_a_current",
+            label="Phase A Current",
+            device_type="inverter",
+            unit="A",
+            mqtt_field="inverter.live.ac_current_a",
+            modbus_field="inverter.model_102.AphA",
+            modbus_candidates=["inverter.model_102.AphA"],
+            synonyms=["apha", "ac_current_a"],
+            transform="none",
+            description="AC current on Phase A",
+            ha_platform="sensor",
+            ha_device_class="current",
+            ha_state_class="measurement",
+        ),
+        TelemetryMappingDef(
+            id="phase_b_current",
+            label="Phase B Current",
+            device_type="inverter",
+            unit="A",
+            mqtt_field="",
+            modbus_field="inverter.model_102.AphB",
+            modbus_candidates=["inverter.model_102.AphB"],
+            synonyms=["aphb"],
+            transform="none",
+            description="AC current on Phase B",
+            ha_platform="sensor",
+            ha_device_class="current",
+            ha_state_class="measurement",
         ),
         TelemetryMappingDef(
             id="battery_power",
@@ -186,6 +299,7 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
                 "battery.model_64252.W",
                 "battery.model_802.W",
             ],
+            synonyms=["w", "battery_power_w", "real_power", "battery_power"],
             transform="negate",
             transform_desc="-1 * W (SunSpec Modbus polarity inverted: positive = battery discharge)",
             description="Battery discharge (+) or charge (-) real power",
@@ -204,6 +318,7 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
                 "battery.model_802.SoC",
                 "battery.model_804.SoC",
             ],
+            synonyms=["soc", "state_of_charge"],
             transform="none",
             transform_desc="",
             description="Battery state of charge percentage",
@@ -222,6 +337,7 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
                 "battery.model_802.SoH",
                 "battery.model_804.SoH",
             ],
+            synonyms=["soh", "state_of_health"],
             transform="none",
             transform_desc="",
             description="Battery health percentage",
@@ -240,6 +356,7 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
                 "pv_link.model_64207.P",
                 "pv_link.model_404.DCW",
             ],
+            synonyms=["solar_power_w", "p", "dcw"],
             transform="sum",
             transform_desc="Sum across all PV Link devices",
             description="Real-time solar PV generation power across all strings",
@@ -259,12 +376,32 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
                 "inverter.model_101.W",
                 "inverter.model_103.W",
             ],
+            synonyms=["w", "inverter_power_w", "inverter_output_power_w", "inverter_output_power", "inverter_power", "real_power"],
             transform="none",
             transform_desc="",
             description="Real-time AC output power of the inverter",
             ha_platform="sensor",
             ha_device_class="power",
             ha_state_class="measurement",
+        ),
+        TelemetryMappingDef(
+            id="inverter_output_energy",
+            label="Inverter Output Energy",
+            device_type="inverter",
+            unit="Wh",
+            mqtt_field="inverter.live.inverter_output_exported_energy_wh",
+            modbus_field="inverter.model_102.WH",
+            modbus_candidates=[
+                "inverter.model_102.WH",
+                "inverter.model_64207.E",
+            ],
+            synonyms=["wh", "e", "inverter_output_exported_energy_wh", "inverter_output_energy_wh"],
+            transform="none",
+            transform_desc="",
+            description="Cumulative electrical energy produced/exported by the inverter",
+            ha_platform="sensor",
+            ha_device_class="energy",
+            ha_state_class="total_increasing",
         ),
         TelemetryMappingDef(
             id="grid_imported_energy",
@@ -274,6 +411,7 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
             mqtt_field="inverter.live.grid_imported_energy_wh",
             modbus_field="inverter.model_64208.WhIn",
             modbus_candidates=["inverter.model_64208.WhIn"],
+            synonyms=["whin", "grid_imported_energy_wh", "totwhimp"],
             transform="none",
             transform_desc="",
             description="Total electrical energy imported from utility grid",
@@ -289,6 +427,7 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
             mqtt_field="inverter.live.grid_exported_energy_wh",
             modbus_field="inverter.model_64208.WhOut",
             modbus_candidates=["inverter.model_64208.WhOut"],
+            synonyms=["whout", "grid_exported_energy_wh", "totwhexp"],
             transform="none",
             transform_desc="",
             description="Total electrical energy exported to utility grid",
@@ -307,6 +446,7 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
                 "battery.model_64209.WhIn",
                 "battery.model_64252.WhIn",
             ],
+            synonyms=["whin", "battery_imported_energy_wh"],
             transform="none",
             transform_desc="",
             description="Cumulative energy charged into battery storage",
@@ -325,6 +465,7 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
                 "battery.model_64209.WhOut",
                 "battery.model_64252.WhOut",
             ],
+            synonyms=["whout", "battery_exported_energy_wh"],
             transform="none",
             transform_desc="",
             description="Cumulative energy discharged from battery storage",
@@ -343,6 +484,7 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
                 "battery.model_802.V",
                 "battery.model_64252.V",
             ],
+            synonyms=["v", "battery_voltage_v", "dcv"],
             transform="none",
             transform_desc="",
             description="Real-time DC battery pack terminal voltage",
@@ -434,6 +576,8 @@ class MappingRegistry:
         self._by_mqtt = {m.mqtt_field: m for m in self._mappings}
         mb_to_mqtt: Dict[str, str] = {}
         raw_to_comp: Dict[str, str] = {}
+        syn_index: Dict[Tuple[str, str], TelemetryMappingDef] = {}
+
         for m in self._mappings:
             c_key = f"{m.device_type}.compound.{m.id}"
             if m.mqtt_field:
@@ -444,8 +588,22 @@ class MappingRegistry:
             for alt in m.modbus_candidates:
                 mb_to_mqtt[alt] = m.mqtt_field
                 raw_to_comp[alt] = c_key
+
+            # Index synonyms for fast concept discovery
+            d_type = m.device_type.lower()
+            syn_index[(d_type, m.id.lower())] = m
+            for s in m.synonyms:
+                syn_index[(d_type, s.lower())] = m
+            if m.mqtt_field:
+                mqtt_name = m.mqtt_field.split(".")[-1].lower()
+                syn_index[(d_type, mqtt_name)] = m
+            if m.modbus_field:
+                mb_name = m.modbus_field.split(".")[-1].lower()
+                syn_index[(d_type, mb_name)] = m
+
         self._modbus_to_mqtt = mb_to_mqtt
         self._raw_to_compound = raw_to_comp
+        self._synonyms_index = syn_index
 
     def get_modbus_to_mqtt_map(self) -> Dict[str, str]:
         return self._modbus_to_mqtt
@@ -462,6 +620,58 @@ class MappingRegistry:
     def get_by_mqtt(self, mqtt_key: str) -> Optional[TelemetryMappingDef]:
         return self._by_mqtt.get(mqtt_key)
 
+    def find_concept(
+        self,
+        device_type: str,
+        point_name: str,
+        units: Optional[str] = None,
+    ) -> Optional[TelemetryMappingDef]:
+        """Find concept definition matching device type, point name/synonym, and unit."""
+        d_type = device_type.lower()
+        p_name = point_name.lower().strip()
+        c_unit = clean_unit(units)
+
+        # 1. Exact device_type + point_name/synonym match
+        m = self._synonyms_index.get((d_type, p_name))
+        if m:
+            exp_unit = clean_unit(m.unit)
+            if not exp_unit or not c_unit or exp_unit == c_unit:
+                return m
+
+        # 2. Check all device types if not found for specific device_type
+        for (dt, sn), cand_m in self._synonyms_index.items():
+            if sn == p_name:
+                exp_unit = clean_unit(cand_m.unit)
+                if not exp_unit or not c_unit or exp_unit == c_unit:
+                    return cand_m
+
+        return m
+
+    def get_canonical_synonyms_dict(self) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """Construct canonical synonyms dictionary dynamically from loaded mappings."""
+        result: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for m in self._mappings:
+            d_type = m.device_type.lower()
+            syn_names = set(s.lower() for s in m.synonyms)
+            syn_names.add(m.id.lower())
+            if m.mqtt_field:
+                syn_names.add(m.mqtt_field.split(".")[-1].lower())
+            if m.modbus_field:
+                syn_names.add(m.modbus_field.split(".")[-1].lower())
+            for alt in m.modbus_candidates:
+                syn_names.add(alt.split(".")[-1].lower())
+
+            result.setdefault(d_type, {})[m.id] = {
+                "names": syn_names,
+                "units": m.unit,
+                "label": m.label,
+                "ha_platform": m.ha_platform,
+                "ha_device_class": m.ha_device_class,
+                "ha_state_class": m.ha_state_class,
+                "desc": m.description,
+            }
+        return result
+
     def find_mapping_for_modbus(self, modbus_key: str) -> Optional[TelemetryMappingDef]:
         """Find mapping that matches a modbus key (either exact or point-suffix match)."""
         for m in self._mappings:
@@ -472,3 +682,8 @@ class MappingRegistry:
             if modbus_key.endswith(f".{cand_point}") and m.device_type in modbus_key:
                 return m
         return None
+
+
+# Aliases for Concept Registry unification
+ConceptRegistry = MappingRegistry
+ConceptDef = TelemetryMappingDef

@@ -563,107 +563,12 @@ def solve_minimal_model_set(
     )
 
 
-@dataclass
-class UnifiedSource:
-    """A candidate data source for a unified field."""
-    source_type: str  # 'MQTT' or 'SUNSPEC'
-    source_id: str    # e.g. 'MQTT', 'M102', 'M64208'
-    field_key: str    # e.g. 'inverter.inverter.Hz'
-    name: str         # short point name 'Hz'
-    label: str        # e.g. 'AC Frequency (Model 102)'
-    model_id: Optional[int] = None
-    model_name: Optional[str] = None
-    value: Any = None
-    raw_value: Any = None
-    units: Optional[str] = None
-    is_writable: bool = False
-    offset: Optional[int] = None
-    scale_factor: Optional[str] = None
-    bounds: Optional[Dict[str, Any]] = None
-    is_optimal: bool = False
-    is_pinned: bool = False
-    transform: Optional[str] = None
-    point_type: Optional[str] = None
-    is_bitfield: bool = False
-    is_enum: bool = False
-    symbols: Optional[List[Any]] = None
-    bitmask_flags: Optional[List[str]] = None
-    is_scale_factor: bool = False
-    is_custom_override: bool = False
-
-    def to_dict(self) -> dict:
-        d = asdict(self)
-        d["key"] = self.field_key
-        return d
-
-
-@dataclass
-class UnifiedFieldGroup:
-    """A unified semantic group representing a metric across 0..1 MQTT + 0..N SunSpec sources."""
-    id: str  # Unique group ID e.g. 'inverter.unified.ac_frequency'
-    concept_key: str  # Concept key e.g. 'ac_frequency'
-    device_sn: str
-    device_type: str
-    name: str
-    label: str
-    description: str
-    units: Optional[str] = None
-    sources: List[UnifiedSource] = field(default_factory=list)
-    active_source_key: Optional[str] = None
-    preferred_source_key: Optional[str] = None
-    latest_value: Any = None
-    latest_source: str = "NONE"
-    latest_updated: float = 0.0
-    is_writable: bool = False
-    ha_platform: str = "sensor"
-    ha_device_class: Optional[str] = None
-    ha_state_class: Optional[str] = None
-    is_selected: bool = False
-    bounds: Optional[Dict[str, Any]] = None
-    point_type: Optional[str] = None
-    is_bitfield: bool = False
-    is_enum: bool = False
-    symbols: Optional[List[Any]] = None
-    bitmask_flags: Optional[List[str]] = None
-    raw_value: Any = None
-    is_scale_factor: bool = False
-    is_custom_override: bool = False
-
-    def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "key": self.active_source_key or self.id,
-            "field_key": self.active_source_key,
-            "concept_key": self.concept_key,
-            "device_sn": self.device_sn,
-            "device_type": self.device_type,
-            "name": self.name,
-            "label": self.label,
-            "description": self.description,
-            "units": self.units,
-            "sources": [s.to_dict() for s in self.sources],
-            "active_source_key": self.active_source_key,
-            "preferred_source_key": self.preferred_source_key,
-            "latest_value": self.latest_value,
-            "raw_value": self.raw_value,
-            "latest_source": self.latest_source,
-            "latest_updated": self.latest_updated,
-            "is_writable": self.is_writable,
-            "ha_platform": self.ha_platform,
-            "ha_device_class": self.ha_device_class,
-            "ha_state_class": self.ha_state_class,
-            "is_selected": self.is_selected,
-            "bounds": self.bounds,
-            "point_type": self.point_type,
-            "is_bitfield": self.is_bitfield,
-            "is_enum": self.is_enum,
-            "symbols": self.symbols,
-            "bitmask_flags": self.bitmask_flags,
-            "is_scale_factor": self.is_scale_factor,
-            "is_custom_override": self.is_custom_override,
-            "source_count": len(self.sources),
-            "sunspec_model_count": len({s.model_id for s in self.sources if s.model_id is not None}),
-        }
+from .concept import (
+    ConceptSource,
+    ConceptSource as UnifiedSource,
+    ConceptView,
+    ConceptView as UnifiedFieldGroup,
+)
 
 
 def find_canonical_concept(dev_type: str, point_name: str, units: Optional[str]) -> Optional[str]:
@@ -1126,6 +1031,25 @@ def group_device_fields(
                 g.bitmask_flags = active_src.bitmask_flags
             if active_src.is_scale_factor:
                 g.is_scale_factor = True
+
+        # Compute delta and match percentage across sources
+        num_vals = [s.value for s in g.sources if isinstance(s.value, (int, float))]
+        if len(num_vals) >= 2:
+            g.delta = abs(num_vals[0] - num_vals[1])
+            denom = max(abs(num_vals[0]), abs(num_vals[1]), 1.0)
+            g.match_pct = max(0.0, 100.0 - (g.delta / denom * 100.0))
+            if g.delta == 0:
+                g.status = "EXACT"
+            elif g.match_pct >= 95.0:
+                g.status = "CLOSE"
+            else:
+                g.status = "DIVERGENT"
+                g.is_discrepant = True
+                g.discrepancy_reason = f"Divergence detected across sources: {num_vals[0]} vs {num_vals[1]}"
+        elif len(g.sources) > 1:
+            g.status = "PARTIALLY_POLLED"
+        else:
+            g.status = "SINGLE_SOURCE"
 
     # Sort groups cleanly: common/important ones first, then alphabetical
     sort_priority = {

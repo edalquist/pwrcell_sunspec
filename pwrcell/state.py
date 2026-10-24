@@ -196,122 +196,13 @@ _CHANNEL_FIELD_SPECS = [
 
 
 
-@dataclass
-class CompoundFieldView:
-    """A unified composite view over distinct MQTT push and Modbus poll telemetry fields.
-    
-    Preserves the two separate values and their timestamps while surfacing the latest value
-    to external clients and the Web UI.
-    """
-    key: str  # e.g. 'inverter.compound.grid_power'
-    mapping_id: str  # e.g. 'grid_power'
-    device_sn: str
-    device_type: str
-    name: str  # e.g. 'grid_power'
-    label: str  # e.g. 'Grid Net Power'
-    description: str
-    units: Optional[str] = None
-    access: str = "R"
-    is_writable: bool = False
-
-    # The 3 observable values for UI and clients:
-    latest_value: Any = None
-    latest_source: str = "NONE"  # 'MQTT_PUSH' or 'MODBUS_POLL'
-    latest_updated: float = 0.0
-
-    mqtt_value: Any = None
-    mqtt_raw_value: Any = None
-    mqtt_key: Optional[str] = None
-    mqtt_updated: Optional[float] = None
-
-    modbus_value: Any = None  # Transformed value (e.g. negated CT power)
-    modbus_raw_value: Any = None  # Untransformed Modbus point
-    modbus_key: Optional[str] = None
-    modbus_updated: Optional[float] = None
-
-    delta: Optional[float] = None
-    match_pct: Optional[float] = None
-    modbus_candidates: List[str] = field(default_factory=list)
-
-    ha_platform: str = "sensor"
-    ha_device_class: Optional[str] = None
-    ha_state_class: Optional[str] = None
-    ha_unit: Optional[str] = None
-    ha_options: Optional[List[str]] = None
-    ha_suggested_display_precision: Optional[int] = None
-    is_compound: bool = True
-    model_id: Optional[int] = None
-    model_name: str = "compound"
-    model_label: str = "Merged Telemetry"
-
-    def get_bounds(self) -> Dict[str, Any]:
-        if self.ha_options:
-            return {
-                "category": "enum",
-                "point_type": "enum16",
-                "raw_min": 0,
-                "raw_max": len(self.ha_options) - 1,
-                "min_value": 0,
-                "max_value": len(self.ha_options) - 1,
-                "step": 1,
-                "units": self.units,
-                "valid_values": list(range(len(self.ha_options))),
-                "valid_names": list(self.ha_options),
-                "symbols": [{"value": i, "name": opt, "label": opt} for i, opt in enumerate(self.ha_options)],
-                "sentinel": None,
-                "description": f"{len(self.ha_options)} options: " + ", ".join(self.ha_options),
-            }
-        return {
-            "category": "other",
-            "point_type": None,
-            "units": self.units,
-            "sf": None,
-            "sf_value": None,
-            "sentinel": None,
-            "description": f"Compound field {self.label}",
-        }
-
-    def to_dict(self) -> dict:
-        return {
-            "key": self.key,
-            "mapping_id": self.mapping_id,
-            "device_sn": self.device_sn,
-            "device_type": self.device_type,
-            "name": self.name,
-            "label": self.label,
-            "description": self.description,
-            "units": self.units,
-            "access": self.access,
-            "is_writable": self.is_writable,
-            "bounds": self.get_bounds(),
-            # The 3 values:
-            "latest_value": self.latest_value,
-            "latest_source": self.latest_source,
-            "latest_updated": self.latest_updated,
-            "value": self.latest_value,
-            "source": self.latest_source,
-            "mqtt_value": self.mqtt_value,
-            "mqtt_raw_value": self.mqtt_raw_value,
-            "mqtt_key": self.mqtt_key,
-            "mqtt_updated": self.mqtt_updated,
-            "modbus_value": self.modbus_value,
-            "modbus_raw_value": self.modbus_raw_value,
-            "modbus_key": self.modbus_key,
-            "modbus_updated": self.modbus_updated,
-            "modbus_candidates": self.modbus_candidates,
-            "delta": round(self.delta, 2) if self.delta is not None else None,
-            "match_pct": round(self.match_pct, 1) if self.match_pct is not None else None,
-            "ha_platform": self.ha_platform,
-            "ha_device_class": self.ha_device_class,
-            "ha_state_class": self.ha_state_class,
-            "ha_unit": self.ha_unit or self.units,
-            "ha_options": self.ha_options,
-            "is_compound": True,
-            "model_id": self.model_id,
-            "model_name": self.model_name,
-            "model_label": self.model_label,
-            "last_updated": self.latest_updated,
-        }
+from .concept import (
+    ConceptSource,
+    ConceptView,
+    CompoundFieldView,
+    UnifiedSource,
+    UnifiedFieldGroup,
+)
 
 
 
@@ -1011,31 +902,61 @@ class StateStore:
             u = (m.unit or (mb_field.units if mb_field else (mqtt_field.units if mqtt_field else "")) or "").strip()
             precision = get_suggested_precision(u, device_class=ha_device_class, point_name=m.id)
 
-        return CompoundFieldView(
-            key=key,
-            mapping_id=m.id,
+        sources: List[ConceptSource] = []
+        if mqtt_field:
+            sources.append(
+                ConceptSource(
+                    source_type="MQTT",
+                    source_id="MQTT",
+                    field_key=mqtt_k,
+                    name=mqtt_field.name,
+                    label=f"{mqtt_field.label} (MQTT)",
+                    value=mqtt_val,
+                    raw_value=mqtt_raw,
+                    units=mqtt_field.units,
+                    is_writable=False,
+                    is_optimal=(latest_src == FieldSource.MQTT_PUSH.value),
+                )
+            )
+        if mb_field:
+            sources.append(
+                ConceptSource(
+                    source_type="SUNSPEC",
+                    source_id=f"M{mb_field.model_id}" if mb_field.model_id else "SunSpec",
+                    field_key=mb_k,
+                    name=mb_field.name,
+                    label=f"{mb_field.label} (Modbus)",
+                    model_id=mb_field.model_id,
+                    model_name=mb_field.model_name,
+                    value=mb_val,
+                    raw_value=mb_raw,
+                    units=mb_field.units,
+                    is_writable=mb_field.is_writable,
+                    transform=m.transform if m.transform != "none" else None,
+                    is_optimal=(latest_src == FieldSource.MODBUS_POLL.value),
+                )
+            )
+
+        active_k = mqtt_k if latest_src == FieldSource.MQTT_PUSH.value else mb_k
+
+        return ConceptView(
+            id=key,
+            concept_key=m.id,
             device_sn=target_dev.serial_number,
             device_type=target_dev.device_type,
             name=m.id,
             label=m.label,
             description=m.description,
             units=m.unit or (mb_field.units if mb_field else (mqtt_field.units if mqtt_field else None)),
-            access="RW" if is_writable else "R",
-            is_writable=is_writable,
+            sources=sources,
+            active_source_key=active_k,
             latest_value=latest_val,
             latest_source=latest_src,
             latest_updated=latest_upd,
-            mqtt_value=mqtt_val,
-            mqtt_raw_value=mqtt_raw,
-            mqtt_key=mqtt_k,
-            mqtt_updated=mqtt_upd,
-            modbus_value=mb_val,
-            modbus_raw_value=mb_raw,
-            modbus_key=mb_k,
-            modbus_updated=mb_upd,
-            modbus_candidates=candidates,
             delta=delta,
             match_pct=match_pct,
+            modbus_candidates=candidates,
+            is_writable=is_writable,
             ha_platform=ha_platform,
             ha_device_class=ha_device_class,
             ha_state_class=ha_state_class,
