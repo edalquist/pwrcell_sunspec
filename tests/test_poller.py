@@ -338,6 +338,40 @@ class TestTieredModbusPoller(unittest.TestCase):
         self.assertEqual(DEFAULT_CONFIG_MODELS, resolve_paths_to_models(DEFAULT_CONFIG_PATHS))
         self.assertEqual(DEFAULT_SLOW_MODELS, resolve_paths_to_models(DEFAULT_SLOW_PATHS))
 
+    def test_poll_device_model_reads_multiple_instances(self):
+        """Verify poll_device_model reads all instances of a repeating SunSpec model without key collisions."""
+        state = self.client.state
+        dev = state.register_device("000100034AC7", 3, "pv_link", "PV Link")
+
+        m_inst0 = MagicMock()
+        p0 = MagicMock()
+        p0.value = 1200
+        p0.cvalue = 1200.0
+        p0.sf_required = False
+        m_inst0.points = {"DCW": p0}
+
+        m_inst1 = MagicMock()
+        p1 = MagicMock()
+        p1.value = 850
+        p1.cvalue = 850.0
+        p1.sf_required = False
+        m_inst1.points = {"DCW": p1}
+
+        tcp_dev = MagicMock()
+        tcp_dev.models = {404: [m_inst0, m_inst1]}
+
+        mock_mb = MagicMock()
+        mock_mb.get_or_create_device.return_value = tcp_dev
+        mock_mb.read_model_block.side_effect = lambda d, mid, index=0: d.models[mid][index]
+        self.client.modbus = mock_mb
+
+        ok = self.client.poller.poll_device_model(3, "000100034AC7", 404)
+        self.assertTrue(ok)
+        self.assertIn("pv_link.string_combiner.DCW", dev.fields)
+        self.assertIn("pv_link.string_combiner_1.DCW", dev.fields)
+        self.assertEqual(dev.fields["pv_link.string_combiner.DCW"].value, 1200.0)
+        self.assertEqual(dev.fields["pv_link.string_combiner_1.DCW"].value, 850.0)
+
 
 if __name__ == "__main__":
     unittest.main()

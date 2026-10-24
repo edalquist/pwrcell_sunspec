@@ -421,17 +421,23 @@ class TieredModbusPoller:
                     return False
 
             if model_id in tcp_dev.models:
-                model_inst = self.client.modbus.read_model_block(tcp_dev, model_id)
-                if model_inst:
-                    raw_pts = {p_name: p.value for p_name, p in model_inst.points.items()}
-                    comp_pts = {p_name: safe_point_cvalue(p) for p_name, p in model_inst.points.items()}
-                    self.client.state.update_from_modbus_points(
-                        serial_number,
-                        model_id,
-                        raw_values=raw_pts,
-                        computed_values=comp_pts,
-                    )
-                    return True
+                models_list = tcp_dev.models.get(model_id) or []
+                num_instances = len(models_list) if isinstance(models_list, (list, tuple)) else 1
+                any_read = False
+                for idx in range(max(1, num_instances)):
+                    model_inst = self.client.modbus.read_model_block(tcp_dev, model_id, index=idx)
+                    if model_inst:
+                        raw_pts = {p_name: p.value for p_name, p in model_inst.points.items()}
+                        comp_pts = {p_name: safe_point_cvalue(p) for p_name, p in model_inst.points.items()}
+                        self.client.state.update_from_modbus_points(
+                            serial_number,
+                            model_id,
+                            raw_values=raw_pts,
+                            computed_values=comp_pts,
+                            instance_index=idx,
+                        )
+                        any_read = True
+                return any_read
         except Exception as e:
             self.poll_counts["errors"] = self.poll_counts.get("errors", 0) + 1
             if self.poll_counts["errors"] % 20 == 1:

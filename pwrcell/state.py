@@ -1786,14 +1786,17 @@ class StateStore:
         model_id: int,
         raw_values: Dict[str, Any],
         computed_values: Optional[Dict[str, Any]] = None,
+        instance_index: int = 0,
     ):
         """Update fields from a polled SunSpec Modbus model block.
 
         Accurately resolves SunSpec scale factors once, avoiding duplicate multiplier issues.
         """
         model_def = self.catalog.get_model(model_id)
-        model_name = model_def.name if model_def else f"model_{model_id}"
-        model_label = model_def.label if (model_def and model_def.label) else model_name
+        base_model_name = model_def.name if model_def else f"model_{model_id}"
+        base_model_label = model_def.label if (model_def and model_def.label) else base_model_name
+        model_name = f"{base_model_name}_{instance_index}" if instance_index > 0 else base_model_name
+        model_label = f"{base_model_label} (#{instance_index})" if instance_index > 0 else base_model_label
 
         # Collect all valid scale factor point values in this block.
         # SunSpec scale factors MUST be in range [-10, 10] and must not be sentinels.
