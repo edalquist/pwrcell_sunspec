@@ -167,6 +167,47 @@ class TestPwrCellTunnel(unittest.TestCase):
             self.assertEqual(opened_modes, [0o600])
             self.assertEqual(stat.S_IMODE(target_path.stat().st_mode), 0o600)
 
+    def test_mqtt_disconnect_reconnects_only_on_port_change_and_subscribes_narrowly(self):
+        """MqttClient must subscribe only to energy_recordset_live topics (not '#'), and on disconnect only call connect_async when the tunnel port changed."""
+        import time
+        from pwrcell.mqtt import MqttClient
+        from pwrcell.tunnel import TunnelConfig
+
+        mock_manager = MagicMock()
+        current_port = [18830]
+        mock_manager.ensure_active.return_value = True
+        mock_manager.get_config.side_effect = lambda: TunnelConfig(
+            host="127.0.0.1", mqtt_port=current_port[0], modbus_port=5020, manager=mock_manager
+        )
+
+        cfg = mock_manager.get_config()
+        mock_mqttc = MagicMock()
+        with patch("pwrcell.mqtt.mqtt.Client", return_value=mock_mqttc):
+            client = MqttClient(cfg)
+            client.start()
+            try:
+                # 1. Verify on_connect subscribes narrowly to energy_recordset_live, not '#'
+                mock_mqttc.on_connect(mock_mqttc, None, None, 0, None)
+                mock_mqttc.subscribe.assert_called_once_with(
+                    [("+/energy_recordset_live", 0), ("/energy_recordset_live", 0)]
+                )
+
+                # 2. Disconnect when tunnel port is unchanged (18830) -> let paho auto-reconnect without competing connect_async
+                mock_mqttc.connect_async.reset_mock()
+                mock_mqttc.disconnect.reset_mock()
+                mock_mqttc.on_disconnect(mock_mqttc, None, None, 1, None)
+                time.sleep(0.1)
+                mock_manager.ensure_active.assert_called_once()
+                mock_mqttc.connect_async.assert_not_called()
+
+                # 3. Disconnect when tunnel rebuilt on a new port (55188) -> re-point client via connect_async
+                current_port[0] = 55188
+                mock_mqttc.on_disconnect(mock_mqttc, None, None, 1, None)
+                time.sleep(0.1)
+                mock_mqttc.connect_async.assert_called_once_with("127.0.0.1", 55188)
+            finally:
+                client.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

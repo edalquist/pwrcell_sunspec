@@ -57,6 +57,7 @@ class PwrcellClient:
         self.state = StateStore(catalog=self.catalog)
         self.modbus = modbus_client
         self.mqtt = mqtt_client
+        self.bridge: Optional[Any] = None
         self.controls = ControlDispatcher(self.modbus, self.state, self.catalog)
         self.is_mock = is_mock
         self._mock_generator: Optional[MockTelemetryGenerator] = None
@@ -125,10 +126,10 @@ class PwrcellClient:
                 return
             self._running = True
 
-            if self.is_mock:
-                self._start_mock_mode()
-            else:
-                self._start_live_mode()
+        if self.is_mock:
+            self._start_mock_mode()
+        else:
+            self._start_live_mode()
 
     def stop(self):
         """Stop all background workers and disconnect clients."""
@@ -137,23 +138,39 @@ class PwrcellClient:
                 return
             self._running = False
             self._sim_stop.set()
+            init_poll_thread = self._init_poll_thread
+            sim_thread = self._sim_thread
+            poller = self.poller
+            bridge = self.bridge
+            mqtt = self.mqtt
+            modbus = self.modbus
 
-            if self._init_poll_thread and self._init_poll_thread.is_alive():
-                self._init_poll_thread.join(timeout=1.0)
+        if init_poll_thread and init_poll_thread.is_alive():
+            init_poll_thread.join(timeout=1.0)
+            if init_poll_thread.is_alive():
+                logger.warning("Initial model poll thread did not exit within 1.0s")
 
-            if self.poller:
-                self.poller.stop()
+        if poller:
+            poller.stop()
 
-            if self._sim_thread and self._sim_thread.is_alive():
-                self._sim_thread.join(timeout=2.0)
+        if sim_thread and sim_thread.is_alive():
+            sim_thread.join(timeout=2.0)
+            if sim_thread.is_alive():
+                logger.warning("Mock simulation thread did not exit within 2.0s")
 
-            if self.mqtt:
-                self.mqtt.stop()
+        if bridge:
+            try:
+                bridge.stop()
+            except Exception as e:
+                logger.debug("Error stopping HA bridge: %s", e)
 
-            if self.modbus:
-                self.modbus.close()
+        if mqtt:
+            mqtt.stop()
 
-            logger.info("PWRcell client stopped")
+        if modbus:
+            modbus.close()
+
+        logger.info("PWRcell client stopped")
 
     def __enter__(self):
         self.start()
@@ -334,14 +351,16 @@ class PwrcellClient:
             return
 
         logger.info("Starting background initial SunSpec model poll across devices...")
-        for dev in list(self.state.devices.values()):
+        for dev in self.state.get_devices_snapshot():
             if not self._running:
                 break
             if dev.slave_id is None:
                 continue
 
             try:
-                tcp_dev = self.modbus.scan_device(dev.slave_id, full_model_read=False)
+                tcp_dev = self.modbus.get_or_create_device(dev.slave_id)
+                if not getattr(tcp_dev, "models", None):
+                    tcp_dev = self.modbus.scan_device(dev.slave_id, full_model_read=False)
                 if not tcp_dev or not self._running:
                     continue
 
@@ -352,8 +371,22 @@ class PwrcellClient:
                 if 1 in tcp_dev.models or "common" in tcp_dev.models:
                     model_inst = self.modbus.read_model_block(tcp_dev, 1)
                     if model_inst and hasattr(tcp_dev, "common") and tcp_dev.common:
-                        dev.model_name = str(tcp_dev.common[0].Md.value).strip() or dev.model_name
-                        dev.version = str(tcp_dev.common[0].Vr.value).strip() or dev.version
+                        sn_pt = getattr(tcp_dev.common[0], "SN", None)
+                        live_sn = str(sn_pt.value).strip() if (sn_pt is not None and getattr(sn_pt, "value", None) is not None) else ""
+                        if live_sn and live_sn not in ("0", "None") and live_sn.upper() != dev.serial_number.strip().upper():
+                            logger.warning(
+                                "Device serial mismatch on slave %d (cached=%s, live=%s); triggering Modbus device rescan",
+                                dev.slave_id,
+                                dev.serial_number,
+                                live_sn,
+                            )
+                            self.rescan_devices()
+                            break
+                        self.state.update_device_metadata(
+                            dev.serial_number,
+                            model_name=str(tcp_dev.common[0].Md.value).strip() or dev.model_name,
+                            version=str(tcp_dev.common[0].Vr.value).strip() or dev.version,
+                        )
                         raw_pts = {p_name: p.value for p_name, p in model_inst.points.items()}
                         comp_pts = {p_name: safe_point_cvalue(p) for p_name, p in model_inst.points.items()}
                         self.state.update_from_modbus_points(dev.serial_number, 1, raw_values=raw_pts, computed_values=comp_pts)
@@ -370,7 +403,7 @@ class PwrcellClient:
 
         logger.info("Completed background initial SunSpec model poll across devices")
         self.poller.refresh_model_resolutions()
-        if getattr(self, "bridge", None):
+        if self.bridge:
             try:
                 self.bridge.publish_discovery()
             except Exception as e:
@@ -390,8 +423,20 @@ class PwrcellClient:
             self._load_from_device_config(device_config)
         elif self.modbus:
             logger.info("No saved devices found, performing Modbus device scan")
-            discovered = self.modbus.scan_range(1, 100)
+            self.rescan_devices(1, 100)
+
+    def rescan_devices(self, start: int = 1, end: int = 100) -> int:
+        """Perform a fresh Modbus scan across start..end, replacing stale cached devices if new devices are found."""
+        if not self.modbus:
+            return len(self.state.get_devices_snapshot())
+        discovered = self.modbus.scan_range(start, end)
+        if discovered:
+            with self.state._lock:
+                self.state.devices.clear()
+                self.state.devices_by_slave_id.clear()
             self._save_scanned_devices(discovered)
+            self.poller.refresh_model_resolutions()
+        return len(discovered)
 
     def _is_empty_device_config(self, cfg: DeviceConfig) -> bool:
         return not (cfg.rebus_beacon or cfg.inverter or cfg.battery or cfg.pv_link or cfg.icm)

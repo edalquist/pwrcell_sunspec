@@ -384,6 +384,37 @@ class TestTieredModbusPoller(unittest.TestCase):
         resolved = resolve_paths_to_models(["battery.battery"], catalog=self.client.catalog, state_store=empty_state)
         self.assertEqual(resolved.get("battery"), [802])
 
+    def test_poll_tier_tracks_success_separately_from_attempts(self):
+        """If devices exist and every model read in a tier fails, last_poll and poll_counts must not advance (only poll_attempts)."""
+        self.client.state.register_device("INV_01", 8, "inverter", "Inverter")
+        mock_mb = MagicMock()
+        mock_mb.get_or_create_device.side_effect = ConnectionError("Modbus down")
+        self.client.modbus = mock_mb
+
+        poller = self.client.poller
+        polled = poller.poll_tier(PollingTier.FAST)
+        self.assertEqual(polled, 0)
+        self.assertEqual(poller.last_poll[PollingTier.FAST.value], 0.0)
+        self.assertEqual(poller.poll_counts[PollingTier.FAST.value], 0)
+        self.assertGreater(poller.last_poll_attempt[PollingTier.FAST.value], 0.0)
+        self.assertEqual(poller.poll_attempts[PollingTier.FAST.value], 1)
+
+    def test_poller_start_stop_exits_promptly_during_initial_stagger(self):
+        """poller.stop() called immediately after poller.start() must interrupt the initial stagger and exit in < 0.5s."""
+        import time
+
+        poller = TieredModbusPoller(client=self.client, enabled=True)
+        poller.start()
+        try:
+            time.sleep(0.05)
+            t0 = time.monotonic()
+            poller.stop()
+            elapsed = time.monotonic() - t0
+            self.assertLess(elapsed, 0.5, f"poller.stop() took {elapsed:.2f}s due to non-stoppable initial stagger")
+            self.assertFalse(poller._running)
+        finally:
+            poller.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

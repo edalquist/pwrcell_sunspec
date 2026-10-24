@@ -148,14 +148,20 @@ class MqttClient:
         self.__latest_snapshot: Optional[LiveTelemetrySnapshot] = None
         self.__unrecognized_topics: Dict[str, int] = {}
         self.__mqttc: Optional[mqtt.Client] = None
+        self._connected_port: Optional[int] = None
         self._reconnecting: bool = False
         self._stopping: bool = False
         self.__lock = threading.RLock()
 
     @property
     def port(self) -> int:
-        if self.__tunnel_manager and getattr(self.__tunnel_manager, "mqtt_port", None):
-            return self.__tunnel_manager.mqtt_port
+        if self.__tunnel_manager:
+            if hasattr(self.__tunnel_manager, "get_config"):
+                cfg = self.__tunnel_manager.get_config()
+                if cfg and getattr(cfg, "mqtt_port", None):
+                    return cfg.mqtt_port
+            if getattr(self.__tunnel_manager, "mqtt_port", None):
+                return self.__tunnel_manager.mqtt_port
         return self.__tunnel_port
 
     def __enter__(self):
@@ -177,13 +183,15 @@ class MqttClient:
             self.__mqttc.on_disconnect = self.__mqtt_disconnect
 
             self.__mqttc.loop_start()
-            logger.info("Connecting to internal PWRcell MQTT on %s:%s", self.__tunnel_ip, self.port)
+            target_port = self.port
+            self._connected_port = target_port
+            logger.info("Connecting to internal PWRcell MQTT on %s:%s", self.__tunnel_ip, target_port)
             try:
-                self.__mqttc.connect(self.__tunnel_ip, self.port)
+                self.__mqttc.connect(self.__tunnel_ip, target_port)
             except Exception as e:
                 logger.warning("Initial connection to internal PWRcell MQTT failed (%s); client loop will retry", e)
                 try:
-                    self.__mqttc.connect_async(self.__tunnel_ip, self.port)
+                    self.__mqttc.connect_async(self.__tunnel_ip, target_port)
                 except Exception:
                     pass
 
@@ -238,8 +246,8 @@ class MqttClient:
         properties: Properties,
     ):
         logger.info("PWRcell internal MQTT connected: %s", reason_code)
-        # Subscribe to all internal telemetry topics
-        client.subscribe("#")
+        # Subscribe only to live protobuf telemetry recordset topics
+        client.subscribe([("+/energy_recordset_live", 0), ("/energy_recordset_live", 0)])
 
     def __mqtt_disconnect(
         self,
@@ -258,6 +266,7 @@ class MqttClient:
                 if self._reconnecting:
                     return
                 self._reconnecting = True
+                old_port = self._connected_port or self.__tunnel_port
 
             def _reconnect_bg():
                 try:
@@ -265,8 +274,14 @@ class MqttClient:
                     if reconnected:
                         new_port = self.port
                         with self.__lock:
-                            if self.__mqttc and not getattr(self, "_stopping", False):
-                                logger.info("Tunnel active; pointing internal MQTT client to port %s", new_port)
+                            if self.__mqttc and not getattr(self, "_stopping", False) and new_port != old_port:
+                                logger.info(
+                                    "Tunnel port changed (%s -> %s); pointing internal MQTT client to port %s",
+                                    old_port,
+                                    new_port,
+                                    new_port,
+                                )
+                                self._connected_port = new_port
                                 try:
                                     self.__mqttc.disconnect()
                                 except Exception:

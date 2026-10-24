@@ -128,15 +128,24 @@ def create_app(client: PwrcellClient) -> Flask:
 
     @app.route("/api/devices")
     def get_devices():
-        devices_list = [dev.to_dict(catalog=client.catalog) for dev in client.state.devices.values()]
+        devices_list = [dev.to_dict(catalog=client.catalog) for dev in client.state.get_devices_snapshot()]
         # Sort so beacon, inverter, battery come first, then pv_links, icm
         sort_order = {"rebus_beacon": 1, "inverter": 2, "battery": 3, "pv_link": 4, "icm": 5}
         devices_list.sort(key=lambda d: (sort_order.get(d["device_type"], 99), d["serial_number"]))
         return jsonify(devices_list)
 
+    @app.route("/api/devices/rescan", methods=["POST"])
+    def rescan_devices():
+        body = request.get_json(silent=True) or {}
+        start = int(body.get("start", 1))
+        end = int(body.get("end", 100))
+        count = client.rescan_devices(start=start, end=end)
+        devices_list = [dev.to_dict(catalog=client.catalog) for dev in client.state.get_devices_snapshot()]
+        return jsonify({"success": True, "discovered_count": count, "devices": devices_list})
+
     @app.route("/api/devices/<serial_number>")
     def get_device_details(serial_number: str):
-        dev = client.state.devices.get(serial_number)
+        dev = client.state.get_device(serial_number)
         if not dev:
             return jsonify({"error": "Device not found"}), 404
 
@@ -145,9 +154,10 @@ def create_app(client: PwrcellClient) -> Flask:
             if refresh_arg in ("all", "models"):
                 client.poller.poll_device_all_models(dev.slave_id, dev.serial_number)
             else:
-                target_models = set(client.poller.config_models.get(dev.device_type, []))
-                if refresh_arg in ("1", "true"):
-                    target_models.update(client.poller.fast_models.get(dev.device_type, []))
+                with client.poller._cond:
+                    target_models = set(client.poller.config_models.get(dev.device_type, []))
+                    if refresh_arg in ("1", "true"):
+                        target_models.update(client.poller.fast_models.get(dev.device_type, []))
                 for mid in target_models:
                     client.poller.poll_device_model(dev.slave_id, dev.serial_number, mid)
 
@@ -165,7 +175,7 @@ def create_app(client: PwrcellClient) -> Flask:
 
     @app.route("/api/devices/<serial_number>/unified_fields")
     def get_device_unified_fields(serial_number: str):
-        dev = client.state.devices.get(serial_number)
+        dev = client.state.get_device(serial_number)
         if not dev:
             return jsonify({"error": "Device not found"}), 404
         ha_selected = set(load_ha_config())
@@ -180,7 +190,7 @@ def create_app(client: PwrcellClient) -> Flask:
     @app.route("/api/devices/<serial_number>/optimize_polling", methods=["POST"])
     def optimize_polling_for_device(serial_number: str):
         from ..optimizer import solve_minimal_model_set
-        dev = client.state.devices.get(serial_number)
+        dev = client.state.get_device(serial_number)
         if not dev:
             return jsonify({"error": "Device not found"}), 404
 
@@ -311,9 +321,11 @@ def create_app(client: PwrcellClient) -> Flask:
 
     @app.route("/api/devices/<serial_number>/poll_all", methods=["POST"])
     def poll_all_device_models(serial_number: str):
-        dev = client.state.devices.get(serial_number)
+        dev = client.state.get_device(serial_number)
         if not dev:
             return jsonify({"error": "Device not found"}), 404
+        if not client.modbus or dev.slave_id is not None:
+            pass
         if not client.modbus or dev.slave_id is None:
             return jsonify({"success": True, "count": 0, "message": "No Modbus connection or slave ID"})
 
@@ -323,7 +335,7 @@ def create_app(client: PwrcellClient) -> Flask:
     @app.route("/api/fields")
     def get_all_fields():
         all_fields = []
-        for dev in client.state.devices.values():
+        for dev in client.state.get_devices_snapshot():
             all_fields.extend(dev.serialize_fields().values())
             for c in client.state.get_compound_views(dev.serial_number):
                 all_fields.append(c.to_dict())
@@ -710,7 +722,7 @@ def create_app(client: PwrcellClient) -> Flask:
         preview_list = []
         gateway = client.state.get_beacon() or client.state.get_inverter()
 
-        for dev in client.state.devices.values():
+        for dev in client.state.get_devices_snapshot():
             # Include compound fields
             for c_view in client.state.get_compound_views(dev.serial_number):
                 if is_field_selected(c_view.key, dev.serial_number, selected, c_view.mqtt_key):
@@ -728,7 +740,7 @@ def create_app(client: PwrcellClient) -> Flask:
                     })
 
             # Include raw fields
-            for f_key, f in dev.fields.items():
+            for f_key, f in list(dev.fields.items()):
                 if is_field_selected(f_key, dev.serial_number, selected):
                     payload_info = generate_discovery_payload(f, dev, gateway_device=gateway)
                     preview_list.append({

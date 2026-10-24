@@ -81,10 +81,12 @@ class SerializedModbusWorker:
         self._queue: queue.Queue[Optional[ModbusJob]] = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._closed = False
         self._lock = threading.Lock()
 
     def start(self):
         with self._lock:
+            self._closed = False
             if self._running:
                 return
             self._running = True
@@ -98,6 +100,7 @@ class SerializedModbusWorker:
 
     def stop(self, timeout: float = 3.0):
         with self._lock:
+            self._closed = True
             if not self._running:
                 return
             self._running = False
@@ -110,9 +113,13 @@ class SerializedModbusWorker:
                 except queue.Empty:
                     break
             self._queue.put(None)  # Sentinel to terminate thread
-            if self._thread and self._thread.is_alive():
-                self._thread.join(timeout=timeout)
-            logger.info("Stopped Serialized Modbus Worker thread")
+            thread = self._thread
+
+        if thread and thread.is_alive():
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                logger.warning("Serialized Modbus Worker thread did not exit within %gs", timeout)
+        logger.info("Stopped Serialized Modbus Worker thread")
 
     def submit(
         self,
@@ -122,10 +129,15 @@ class SerializedModbusWorker:
         backoff_sec: float = 0.25,
     ) -> concurrent.futures.Future[T]:
         """Submit a Modbus operation to the serialized queue."""
-        if not self._running:
+        future: concurrent.futures.Future[T] = concurrent.futures.Future()
+        with self._lock:
+            if self._closed:
+                future.set_exception(RuntimeError("Modbus worker stopped"))
+                return future
+            need_start = not self._running
+        if need_start:
             self.start()
 
-        future: concurrent.futures.Future[T] = concurrent.futures.Future()
         job = ModbusJob(
             func=func,
             future=future,
@@ -239,17 +251,25 @@ class SerializedModbusClient:
     def close(self):
         """Disconnect all devices and stop worker thread."""
         with self._lock:
-            if self._shared_client:
-                try:
-                    self.worker.execute_sync(self._shared_client.disconnect, description="Disconnect shared Modbus client", timeout=2.0)
-                except Exception as e:
-                    logger.debug("Error closing shared Modbus client: %s", e)
-                self._shared_client = None
+            shared = self._shared_client
+            self._shared_client = None
             self._devices.clear()
+        if shared:
+            try:
+                self.worker.execute_sync(shared.disconnect, description="Disconnect shared Modbus client", timeout=2.0)
+            except Exception as e:
+                logger.debug("Error closing shared Modbus client: %s", e)
         self.worker.stop()
 
     def _get_shared_client(self) -> mb.ModbusClientTCP:
-        current_port = self.tunnel.modbus_port if (self.tunnel and getattr(self.tunnel, "modbus_port", None)) else self.port
+        current_port = self.port
+        if self.tunnel:
+            if hasattr(self.tunnel, "get_config"):
+                cfg = self.tunnel.get_config()
+                if cfg and getattr(cfg, "modbus_port", None):
+                    current_port = cfg.modbus_port
+            elif getattr(self.tunnel, "modbus_port", None):
+                current_port = self.tunnel.modbus_port
         if self._shared_client is not None and self._shared_client.ipport != current_port:
             logger.info("Modbus port updated from tunnel: %s -> %s", self._shared_client.ipport, current_port)
             try:

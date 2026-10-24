@@ -176,12 +176,14 @@ class TestStateAndControls(unittest.TestCase):
         # Write by integer value
         res2 = self.controls.write_field("rebus_beacon.REbus_dir.SysMd", 2)
         self.assertEqual(res2, "SELF_SUPPLY")
+        field = self.beacon.fields.get("rebus_beacon.REbus_dir.SysMd")
         self.assertEqual(field.value, "SELF_SUPPLY")
         self.assertEqual(field.raw_value, 2)
 
         # Write case-insensitive
         res3 = self.controls.write_field("rebus_beacon.REbus_dir.SysMd", "clean_backup")
         self.assertEqual(res3, "CLEAN_BACKUP")
+        field = self.beacon.fields.get("rebus_beacon.REbus_dir.SysMd")
         self.assertEqual(field.value, "CLEAN_BACKUP")
         self.assertEqual(field.raw_value, 3)
 
@@ -634,6 +636,7 @@ class TestStateAndControls(unittest.TestCase):
 
         res = self.controls.write_field("battery.battery.SoCMax", 50.5)
         self.assertEqual(res, 50.5)
+        socmax_field = self.bat.fields.get("battery.battery.SoCMax")
         self.assertEqual(socmax_field.value, 50.5)
         self.assertEqual(socmax_field.raw_value, 505)
         # write_point_value assigns point.cvalue = value, so it expects the scaled engineering value 50.5
@@ -651,7 +654,6 @@ class TestStateAndControls(unittest.TestCase):
             raw_values={"SoCMax": 900, "SoC_SF": -1},
             computed_values={"SoCMax": 90.0, "SoC_SF": -1},
         )
-        socmax_field = self.bat.fields.get("battery.battery.SoCMax")
 
         # Simulate device clamping 95.0 down to 80.0 on read-back
         mock_mb = MagicMock()
@@ -660,6 +662,7 @@ class TestStateAndControls(unittest.TestCase):
 
         res = self.controls.write_field("battery.battery.SoCMax", 95.0)
         self.assertEqual(res, 80.0)
+        socmax_field = self.bat.fields.get("battery.battery.SoCMax")
         self.assertEqual(socmax_field.value, 80.0)
         self.assertEqual(socmax_field.raw_value, 800)
 
@@ -707,6 +710,39 @@ class TestStateAndControls(unittest.TestCase):
         self.assertNotEqual(d1.serial_number, d2.serial_number)
         self.assertIn(d1.serial_number, self.state.devices)
         self.assertIn(d2.serial_number, self.state.devices)
+
+    def test_state_field_replaced_immutably_and_controls_route_through_set_field(self):
+        """set_field and ControlDispatcher writes must replace StateField instances rather than mutating in place, and snapshot helpers must work under lock."""
+        f1 = self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="SysMd",
+            value="SELF_SUPPLY",
+            raw_value=2,
+            sub_group="inverter_status",
+        )
+        f2 = self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="SysMd",
+            value="CLEAN_BACKUP",
+            raw_value=3,
+            sub_group="inverter_status",
+        )
+        # f1 is an immutable snapshot and must not be mutated when f2 is stored
+        self.assertIsNot(f1, f2)
+        self.assertEqual(f1.value, "SELF_SUPPLY")
+        self.assertEqual(f2.value, "CLEAN_BACKUP")
+
+        # ControlDispatcher.set_system_mode must also update inverter.inverter_status.SysMd via set_field (replacing f2)
+        self.controls.set_system_mode("PRIORITY_BACKUP")
+        f3 = self.inv.fields.get("inverter.inverter_status.SysMd")
+        self.assertIsNot(f2, f3)
+        self.assertEqual(f2.value, "CLEAN_BACKUP")
+        self.assertEqual(f3.value, "PRIORITY_BACKUP")
+
+        # Snapshot helpers
+        devs = self.state.get_devices_snapshot()
+        self.assertEqual(len(devs), 3)
+        self.assertEqual(self.state.get_device(self.inv.serial_number.lower()), self.inv)
 
 
 if __name__ == "__main__":

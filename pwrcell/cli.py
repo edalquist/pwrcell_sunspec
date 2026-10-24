@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import signal
 import sys
 import time
 
@@ -19,6 +20,17 @@ from .bridge import HomeAssistantBridge
 from .client import create_client
 from .config import AppConfig
 from .ui.server import run_explorer
+
+
+def _install_sigterm_handler():
+    """Translate SIGTERM into KeyboardInterrupt so context managers and finally blocks run cleanly."""
+    def _handle_sigterm(signum, frame):
+        raise KeyboardInterrupt("SIGTERM received")
+
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except ValueError:
+        pass
 
 
 def cmd_explore(args, config: AppConfig):
@@ -271,6 +283,7 @@ def main():
     )
 
     args = parser.parse_args()
+    _install_sigterm_handler()
 
     effective_log_level = getattr(args, "sub_log_level", None) or getattr(args, "log_level", "INFO")
     logging.basicConfig(

@@ -581,6 +581,7 @@ class StateField:
             "model_name": self.model_name,
             "model_label": self.model_label,
             "last_updated": self.last_updated,
+            "data_age": round(max(0.0, time.time() - self.last_updated), 1) if self.last_updated > 0 else None,
         }
 
 
@@ -601,36 +602,39 @@ class UnifiedDevice:
     def get_scale_factor_value(self, field: StateField) -> Optional[int]:
         if not field.scale_factor_point:
             return None
+        fields_snapshot = dict(self.fields)
         parts = field.key.split(".")
         if len(parts) >= 2:
             group = parts[1]
             sf_key = f"{self.device_type}.{group}.{field.scale_factor_point}"
-            if sf_key in self.fields:
-                val = self.fields[sf_key].value
+            if sf_key in fields_snapshot:
+                val = fields_snapshot[sf_key].value
                 if isinstance(val, (int, float)):
                     return int(val)
-        for f in self.fields.values():
+        for f in fields_snapshot.values():
             if f.name == field.scale_factor_point and isinstance(f.value, (int, float)):
                 return int(f.value)
         return None
 
     def serialize_fields(self) -> Dict[str, dict]:
+        fields_items = list(self.fields.items())
         return {
             f_key: f.to_dict(sf_value=self.get_scale_factor_value(f))
-            for f_key, f in self.fields.items()
+            for f_key, f in fields_items
         }
 
     def get_models_summary(self, catalog: Optional[ModelCatalog] = None) -> List[Dict[str, Any]]:
         cat = catalog or get_catalog()
+        fields_values = list(self.fields.values())
         all_model_ids = set(self.supported_models)
-        for f in self.fields.values():
+        for f in fields_values:
             if f.model_id is not None:
                 all_model_ids.add(f.model_id)
 
         result = []
         for mid in sorted(all_model_ids):
             m_def = cat.get_model(mid)
-            pts_count = sum(1 for f in self.fields.values() if f.model_id == mid)
+            pts_count = sum(1 for f in fields_values if f.model_id == mid)
             result.append({
                 "model_id": mid,
                 "name": m_def.name if m_def else f"model_{mid}",
@@ -717,6 +721,40 @@ class StateStore:
             dev = self.devices.get(serial_number)
             if dev:
                 dev.supported_models = sorted(list(set(dev.supported_models + model_ids)))
+
+    def update_device_metadata(
+        self,
+        serial_number: str,
+        model_name: Optional[str] = None,
+        version: Optional[str] = None,
+    ):
+        """Update device model_name and/or version under the state lock."""
+        with self._lock:
+            dev = self.devices.get(serial_number)
+            if dev:
+                if model_name:
+                    dev.model_name = model_name
+                if version:
+                    dev.version = version
+
+    def get_devices_snapshot(self) -> List[UnifiedDevice]:
+        """Return a shallow list copy of registered devices under the state lock."""
+        with self._lock:
+            return list(self.devices.values())
+
+    def get_device(self, serial_number: str) -> Optional[UnifiedDevice]:
+        """Look up a registered device by serial number (exact or case-insensitive) under the state lock."""
+        if not serial_number:
+            return None
+        with self._lock:
+            dev = self.devices.get(serial_number)
+            if dev is not None:
+                return dev
+            clean_sn = serial_number.strip().upper()
+            for d in self.devices.values():
+                if d.serial_number.strip().upper() == clean_sn:
+                    return d
+            return None
 
     def get_devices_by_type(self, device_type: str) -> List[UnifiedDevice]:
         with self._lock:
@@ -996,7 +1034,7 @@ class StateStore:
             try:
                 listener(field_obj)
             except Exception as e:
-                logger.debug("Error in state change listener: %s", e)
+                logger.warning("Error in state change listener: %s", e)
 
     def notify_compound_change(self, c_view: Any):
         """Notify registered compound listeners of a compound view change."""
@@ -1006,7 +1044,7 @@ class StateStore:
             try:
                 listener(c_view)
             except Exception as e:
-                logger.debug("Error in compound change listener: %s", e)
+                logger.warning("Error in compound change listener: %s", e)
 
     def set_field(
         self,
@@ -1125,56 +1163,66 @@ class StateStore:
                         self._monotonic_drop_counts.pop(drop_key, None)
 
                 changed = (existing.value != value)
-                existing.value = value
-                existing.raw_value = raw_value
-                if units is not None:
-                    existing.units = units
-                if ha_hint is not None:
-                    existing.ha_hint = ha_hint
-                if label and label != existing.name:
-                    existing.label = label
-                if description:
-                    existing.description = description
-                if source is not None:
-                    existing.source = source
-                if access != "R" or existing.access == "R":
-                    existing.access = access
-                if point_type is not None:
-                    existing.point_type = point_type
-                if is_enum is not None:
-                    existing.is_enum = is_enum
-                if is_bitfield is not None:
-                    existing.is_bitfield = is_bitfield
+                merged_label = label if (label and label != existing.name) else existing.label
+                merged_desc = description if description else existing.description
+                merged_units = units if units is not None else existing.units
+                merged_ha_hint = ha_hint if ha_hint is not None else existing.ha_hint
+                merged_source = source if source is not None else existing.source
+                merged_access = access if (access != "R" or existing.access == "R") else existing.access
+                merged_pt_type = point_type if point_type is not None else existing.point_type
+                merged_is_enum = is_enum if is_enum is not None else existing.is_enum
+                merged_is_bitfield = is_bitfield if is_bitfield is not None else existing.is_bitfield
                 if bitmask_flags is not None:
-                    existing.bitmask_flags = bitmask_flags
-                elif is_bitfield and isinstance(value, list):
-                    existing.bitmask_flags = value
-                if symbols is not None:
-                    existing.symbols = symbols
-                if model_id is not None:
-                    existing.model_id = model_id
-                if model_name is not None:
-                    existing.model_name = model_name
-                if model_label is not None:
-                    existing.model_label = model_label
-                is_sf_val = is_scale_factor_point(
+                    merged_bitmask_flags = bitmask_flags
+                elif merged_is_bitfield and isinstance(value, list):
+                    merged_bitmask_flags = value
+                else:
+                    merged_bitmask_flags = existing.bitmask_flags
+                merged_symbols = symbols if symbols is not None else existing.symbols
+                merged_model_id = model_id if model_id is not None else existing.model_id
+                merged_model_name = model_name if model_name is not None else existing.model_name
+                merged_model_label = model_label if model_label is not None else existing.model_label
+                merged_is_sf = is_scale_factor_point(
                     name=name,
-                    point_type=point_type,
-                    label=label,
+                    point_type=merged_pt_type,
+                    label=merged_label,
                     explicit=bool(is_scale_factor or existing.is_scale_factor),
                 )
-                existing.is_scale_factor = is_sf_val
-                if scale_factor_point is not None:
-                    existing.scale_factor_point = scale_factor_point
-                if offset is not None:
-                    existing.offset = offset
-                if size != 1 or existing.size == 1:
-                    existing.size = size
-                existing.mqtt_equivalent = mqtt_eq
-                existing.compound_key = c_key
-                existing.is_compound_raw = is_comp_raw
-                existing.last_updated = time.time()
-                field_obj = existing
+                merged_sf_point = scale_factor_point if scale_factor_point is not None else existing.scale_factor_point
+                merged_offset = offset if offset is not None else existing.offset
+                merged_size = size if (size != 1 or existing.size == 1) else existing.size
+
+                field_obj = StateField(
+                    key=key,
+                    device_sn=device_sn,
+                    device_type=dev.device_type,
+                    name=name,
+                    label=merged_label,
+                    description=merged_desc,
+                    value=value,
+                    raw_value=raw_value,
+                    units=merged_units,
+                    point_type=merged_pt_type,
+                    is_enum=bool(merged_is_enum),
+                    is_bitfield=bool(merged_is_bitfield),
+                    bitmask_flags=merged_bitmask_flags,
+                    source=merged_source,
+                    access=merged_access,
+                    symbols=merged_symbols,
+                    is_scale_factor=merged_is_sf,
+                    scale_factor_point=merged_sf_point,
+                    offset=merged_offset,
+                    size=merged_size,
+                    mqtt_equivalent=mqtt_eq,
+                    compound_key=c_key,
+                    is_compound_raw=is_comp_raw,
+                    ha_hint=merged_ha_hint,
+                    model_id=merged_model_id,
+                    model_name=merged_model_name,
+                    model_label=merged_model_label,
+                    last_updated=time.time(),
+                )
+                dev.fields[key] = field_obj
             else:
                 field_obj = StateField(
                     key=key,
@@ -1230,14 +1278,14 @@ class StateStore:
             try:
                 listener(field_obj)
             except Exception as e:
-                logger.debug("Error in state change listener: %s", e)
+                logger.warning("Error in state change listener: %s", e)
 
         if affected_view and compound_listeners:
             for c_listener in compound_listeners:
                 try:
                     c_listener(affected_view)
                 except Exception as e:
-                    logger.debug("Error in compound change listener: %s", e)
+                    logger.warning("Error in compound change listener: %s", e)
 
         return field_obj
 

@@ -171,6 +171,140 @@ class TestClientLifecycle(unittest.TestCase):
             self.assertEqual(client.state.devices["000100083F22"].device_type, "battery")
             self.assertEqual(client.state.devices["00010009ABCD"].device_type, "pv_link")
 
+    def test_no_locks_held_across_blocking_stop_operations(self):
+        """Stopping SerializedModbusClient while a worker job acquires client._lock must not deadlock, and PwrCellTunnel.stop() wakes backoff sleeps immediately."""
+        import threading
+        from pwrcell.config import AppConfig, PwrcellConfig, SshTunnel
+        from pwrcell.modbus import SerializedModbusClient
+        from pwrcell.tunnel import PwrCellTunnel
+
+        # 1. SerializedModbusClient.close() must not hold self._lock while waiting on worker.execute_sync,
+        # otherwise a running worker job that acquires self._lock (e.g. _reset_shared_client) deadlocks!
+        mb_client = SerializedModbusClient(host="127.0.0.1", port=5020)
+        mb_client._shared_client = MagicMock()
+        mb_client.worker.start()
+
+        job_entered = threading.Event()
+        allow_job_proceed = threading.Event()
+
+        def blocking_job():
+            job_entered.set()
+            allow_job_proceed.wait(timeout=2.0)
+            # Worker thread acquires mb_client._lock during normal error/reset handling
+            with mb_client._lock:
+                return "ok"
+
+        mb_client.worker.submit(blocking_job, retries=1)
+        self.assertTrue(job_entered.wait(timeout=1.0))
+
+        close_done = threading.Event()
+
+        def run_close():
+            mb_client.close()
+            close_done.set()
+
+        t = threading.Thread(target=run_close, daemon=True)
+        t.start()
+        time.sleep(0.05)
+        allow_job_proceed.set()
+        self.assertTrue(close_done.wait(timeout=1.5), "mb_client.close() deadlocked with worker acquiring mb_client._lock")
+
+        # 2. PwrCellTunnel.stop() must interrupt retry backoff wait in ensure_active() immediately
+        cfg = AppConfig(pwrcell=PwrcellConfig(ssh_tunnel=SshTunnel(host="127.0.0.1", port=22, username="root")))
+        tunnel = PwrCellTunnel(cfg)
+        tunnel._running = True
+        with patch.object(tunnel, "_create_and_start_server", side_effect=RuntimeError("conn refused")):
+            ensure_done = threading.Event()
+
+            def run_ensure():
+                tunnel.ensure_active()
+                ensure_done.set()
+
+            et = threading.Thread(target=run_ensure, daemon=True)
+            et.start()
+            time.sleep(0.1)
+            t0 = time.monotonic()
+            tunnel.stop()
+            self.assertTrue(ensure_done.wait(timeout=0.5), "ensure_active() did not wake promptly on tunnel.stop()")
+            self.assertLess(time.monotonic() - t0, 0.5)
+
+    def test_startup_shutdown_ordering_and_no_worker_resurrection(self):
+        """After close(), SerializedModbusWorker.submit() must not resurrect the worker thread; PwrcellClient.stop() stops self.bridge; _poll_device_models_live reuses already-scanned devices."""
+        from types import SimpleNamespace
+        from pwrcell.modbus import SerializedModbusClient
+
+        # 1. Submitting a job after close() must fail without restarting the worker thread
+        mb_client = SerializedModbusClient(host="127.0.0.1", port=5020)
+        mb_client.worker.start()
+        self.assertTrue(mb_client.worker._running)
+        mb_client.close()
+        self.assertFalse(mb_client.worker._running)
+
+        with self.assertRaises(RuntimeError):
+            mb_client.worker.execute_sync(lambda: "should not run", retries=1, timeout=1.0)
+        self.assertFalse(mb_client.worker._running)
+
+        # 2. PwrcellClient.stop() stops attached self.bridge
+        client = PwrcellClient(is_mock=True)
+        mock_bridge = MagicMock()
+        client.bridge = mock_bridge
+        client.start()
+        client.stop()
+        mock_bridge.stop.assert_called_once()
+
+        # 3. _poll_device_models_live reuses existing tcp_dev.models from get_or_create_device instead of re-scanning
+        live_client = PwrcellClient(is_mock=False)
+        live_client._running = True
+        live_client.state.register_device("0001000714E9", 8, "inverter", "Inverter")
+        fake_tcp_dev = SimpleNamespace(
+            models={1: [object()], 102: [object()]},
+            common=[SimpleNamespace(Md=SimpleNamespace(value="X7602"), Vr=SimpleNamespace(value="1.2"))],
+        )
+        mock_modbus = MagicMock()
+        mock_modbus.get_or_create_device.return_value = fake_tcp_dev
+        mock_modbus.read_model_block.return_value = SimpleNamespace(points={})
+        live_client.modbus = mock_modbus
+        with patch.object(live_client.poller, "poll_device_model"):
+            live_client._poll_device_models_live()
+        mock_modbus.scan_device.assert_not_called()
+
+    def test_discovery_cache_revalidation_on_serial_mismatch_and_rescan(self):
+        """If Model 1 on a cached slave ID reports a different serial number than cached in devices.yaml, rescan_devices() replaces stale devices."""
+        from types import SimpleNamespace
+        from pwrcell.config import DeviceConfig
+
+        live_client = PwrcellClient(is_mock=False)
+        live_client._running = True
+        # Cached stale device on slave 8
+        live_client.state.register_device("OLD_SERIAL_999", 8, "inverter", "Inverter")
+
+        # Live hardware on slave 8 actually has NEW_SERIAL_123
+        live_tcp_dev = SimpleNamespace(
+            models={1: [object()], 102: [object()]},
+            common=[
+                SimpleNamespace(
+                    SN=SimpleNamespace(value="NEW_SERIAL_123"),
+                    Md=SimpleNamespace(value="PWRcell X7602"),
+                    Vr=SimpleNamespace(value="1.5"),
+                )
+            ],
+        )
+        mock_modbus = MagicMock()
+        mock_modbus.get_or_create_device.return_value = live_tcp_dev
+        mock_modbus.read_model_block.return_value = SimpleNamespace(points={})
+        mock_modbus.scan_range.return_value = {8: live_tcp_dev}
+        live_client.modbus = mock_modbus
+
+        with patch.object(DeviceConfig, "write") as mock_write, \
+             patch.object(live_client.poller, "poll_device_model"):
+            live_client._poll_device_models_live()
+            mock_modbus.scan_range.assert_called_once()
+            mock_write.assert_called_once()
+
+        self.assertNotIn("OLD_SERIAL_999", live_client.state.devices)
+        self.assertIn("NEW_SERIAL_123", live_client.state.devices)
+        self.assertEqual(live_client.state.devices["NEW_SERIAL_123"].device_type, "inverter")
+
 
 if __name__ == "__main__":
     unittest.main()
