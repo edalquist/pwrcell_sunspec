@@ -563,6 +563,10 @@ class HomeAssistantBridge:
                 self.publish_discovery()
             return
 
+        if getattr(msg, "retain", False) is True:
+            logger.warning("Ignoring retained command message on %s (%s) to prevent replaying stale writes", topic, payload_str)
+            return
+
         logger.info("Received command on %s: %s", topic, payload_str)
 
         with self._lock:

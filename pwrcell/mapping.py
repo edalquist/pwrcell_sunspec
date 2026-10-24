@@ -14,6 +14,8 @@ try:
 except ImportError:
     yaml = None
 
+from .config import data_dir, is_addon_data_env
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MAPPINGS_FILE = "telemetry_mappings.yaml"
@@ -354,6 +356,8 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
 def _resolve_mappings_path(config_path: Optional[Path | str] = None) -> Path:
     if config_path:
         return Path(config_path)
+    if is_addon_data_env():
+        return data_dir() / DEFAULT_MAPPINGS_FILE
     pkg_dir = Path(__file__).resolve().parent
     data_path = pkg_dir / "data" / DEFAULT_MAPPINGS_FILE
     if data_path.exists():
@@ -391,6 +395,7 @@ def save_mappings(mappings: List[TelemetryMappingDef], config_path: Optional[Pat
     """Save telemetry mappings list to YAML."""
     path = _resolve_mappings_path(config_path)
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "version": "1.0",
             "mappings": [m.to_dict() for m in mappings],

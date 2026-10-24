@@ -7,7 +7,7 @@ from pathlib import Path
 from paramiko import AutoAddPolicy, RejectPolicy, SSHClient
 from scp import SCPClient
 
-from .config import AppConfig
+from .config import AppConfig, data_dir, is_addon_data_env
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,12 @@ def load_models_dir(config: AppConfig) -> Path:
     @Return The directory that contains the sunspec files
     """
     repo_root = Path(__file__).resolve().parent.parent
-    sunspec_cache_dir = Path(config.sunspec_cache_dir) if config.sunspec_cache_dir else repo_root
+    if config.sunspec_cache_dir:
+        sunspec_cache_dir = Path(config.sunspec_cache_dir)
+    elif is_addon_data_env():
+        sunspec_cache_dir = data_dir()
+    else:
+        sunspec_cache_dir = repo_root
     sunspec_models_dir = sunspec_cache_dir / "sunspec-models"
     sunspec_models_dir.mkdir(parents=True, exist_ok=True)
 
