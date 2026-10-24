@@ -126,6 +126,48 @@ class TestModelCatalog(unittest.TestCase):
         self.assertEqual(MODEL_PVLINK_STATUS, 64251)
         self.assertEqual(MODEL_BATTERY_WARRANTY, 64252)
 
+    def test_parse_model_json_offsets_and_subgroup_collision_protection(self):
+        # 1. Fixed-block offset after ID and L (1 + 1 = 2 registers) should start at 0
+        common = self.catalog.get_model(1)
+        self.assertEqual(common.points["Mn"].offset, 0)
+
+        # 2. A repeating sub-group point with the same name as a fixed-block point must not overwrite the fixed-block point
+        cat = ModelCatalog.__new__(ModelCatalog)
+        cat._models_by_id = {}
+        cat._models_by_name = {}
+        cat._parse_model_json({
+            "id": 99999,
+            "group": {
+                "name": "test_model",
+                "label": "Test Model",
+                "points": [
+                    {"name": "ID", "type": "uint16", "size": 1, "value": 99999},
+                    {"name": "L", "type": "uint16", "size": 1},
+                    {"name": "V", "type": "int16", "size": 1, "units": "V", "label": "Total Voltage"},
+                ],
+                "groups": [
+                    {
+                        "name": "string",
+                        "points": [
+                            {"name": "V", "type": "int16", "size": 1, "units": "mV", "label": "String Voltage"},
+                            {"name": "StrA", "type": "int16", "size": 1, "units": "A", "label": "String Current"},
+                        ],
+                    }
+                ],
+            },
+        })
+        m = cat.get_model(99999)
+        self.assertIsNotNone(m)
+        # Fixed-block V must retain offset 0 and units "V"
+        self.assertEqual(m.points["V"].offset, 0)
+        self.assertEqual(m.points["V"].units, "V")
+        # Colliding sub-group V is stored under "string.V"
+        self.assertIn("string.V", m.points)
+        self.assertEqual(m.points["string.V"].units, "mV")
+        # Non-colliding sub-group StrA is accessible by both "StrA" and "string.StrA"
+        self.assertIn("StrA", m.points)
+        self.assertIn("string.StrA", m.points)
+
 
 if __name__ == "__main__":
     unittest.main()

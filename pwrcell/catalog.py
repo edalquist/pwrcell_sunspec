@@ -837,12 +837,17 @@ class ModelCatalog:
             "W": "Total DC Power",
         }
 
-        def _parse_points_list(points_list: list, start_offset: int) -> int:
+        def _parse_points_list(points_list: list, start_offset: int, group_prefix: str = "") -> int:
             running_offset = start_offset
             for p_raw in points_list:
                 pt_name = p_raw.get("name")
                 if not pt_name:
                     continue
+
+                pt_size = p_raw.get("size", 1)
+                # Skip counting the 2-register SunSpec model header (ID and L) in fixed-block offsets
+                is_header_pt = not group_prefix and pt_name in ("ID", "L")
+                pt_offset = 0 if is_header_pt else running_offset
 
                 symbols: List[SunspecSymbol] = []
                 symbols_val: Dict[int, SunspecSymbol] = {}
@@ -862,7 +867,6 @@ class ModelCatalog:
                 raw_label = p_raw.get("label")
                 desc = p_raw.get("desc", "").strip()
                 pt_type = p_raw.get("type", "uint16")
-                pt_size = p_raw.get("size", 1)
 
                 # Infer human-friendly label if missing or equal to identifier
                 label = raw_label
@@ -886,7 +890,7 @@ class ModelCatalog:
                     desc=desc,
                     type=pt_type,
                     size=pt_size,
-                    offset=running_offset,
+                    offset=pt_offset,
                     units=p_raw.get("units"),
                     sf=p_raw.get("sf"),
                     access=p_raw.get("access", "R"),
@@ -896,13 +900,21 @@ class ModelCatalog:
                     symbols_by_value=symbols_val,
                     symbols_by_name=symbols_name,
                 )
-                model_def.points[pt_name] = pt_def
-                running_offset += pt_size
+                if group_prefix:
+                    model_def.points[f"{group_prefix}.{pt_name}"] = pt_def
+                    if pt_name not in model_def.points:
+                        model_def.points[pt_name] = pt_def
+                else:
+                    model_def.points[pt_name] = pt_def
+
+                if not is_header_pt:
+                    running_offset += pt_size
             return running_offset
 
         cur_offset = _parse_points_list(group.get("points", []), 0)
         for sub_grp in group.get("groups", []):
-            cur_offset = _parse_points_list(sub_grp.get("points", []), cur_offset)
+            sub_name = sub_grp.get("name", "subgroup")
+            cur_offset = _parse_points_list(sub_grp.get("points", []), cur_offset, group_prefix=sub_name)
 
         # Second pass: link scale factor points to the exact points they scale
         for pt_name, pt_def in model_def.points.items():
