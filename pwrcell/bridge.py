@@ -41,26 +41,20 @@ def get_default_published_topics_path() -> Path:
     return ha_cfg_path.parent / DEFAULT_HA_PUBLISHED_TOPICS_FILE
 
 
-def format_state_value(value: Any, precision: Optional[int] = None) -> str:
+def format_state_value(value: Any, precision: Optional[int] = None) -> Optional[str]:
     """Format a state value for MQTT publishing, ensuring float precision is clean and avoiding scientific notation."""
     if value is None:
-        return ""
+        return None
     if isinstance(value, bool):
         return str(value)
     if isinstance(value, str):
-        try:
-            if "e" in value.lower():
-                val_float = float(value)
-                return format_state_value(val_float, precision)
-        except ValueError:
-            pass
         return value
     if isinstance(value, (int, float)):
         import math
         if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
-            return "nan"
+            return None
         if abs(value) > 1e12 or int(value) in SUNSPEC_SENTINELS:
-            return ""
+            return None
         if precision is not None:
             if precision == 0:
                 return str(int(round(value)))
@@ -274,7 +268,8 @@ class HomeAssistantBridge:
 
                         if c_view.latest_value is not None:
                             val_str = format_state_value(c_view.latest_value, payload_info.get("suggested_display_precision"))
-                            self._mqttc.publish(payload_info["state_topic"], val_str, retain=True)
+                            if val_str is not None:
+                                self._mqttc.publish(payload_info["state_topic"], val_str, retain=True)
 
                 # 2. Publish selected raw fields
                 # Pre-populate metadata for any selected fields not yet polled
@@ -371,7 +366,9 @@ class HomeAssistantBridge:
                 self._mqttc.publish(attr_topic, json.dumps(attr_payload), retain=retain)
         else:
             precision = payload_info.get("suggested_display_precision")
-            self._mqttc.publish(state_topic, format_state_value(field.value, precision), retain=retain)
+            val_str = format_state_value(field.value, precision)
+            if val_str is not None:
+                self._mqttc.publish(state_topic, val_str, retain=retain)
 
     def _is_field_suppressed_by_compound(self, field: StateField) -> bool:
         """Check if a raw field is suppressed because its unified compound view is active."""
@@ -464,7 +461,9 @@ class HomeAssistantBridge:
 
         state_topic = payload_info["state_topic"]
         precision = payload_info.get("suggested_display_precision")
-        self._mqttc.publish(state_topic, format_state_value(c_view.latest_value, precision))
+        val_str = format_state_value(c_view.latest_value, precision)
+        if val_str is not None:
+            self._mqttc.publish(state_topic, val_str)
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
         """Handle incoming command messages on subscribed command topics."""

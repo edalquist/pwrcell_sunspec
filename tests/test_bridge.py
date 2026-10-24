@@ -228,9 +228,15 @@ class TestHomeAssistantBridge(unittest.TestCase):
         self.assertEqual(format_state_value(63050200.5, 1), "63050200.5")
         self.assertEqual(format_state_value(63050200.5, 2), "63050200.50")
 
-        # Scientific notation string input
-        self.assertEqual(format_state_value("6.30502e+07"), "63050200")
-        self.assertEqual(format_state_value("6.30502e+07", 0), "63050200")
+        # Strings must not be reinterpreted as scientific-notation floats (e.g. hex serials like "1234e5")
+        self.assertEqual(format_state_value("1234e5"), "1234e5")
+        self.assertEqual(format_state_value("Active"), "Active")
+
+        # Invalid / sentinel / None values return None so callers skip publishing
+        self.assertIsNone(format_state_value(None))
+        self.assertIsNone(format_state_value(float("nan")))
+        self.assertIsNone(format_state_value(float("inf")))
+        self.assertIsNone(format_state_value(0x8000))
 
         # Zero and negative
         self.assertEqual(format_state_value(0.0), "0")
