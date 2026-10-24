@@ -1,0 +1,15 @@
+version: '1.0'
+fast_paths:
+- inverter.inverter
+- inverter.REbus_status
+- inverter.inverter_status
+- battery.battery
+- battery.model_64252
+- pv_link.REbus_status
+config_paths:
+- rebus_beacon.REbus_dir
+- inverter.inverter
+slow_paths:
+- battery.battery_status
+- inverter.inverter_status
+- pv_link.string_combiner

@@ -1,0 +1,46 @@
+version: '1.0'
+device_types:
+  rebus_beacon:
+    label: REbus Beacon
+    model_keywords:
+    - beacon
+    - rebus dir
+    model_ids:
+    - 64200
+  inverter:
+    label: Inverter
+    model_keywords:
+    - inverter
+    model_ids:
+    - 101
+    - 102
+    - 103
+    - 64208
+    - 64202
+    - 64203
+  battery:
+    label: Battery
+    model_keywords:
+    - battery
+    model_ids:
+    - 802
+    - 804
+    - 64209
+    - 64252
+  pv_link:
+    label: PV Link
+    model_keywords:
+    - pv link
+    - pv
+    model_ids:
+    - 401
+    - 404
+    - 64251
+    - 64258
+    - 64263
+    - 64264
+  icm:
+    label: Inverter Control Module
+    model_keywords:
+    - icm
+    model_ids: []

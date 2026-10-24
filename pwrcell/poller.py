@@ -146,26 +146,30 @@ PWRCELL_DEVICE_MODEL_MAP: Dict[str, Dict[str, int]] = {
     },
 }
 
-# Default paths for each tier using unified ha_config path notation
-DEFAULT_FAST_PATHS: List[str] = [
-    "inverter.inverter",
-    "inverter.REbus_status",
-    "inverter.inverter_status",
-    "battery.battery",
-    "battery.model_64252",
-    "pv_link.REbus_status",
-]
+def _load_default_tier_paths() -> tuple[List[str], List[str], List[str]]:
+    """Load default tier paths from polling_tiers.yaml configuration file."""
+    from pathlib import Path
+    try:
+        import yaml
+        tier_cfg = Path(__file__).resolve().parent / "data" / "polling_tiers.yaml"
+        if tier_cfg.exists():
+            with open(tier_cfg, "r", encoding="utf-8") as f:
+                d = yaml.safe_load(f) or {}
+                return (
+                    d.get("fast_paths", []),
+                    d.get("config_paths", []),
+                    d.get("slow_paths", []),
+                )
+    except Exception:
+        pass
+    return (
+        ["inverter.inverter", "inverter.REbus_status", "inverter.inverter_status", "battery.battery", "battery.model_64252", "pv_link.REbus_status"],
+        ["rebus_beacon.REbus_dir", "inverter.inverter"],
+        ["battery.battery_status", "inverter.inverter_status", "pv_link.string_combiner"],
+    )
 
-DEFAULT_CONFIG_PATHS: List[str] = [
-    "rebus_beacon.REbus_dir",
-    "inverter.inverter",
-]
 
-DEFAULT_SLOW_PATHS: List[str] = [
-    "battery.battery_status",
-    "inverter.inverter_status",
-    "pv_link.string_combiner",
-]
+DEFAULT_FAST_PATHS, DEFAULT_CONFIG_PATHS, DEFAULT_SLOW_PATHS = _load_default_tier_paths()
 
 
 def resolve_subgroup_to_model_id(

@@ -139,6 +139,19 @@ class DeviceConfig:
   battery: Dict[str, int] = field(default_factory=dict)
   icm: Dict[str, int] = field(default_factory=dict)
 
+  def get_device_map(self, device_type: str) -> Dict[str, int]:
+    """Retrieve or initialize the slave map for any device type."""
+    if not hasattr(self, device_type):
+      setattr(self, device_type, {})
+    return getattr(self, device_type)
+
+  def to_dict(self) -> Dict[str, Dict[str, int]]:
+    """Return all configured device categories as a dictionary."""
+    return {
+      k: v for k, v in self.__dict__.items()
+      if not k.startswith("_") and isinstance(v, dict)
+    }
+
   @classmethod
   def read(cls) -> Optional['DeviceConfig']:
     path = _getConfigPath(_DEVICE_FILE)

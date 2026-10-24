@@ -686,6 +686,30 @@ class SunspecModelDef:
         return results
 
 
+def _load_point_abbreviations() -> Dict[str, str]:
+    from pathlib import Path
+    try:
+        import yaml
+        cfg_p = Path(__file__).resolve().parent / "data" / "point_abbreviations.yaml"
+        if cfg_p.exists():
+            with open(cfg_p, "r", encoding="utf-8") as f:
+                d = yaml.safe_load(f) or {}
+                return d.get("abbreviations", {})
+    except Exception:
+        pass
+    return {}
+
+
+_COMMON_ABBREVIATIONS: Optional[Dict[str, str]] = None
+
+
+def get_point_abbreviations() -> Dict[str, str]:
+    global _COMMON_ABBREVIATIONS
+    if _COMMON_ABBREVIATIONS is None:
+        _COMMON_ABBREVIATIONS = _load_point_abbreviations()
+    return _COMMON_ABBREVIATIONS
+
+
 class ModelCatalog:
     """Catalog of all known SunSpec models loaded from local JSON or zip archives."""
 
@@ -799,43 +823,7 @@ class ModelCatalog:
             desc=model_desc,
         )
 
-        COMMON_ABBREVIATIONS: Dict[str, str] = {
-            "CTPow": "Current Transformer Power",
-            "SysMd": "System Operating Mode",
-            "Px1": "Phase A (P1) Real Power",
-            "Px2": "Phase B (P2) Real Power",
-            "Px3": "Phase C (P3) Real Power",
-            "WhIn": "Total Energy In",
-            "WhOut": "Total Energy Out",
-            "AHRtg": "Amp-Hour Capacity Rating",
-            "WHRtg": "Watt-Hour Capacity Rating",
-            "WChaRteMax": "Max Battery Charge Rate",
-            "WDisChaRteMax": "Max Battery Discharge Rate",
-            "ReConn_Tms": "Reconnect Time",
-            "ReConnMinV": "Reconnect Min Voltage",
-            "ReConnMaxV": "Reconnect Max Voltage",
-            "ReConnMinHz": "Reconnect Min Frequency",
-            "ReConnMaxHz": "Reconnect Max Frequency",
-            "VWLatchTms": "Volt Latch Time",
-            "FWLatchTms": "Frequency Latch Time",
-            "Hz": "Line Frequency",
-            "VA": "AC Apparent Power",
-            "VAr": "AC Reactive Power",
-            "VAR": "AC Reactive Power",
-            "PF": "AC Power Factor",
-            "DCA": "DC Current",
-            "DCV": "DC Voltage",
-            "DCW": "DC Power",
-            "DCWh": "DC Accumulated Energy",
-            "DCAMax": "Max DC Current Rating",
-            "Tmp": "Temperature",
-            "Evt": "Operating Events",
-            "St": "Operating State",
-            "Conn": "Connection Status",
-            "A": "Total DC Current",
-            "V": "Total DC Voltage",
-            "W": "Total DC Power",
-        }
+        COMMON_ABBREVIATIONS = get_point_abbreviations()
 
         def _parse_points_list(points_list: list, start_offset: int, group_prefix: str = "") -> int:
             running_offset = start_offset

@@ -34,22 +34,31 @@ ORIGIN_INFO: Dict[str, str] = {
     "support_url": "https://github.com/edalquist/pwrcell_sunspec",
 }
 
-# Explicit allow-list of controllable point names/IDs safe to expose as writable in Home Assistant
-HA_WRITABLE_ALLOWLIST: Set[str] = {
-    "system_mode",
-    "SysMd",
-    "SoCRsvMin",
-    "SoCRsvMax",
-    "SoCMax",
-    "SoCMin",
-    "WChaRteMax",
-    "WDisChaRteMax",
-}
+def _load_ha_security_config() -> tuple[Set[str], Set[str]]:
+    """Load controllable allowlist and excluded options from HA config or default seed."""
+    default_writable = {
+        "system_mode", "SysMd", "SoCRsvMin", "SoCRsvMax",
+        "SoCMax", "SoCMin", "WChaRteMax", "WDisChaRteMax",
+    }
+    default_excluded = {"SAFETY_SHUTDOWN"}
+    try:
+        import yaml
+        for p in (get_ha_config_path(), get_default_seed_config_path()):
+            if p.exists():
+                with open(p, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                if isinstance(data, dict):
+                    ctrl = data.get("controllable_fields")
+                    excl = data.get("excluded_select_options")
+                    w_set = set(ctrl) if isinstance(ctrl, list) else default_writable
+                    e_set = set(excl) if isinstance(excl, list) else default_excluded
+                    return w_set, e_set
+    except Exception:
+        pass
+    return default_writable, default_excluded
 
-# Dangerous operating modes excluded from Home Assistant select options
-HA_EXCLUDED_SELECT_OPTIONS: Set[str] = {
-    "SAFETY_SHUTDOWN",
-}
+
+HA_WRITABLE_ALLOWLIST, HA_EXCLUDED_SELECT_OPTIONS = _load_ha_security_config()
 
 
 def is_ha_writable_allowed(field: Any) -> bool:
@@ -304,19 +313,31 @@ def get_device_info(
         "sw_version": device.version or "1.0",
     }
 
-    # Universally unique device naming
-    if device.device_type == "pv_link":
-        dev_info["name"] = f"PWRcell PV Link ({short_sn})"
-    elif device.device_type == "battery":
-        dev_info["name"] = f"PWRcell Battery ({short_sn})"
-    elif device.device_type == "inverter":
-        dev_info["name"] = f"PWRcell Inverter ({short_sn})"
-    elif device.device_type == "rebus_beacon":
-        dev_info["name"] = "PWRcell REbus Beacon"
-    elif device.device_type == "icm":
-        dev_info["name"] = "PWRcell Inverter Control Module"
+    friendly_type_labels = {
+        "pv_link": "PV Link",
+        "battery": "Battery",
+        "inverter": "Inverter",
+        "rebus_beacon": "REbus Beacon",
+        "icm": "Inverter Control Module",
+    }
+    try:
+        from pathlib import Path
+        import yaml
+        dev_cfg = Path(__file__).resolve().parent / "data" / "device_types.yaml"
+        if dev_cfg.exists():
+            with open(dev_cfg, "r", encoding="utf-8") as f:
+                d_types = yaml.safe_load(f).get("device_types", {})
+                for dt, info in d_types.items():
+                    if "label" in info:
+                        friendly_type_labels[dt] = info["label"]
+    except Exception:
+        pass
+
+    dev_label = friendly_type_labels.get(device.device_type, device.model_name)
+    if device.device_type == "rebus_beacon":
+        dev_info["name"] = f"PWRcell {dev_label}"
     else:
-        dev_info["name"] = f"PWRcell {device.model_name} ({short_sn})"
+        dev_info["name"] = f"PWRcell {dev_label} ({short_sn})"
 
     # Device hierarchy: connect subordinate devices via gateway
     if gateway_device and gateway_device.serial_number != device.serial_number:

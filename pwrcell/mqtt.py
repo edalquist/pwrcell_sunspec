@@ -74,65 +74,32 @@ class LiveTelemetrySnapshot:
     channels: Dict[int, ChannelTelemetry] = field(default_factory=dict)
 
 
-CHANNEL_TYPE_NAMES = {
-    energy_record_set_pb2.UNKNOWN_CHANNEL: "UNKNOWN",
-    energy_record_set_pb2.NET: "NET_GRID",
-    energy_record_set_pb2.GENERATION: "GENERATION_SOLAR",
-    energy_record_set_pb2.CONSUMPTION: "CONSUMPTION_LOAD",
-    energy_record_set_pb2.STORAGE: "STORAGE_BATTERY",
-    energy_record_set_pb2.INVERTER_OUTPUT: "INVERTER_OUTPUT",
-    energy_record_set_pb2.GENERATION_AC: "GENERATION_AC",
-    energy_record_set_pb2.STORAGE_AC: "STORAGE_AC",
-}
+if energy_record_set_pb2 is not None:
+    _CH_ALIAS = {
+        "NET": "NET_GRID",
+        "GENERATION": "GENERATION_SOLAR",
+        "CONSUMPTION": "CONSUMPTION_LOAD",
+        "STORAGE": "STORAGE_BATTERY",
+        "UNKNOWN_CHANNEL": "UNKNOWN",
+    }
+    CHANNEL_TYPE_NAMES = {
+        v.number: _CH_ALIAS.get(v.name, v.name)
+        for v in energy_record_set_pb2.ChannelType.DESCRIPTOR.values
+    }
+    PROTO_SYSTEM_MODE_NAMES = {
+        v.number: ("UNKNOWN" if v.name == "UNKNOWN_SYSTEM_MODE" else v.name)
+        for v in energy_record_set_pb2.SystemMode.DESCRIPTOR.values
+    }
+    INVERTER_STATE_NAMES = {
+        v.number: (v.name[15:] if v.name.startswith("INVERTER_STATE_") else v.name)
+        for v in energy_record_set_pb2.InverterState.DESCRIPTOR.values
+    }
+else:
+    CHANNEL_TYPE_NAMES = {}
+    PROTO_SYSTEM_MODE_NAMES = {}
+    INVERTER_STATE_NAMES = {}
 
-PROTO_SYSTEM_MODE_NAMES = {
-    energy_record_set_pb2.UNKNOWN_SYSTEM_MODE: "UNKNOWN",
-    energy_record_set_pb2.GRID_TIE: "GRID_TIE",
-    energy_record_set_pb2.SELF_SUPPLY: "SELF_SUPPLY",
-    energy_record_set_pb2.CLEAN_BACKUP: "CLEAN_BACKUP",
-    energy_record_set_pb2.PRIORITY_BACKUP: "PRIORITY_BACKUP",
-    energy_record_set_pb2.REMOTE_ARBITRAGE: "REMOTE_ARBITRAGE",
-    energy_record_set_pb2.SELL: "SELL",
-    energy_record_set_pb2.SAFETY_SHUTDOWN: "SAFETY_SHUTDOWN",
-}
 SYSTEM_MODE_NAMES = PROTO_SYSTEM_MODE_NAMES
-
-INVERTER_STATE_NAMES = {
-    getattr(energy_record_set_pb2, "INVERTER_STATE_UNKNOWN", 0): "UNKNOWN",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_DISABLED", 16): "DISABLED",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_ESTOP_ACTIVE", 32): "ESTOP_ACTIVE",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_INITIALIZING", 256): "INITIALIZING",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_POWERING_UP", 272): "POWERING_UP",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_CONNECTING_BUS", 288): "CONNECTING_BUS",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_DISCONNECTING_BUS", 304): "DISCONNECTING_BUS",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_TESTING_BUS", 320): "TESTING_BUS",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_LOW_BUS_VOLTAGE", 512): "LOW_BUS_VOLTAGE",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_STANDBY", 768): "STANDBY",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_WAITING", 784): "WAITING",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_WAITING_NO_INPUT", 800): "WAITING_NO_INPUT",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_WAITING_HEARTBEAT", 816): "WAITING_HEARTBEAT",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_CONNECTING_GRID", 2048): "CONNECTING_GRID",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_DISCONNECTING_GRID", 2064): "DISCONNECTING_GRID",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_GRID_CONNECTED", 2080): "GRID_CONNECTED",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_ISLANDED", 2096): "ISLANDED",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_CONNECTING_GENERATOR", 2112): "CONNECTING_GENERATOR",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_GENERATOR_PARALLEL", 2128): "GENERATOR_PARALLEL",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_DISCONNECTING_GENERATOR", 2144): "DISCONNECTING_GENERATOR",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_ISLAND_OVERLOAD", 2160): "ISLAND_OVERLOAD",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_ISLANDED_WITH_ACCPV", 2176): "ISLANDED_WITH_ACCPV",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_ISLANDED_WITHOUT_ACCPV", 2192): "ISLANDED_WITHOUT_ACCPV",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_SCHEDULER_DISABLED", 4880): "SCHEDULER_DISABLED",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_GROUND_FAULT", 16384): "GROUND_FAULT",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_GROUND_FAULT_LOCKOUT", 16416): "GROUND_FAULT_LOCKOUT",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_BUS_OVER_VOLTAGE", 16896): "BUS_OVER_VOLTAGE",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_ERROR_GENERIC", 28672): "ERROR_GENERIC",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_ERROR_REBUS_FAULT", 29968): "ERROR_REBUS_FAULT",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_ERROR_INTERNAL_BUS_FAULT", 29984): "ERROR_INTERNAL_BUS_FAULT",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_CONFIGURATION_ERROR", 30464): "CONFIGURATION_ERROR",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_BAD_RESET_ERROR", 30480): "BAD_RESET_ERROR",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_WIRING_ERROR", 30496): "WIRING_ERROR",
-    getattr(energy_record_set_pb2, "INVERTER_STATE_ERROR_FUSE_BLOWN", 30512): "ERROR_FUSE_BLOWN",
-}
 
 
 class MqttClient:

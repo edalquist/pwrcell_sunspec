@@ -44,356 +44,60 @@ def clean_unit(unit: Optional[str]) -> str:
     return mapping.get(u.lower(), u)
 
 
-# Canonical synonym dictionary: maps (device_type, canonical_name) -> set of point names
-CANONICAL_SYNONYMS: Dict[str, Dict[str, Dict[str, Any]]] = {
-    "inverter": {
-        "ac_frequency": {
-            "names": {"hz", "ac_frequency_hz", "ac_freq"},
-            "units": "Hz",
-            "label": "AC Frequency",
-            "ha_platform": "sensor",
-            "ha_device_class": "frequency",
-            "ha_state_class": "measurement",
-            "desc": "AC line grid frequency",
-        },
-        "inverter_output_power": {
-            "names": {"w", "inverter_power_w", "inverter_output_power_w", "inverter_output_power", "inverter_power", "real_power"},
-            "units": "W",
-            "label": "Inverter Output Power",
-            "ha_platform": "sensor",
-            "ha_device_class": "power",
-            "ha_state_class": "measurement",
-            "desc": "Real AC power output from inverter",
-        },
-        "inverter_output_energy": {
-            "names": {"wh", "e", "inverter_output_exported_energy_wh", "inverter_output_energy_wh"},
-            "units": "Wh",
-            "label": "Inverter Output Energy",
-            "ha_platform": "sensor",
-            "ha_device_class": "energy",
-            "ha_state_class": "total_increasing",
-            "desc": "Cumulative electrical energy produced/exported by the inverter",
-        },
-        "grid_power": {
-            "names": {"ctpow", "grid_power_w"},
-            "units": "W",
-            "label": "Grid Net Power",
-            "ha_platform": "sensor",
-            "ha_device_class": "power",
-            "ha_state_class": "measurement",
-            "desc": "Net power imported (+) or exported (-) to the utility grid",
-        },
-        "phase_a_voltage": {
-            "names": {"phvpha", "ac_voltage_v"},
-            "units": "V",
-            "label": "Phase A Voltage",
-            "ha_platform": "sensor",
-            "ha_device_class": "voltage",
-            "ha_state_class": "measurement",
-            "desc": "AC voltage on Phase A",
-        },
-        "phase_b_voltage": {
-            "names": {"phvphb"},
-            "units": "V",
-            "label": "Phase B Voltage",
-            "ha_platform": "sensor",
-            "ha_device_class": "voltage",
-            "ha_state_class": "measurement",
-            "desc": "AC voltage on Phase B",
-        },
-        "phase_c_voltage": {
-            "names": {"phvphc"},
-            "units": "V",
-            "label": "Phase C Voltage",
-            "ha_platform": "sensor",
-            "ha_device_class": "voltage",
-            "ha_state_class": "measurement",
-            "desc": "AC voltage on Phase C",
-        },
-        "phase_a_current": {
-            "names": {"apha"},
-            "units": "A",
-            "label": "Phase A Current",
-            "ha_platform": "sensor",
-            "ha_device_class": "current",
-            "ha_state_class": "measurement",
-            "desc": "AC current on Phase A",
-        },
-        "phase_b_current": {
-            "names": {"aphb"},
-            "units": "A",
-            "label": "Phase B Current",
-            "ha_platform": "sensor",
-            "ha_device_class": "current",
-            "ha_state_class": "measurement",
-            "desc": "AC current on Phase B",
-        },
-        "phase_c_current": {
-            "names": {"aphc"},
-            "units": "A",
-            "label": "Phase C Current",
-            "ha_platform": "sensor",
-            "ha_device_class": "current",
-            "ha_state_class": "measurement",
-            "desc": "AC current on Phase C",
-        },
-        "grid_imported_energy": {
-            "names": {"grid_imported_energy_wh", "totwhimp"},
-            "units": "Wh",
-            "label": "Grid Imported Energy",
-            "ha_platform": "sensor",
-            "ha_device_class": "energy",
-            "ha_state_class": "total_increasing",
-            "desc": "Cumulative energy imported from grid",
-        },
-        "grid_exported_energy": {
-            "names": {"whout", "grid_exported_energy_wh", "totwhexp"},
-            "units": "Wh",
-            "label": "Grid Exported Energy",
-            "ha_platform": "sensor",
-            "ha_device_class": "energy",
-            "ha_state_class": "total_increasing",
-            "desc": "Cumulative energy exported to grid",
-        },
-        "system_mode": {
-            "names": {"sysmd", "system_mode"},
-            "units": "",
-            "label": "System Operating Mode",
-            "ha_platform": "select",
-            "desc": "Operating mode of PWRcell inverter and REbus system",
-        },
-        "temp_cabinet": {
-            "names": {"tmpcab", "temperature_cabinet_c"},
-            "units": "C",
-            "label": "Cabinet Temperature",
-            "ha_platform": "sensor",
-            "ha_device_class": "temperature",
-            "ha_state_class": "measurement",
-            "desc": "Internal cabinet temperature",
-        },
-        "temp_heatsink": {
-            "names": {"tmpsnk", "temperature_heatsink_c"},
-            "units": "C",
-            "label": "Heatsink Temperature",
-            "ha_platform": "sensor",
-            "ha_device_class": "temperature",
-            "ha_state_class": "measurement",
-            "desc": "Inverter power stage heatsink temperature",
-        },
-        "temp_ambient": {
-            "names": {"tmpamb"},
-            "units": "C",
-            "label": "Ambient Temperature",
-            "ha_platform": "sensor",
-            "ha_device_class": "temperature",
-            "ha_state_class": "measurement",
-            "desc": "Ambient surrounding temperature",
-        },
-        "vref": {
-            "names": {"vref"},
-            "units": "V",
-            "label": "Voltage Reference",
-            "ha_platform": "number",
-            "ha_device_class": "voltage",
-            "desc": "Bus voltage reference setting",
-        },
-        "wmax": {
-            "names": {"wmax"},
-            "units": "W",
-            "label": "Max Power Setting",
-            "ha_platform": "number",
-            "ha_device_class": "power",
-            "desc": "Configured maximum active power limit",
-        },
-    },
-    "battery": {
-        "state_of_charge": {
-            "names": {"soc", "state_of_charge"},
-            "units": "%",
-            "label": "Battery State of Charge",
-            "ha_platform": "sensor",
-            "ha_device_class": "battery",
-            "ha_state_class": "measurement",
-            "desc": "Current battery charge level percentage",
-        },
-        "state_of_health": {
-            "names": {"soh", "state_of_health"},
-            "units": "%",
-            "label": "Battery State of Health",
-            "ha_platform": "sensor",
-            "ha_device_class": "battery",
-            "ha_state_class": "measurement",
-            "desc": "Battery health percentage relative to nameplate",
-        },
-        "battery_power": {
-            "names": {"w", "battery_power_w"},
-            "units": "W",
-            "label": "Battery Power",
-            "ha_platform": "sensor",
-            "ha_device_class": "power",
-            "ha_state_class": "measurement",
-            "desc": "Real power discharged (+) or charged (-) by battery",
-        },
-        "battery_voltage": {
-            "names": {"battery_voltage_v"},
-            "units": "V",
-            "label": "Battery Terminal Voltage",
-            "ha_platform": "sensor",
-            "ha_device_class": "voltage",
-            "ha_state_class": "measurement",
-            "desc": "DC voltage measured at battery terminals",
-        },
-        "rebus_voltage": {
-            "names": {"rebus_v"},
-            "units": "V",
-            "label": "REbus DC Voltage",
-            "ha_platform": "sensor",
-            "ha_device_class": "voltage",
-            "ha_state_class": "measurement",
-            "desc": "REbus 380V DC distribution line voltage measured at battery",
-        },
-        "battery_current": {
-            "names": {"a", "battery_current_a"},
-            "units": "A",
-            "label": "Battery Current",
-            "ha_platform": "sensor",
-            "ha_device_class": "current",
-            "ha_state_class": "measurement",
-            "desc": "DC current flowing into or out of battery",
-        },
-        "battery_imported_energy": {
-            "names": {"whin", "battery_imported_energy_wh"},
-            "units": "Wh",
-            "label": "Battery Stored Energy",
-            "ha_platform": "sensor",
-            "ha_device_class": "energy",
-            "ha_state_class": "total_increasing",
-            "desc": "Cumulative electrical energy charged into battery storage",
-        },
-        "battery_exported_energy": {
-            "names": {"whout", "battery_exported_energy_wh"},
-            "units": "Wh",
-            "label": "Battery Discharged Energy",
-            "ha_platform": "sensor",
-            "ha_device_class": "energy",
-            "ha_state_class": "total_increasing",
-            "desc": "Cumulative electrical energy discharged from battery storage",
-        },
-        "operating_state": {
-            "names": {"state", "battery_state"},
-            "units": "",
-            "label": "Battery Operating State",
-            "ha_platform": "sensor",
-            "desc": "Operating status / state enumeration",
-        },
-        "rebus_node_state": {
-            "names": {"st", "rebus_state"},
-            "units": "",
-            "label": "REbus Node State",
-            "ha_platform": "sensor",
-            "desc": "REbus communication node operating status",
-        },
-        "temp_battery": {
-            "names": {"tmp", "temperature_c"},
-            "units": "C",
-            "label": "Battery Temperature",
-            "ha_platform": "sensor",
-            "ha_device_class": "temperature",
-            "ha_state_class": "measurement",
-            "desc": "Battery module internal temperature",
-        },
-    },
-    "pv_link": {
-        "dc_power": {
-            "names": {"dcw", "p", "solar_power_w"},
-            "units": "W",
-            "label": "DC String Power",
-            "ha_platform": "sensor",
-            "ha_device_class": "power",
-            "ha_state_class": "measurement",
-            "desc": "Photovoltaic DC power generated on this string link",
-        },
-        "dc_voltage": {
-            "names": {"dcv"},
-            "units": "V",
-            "label": "DC Output Voltage",
-            "ha_platform": "sensor",
-            "ha_device_class": "voltage",
-            "ha_state_class": "measurement",
-            "desc": "PV Link DC output voltage",
-        },
-        "string_input_voltage": {
-            "names": {"vin", "indcv"},
-            "units": "V",
-            "label": "PV String Input Voltage",
-            "ha_platform": "sensor",
-            "ha_device_class": "voltage",
-            "ha_state_class": "measurement",
-            "desc": "Solar PV string input voltage",
-        },
-        "rebus_voltage": {
-            "names": {"v", "rebus_v"},
-            "units": "V",
-            "label": "REbus DC Voltage",
-            "ha_platform": "sensor",
-            "ha_device_class": "voltage",
-            "ha_state_class": "measurement",
-            "desc": "REbus 380V DC distribution line voltage measured at PV Link",
-        },
-        "dc_current": {
-            "names": {"dca", "i"},
-            "units": "A",
-            "label": "DC Output Current",
-            "ha_platform": "sensor",
-            "ha_device_class": "current",
-            "ha_state_class": "measurement",
-            "desc": "PV Link DC output current",
-        },
-        "string_input_current": {
-            "names": {"iin", "indca"},
-            "units": "A",
-            "label": "PV String Input Current",
-            "ha_platform": "sensor",
-            "ha_device_class": "current",
-            "ha_state_class": "measurement",
-            "desc": "Solar PV string input current",
-        },
-        "energy": {
-            "names": {"dcwh", "e"},
-            "units": "Wh",
-            "label": "Lifetime DC Energy",
-            "ha_platform": "sensor",
-            "ha_device_class": "energy",
-            "ha_state_class": "total_increasing",
-            "desc": "Cumulative solar energy generated",
-        },
-        "operating_state": {
-            "names": {"st", "state"},
-            "units": "",
-            "label": "PV Link State",
-            "ha_platform": "sensor",
-            "desc": "PV Link module operating state",
-        },
-        "temp_pvlink": {
-            "names": {"tmp", "temperature_c"},
-            "units": "C",
-            "label": "PV Link Temperature",
-            "ha_platform": "sensor",
-            "ha_device_class": "temperature",
-            "ha_state_class": "measurement",
-            "desc": "PV Link heatsink temperature",
-        },
-    },
-    "rebus_beacon": {
-        "system_mode": {
-            "names": {"sysmd", "system_mode"},
-            "units": "",
-            "label": "System Operating Mode",
-            "ha_platform": "select",
-            "desc": "PWRcell system operating mode",
-        },
-    },
-}
+class _CanonicalSynonymsProxy(dict):
+    """Dynamic proxy for CANONICAL_SYNONYMS that resolves dynamically from MappingRegistry."""
+    def _data(self) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        from .mapping import MappingRegistry
+        return MappingRegistry.get_instance().get_canonical_synonyms_dict()
+
+    class _DevProxy(dict):
+        def __init__(self, data: dict, all_data: dict):
+            super().__init__(data)
+            self._all_data = all_data
+
+        def __getitem__(self, k):
+            if k in self:
+                return super().__getitem__(k)
+            for d in self._all_data.values():
+                if k in d:
+                    return d[k]
+            raise KeyError(k)
+
+        def get(self, k, default=None):
+            if k in self:
+                return super().get(k)
+            for d in self._all_data.values():
+                if k in d:
+                    return d[k]
+            return default
+
+    def get(self, k, default=None):
+        data = self._data()
+        if k in data:
+            return self._DevProxy(data[k], data)
+        return default
+
+    def __getitem__(self, k):
+        data = self._data()
+        return self._DevProxy(data.get(k, {}), data)
+
+    def __contains__(self, k):
+        return k in self._data()
+
+    def items(self):
+        return self._data().items()
+
+    def keys(self):
+        return self._data().keys()
+
+    def values(self):
+        return self._data().values()
+
+    def __len__(self):
+        return len(self._data())
+
+
+CANONICAL_SYNONYMS = _CanonicalSynonymsProxy()
 
 
 @dataclass
@@ -409,6 +113,31 @@ class OptimizationResult:
             "assignments": self.assignments,
             "stats": self.stats,
         }
+
+
+def _load_optimizer_preferences() -> Dict[int, float]:
+    """Load default tie-breaking model weights from optimizer_preferences.yaml."""
+    from pathlib import Path
+    try:
+        import yaml
+        cfg_p = Path(__file__).resolve().parent / "data" / "optimizer_preferences.yaml"
+        if cfg_p.exists():
+            with open(cfg_p, "r", encoding="utf-8") as f:
+                d = yaml.safe_load(f) or {}
+                return {int(k): float(v) for k, v in d.get("favored_models", {}).items()}
+    except Exception:
+        pass
+    return {64208: 0.8, 64252: 0.8, 404: 0.8, 64207: 0.85, 102: 0.9, 802: 0.9}
+
+
+_DEFAULT_FAVORED_MODELS: Optional[Dict[int, float]] = None
+
+
+def get_default_favored_models() -> Dict[int, float]:
+    global _DEFAULT_FAVORED_MODELS
+    if _DEFAULT_FAVORED_MODELS is None:
+        _DEFAULT_FAVORED_MODELS = _load_optimizer_preferences()
+    return _DEFAULT_FAVORED_MODELS
 
 
 def solve_minimal_model_set(
@@ -439,7 +168,7 @@ def solve_minimal_model_set(
     weights = model_preferences or {}
 
     # Default weights prioritize rich models like Generac status models
-    default_favored = {64208: 0.8, 64252: 0.8, 404: 0.8, 64207: 0.85, 102: 0.9, 802: 0.9}
+    default_favored = get_default_favored_models()
 
     def get_weight(m: int) -> float:
         return weights.get(m, default_favored.get(m, 1.0))
@@ -573,23 +302,10 @@ from .concept import (
 
 def find_canonical_concept(dev_type: str, point_name: str, units: Optional[str]) -> Optional[str]:
     """Match point_name and unit against canonical concept definitions."""
-    d_type = dev_type.lower()
-    p_name = point_name.lower().strip()
-    c_unit = clean_unit(units)
-
-    concepts = CANONICAL_SYNONYMS.get(d_type, {})
-    # 1. Exact name + matching unit
-    for c_key, c_def in concepts.items():
-        if p_name in c_def["names"]:
-            exp_unit = clean_unit(c_def.get("units"))
-            if not exp_unit or not c_unit or exp_unit == c_unit:
-                return c_key
-
-    # 2. Name match (allows detecting unit mismatches across models)
-    for c_key, c_def in concepts.items():
-        if p_name in c_def["names"]:
-            return c_key
-
+    from .mapping import MappingRegistry
+    m = MappingRegistry.get_instance().find_concept(dev_type, point_name, units)
+    if m:
+        return m.id
     return None
 
 
