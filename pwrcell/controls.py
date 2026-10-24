@@ -109,12 +109,27 @@ class ControlDispatcher:
         if self.modbus_client:
             device_tcp = self.modbus_client.get_or_create_device(target_device.slave_id)
             # Write SysMd point
-            self.modbus_client.write_point_value(
+            readback_mode = self.modbus_client.write_point_value(
                 device=device_tcp,
                 model_id=model_id,
                 point_name="SysMd",
                 value=int_mode,
             )
+            if isinstance(readback_mode, int) and readback_mode != int_mode:
+                logger.warning(
+                    "System mode write read-back mismatch on %s: requested %s (%d), device returned %d",
+                    target_device.serial_number,
+                    mode_name,
+                    int_mode,
+                    readback_mode,
+                )
+                int_mode = readback_mode
+                if point_def and int_mode in point_def.symbols_by_value:
+                    mode_name = point_def.symbols_by_value[int_mode].name
+                elif int_mode in SUNSPEC_SYS_MD_NAMES:
+                    mode_name = SUNSPEC_SYS_MD_NAMES[int_mode]
+                else:
+                    mode_name = f"MODE_{int_mode}"
 
         # Update SysMd on target device under both model_64200 and REbus_dir (if model 64200)
         target_subgroups = ["model_64200", "REbus_dir"] if model_id == 64200 else [f"model_{model_id}"]
@@ -250,12 +265,34 @@ class ControlDispatcher:
                 device_tcp = self.modbus_client.get_or_create_device(target_dev.slave_id)
                 # write_point_value assigns point.cvalue = value, which expects scaled engineering units for numeric points
                 cvalue_to_write = display_val if (point_def and point_def.is_numeric) else raw_val
-                self.modbus_client.write_point_value(
+                readback = self.modbus_client.write_point_value(
                     device=device_tcp,
                     model_id=model_id,
                     point_name=target_field.name,
                     value=cvalue_to_write,
                 )
+                if readback is not None and readback != cvalue_to_write:
+                    logger.warning(
+                        "Write read-back mismatch on %s: requested %r, device returned %r",
+                        field_key,
+                        cvalue_to_write,
+                        readback,
+                    )
+                    if point_def:
+                        try:
+                            raw_val, display_val = point_def.validate_and_convert(readback, ignore_access=True, sf_value=sf_val)
+                        except ValueError:
+                            display_val = readback
+                            raw_val = readback
+                    elif target_field.symbols:
+                        try:
+                            raw_val, display_val = self._validate_against_symbols(target_field, readback)
+                        except ValueError:
+                            display_val = readback
+                            raw_val = readback
+                    else:
+                        display_val = readback
+                        raw_val = readback
 
         target_field.value = display_val
         target_field.raw_value = raw_val

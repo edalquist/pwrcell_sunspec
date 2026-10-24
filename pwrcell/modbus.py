@@ -427,7 +427,23 @@ class SerializedModbusClient:
                 point.write()
                 # Immediately re-read model block to confirm
                 model.read()
-                return point.cvalue
+                readback = point.cvalue
+                if readback != value:
+                    is_close = (
+                        isinstance(readback, (int, float))
+                        and isinstance(value, (int, float))
+                        and abs(float(readback) - float(value)) <= 1e-6
+                    )
+                    if not is_close:
+                        logger.warning(
+                            "Write read-back mismatch on %s in model %d (slave %s): requested %r, read back %r",
+                            point_name,
+                            model_id,
+                            device.slave_id,
+                            value,
+                            readback,
+                        )
+                return readback
             except Exception as e:
                 self._handle_socket_error(e)
                 raise e

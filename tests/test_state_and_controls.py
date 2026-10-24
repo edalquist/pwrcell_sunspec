@@ -633,6 +633,28 @@ class TestStateAndControls(unittest.TestCase):
         _, kwargs = mock_mb.write_point_value.call_args
         self.assertEqual(kwargs["value"], 50.5)
 
+    def test_write_readback_verification_publishes_clamped_value(self):
+        """If the device clamps or overrides a written value on read-back, log a warning and publish the read-back value."""
+        from unittest.mock import MagicMock
+
+        self.state.update_from_modbus_points(
+            serial_number=self.bat.serial_number,
+            model_id=802,
+            raw_values={"SoCMax": 900, "SoC_SF": -1},
+            computed_values={"SoCMax": 90.0, "SoC_SF": -1},
+        )
+        socmax_field = self.bat.fields.get("battery.battery.SoCMax")
+
+        # Simulate device clamping 95.0 down to 80.0 on read-back
+        mock_mb = MagicMock()
+        mock_mb.write_point_value.return_value = 80.0
+        self.controls.modbus_client = mock_mb
+
+        res = self.controls.write_field("battery.battery.SoCMax", 95.0)
+        self.assertEqual(res, 80.0)
+        self.assertEqual(socmax_field.value, 80.0)
+        self.assertEqual(socmax_field.raw_value, 800)
+
 
 if __name__ == "__main__":
     unittest.main()

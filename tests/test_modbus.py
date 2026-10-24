@@ -146,6 +146,34 @@ class TestModbusScanRange(unittest.TestCase):
         self.assertNotIn(5, discovered)
         self.assertEqual(len(discovered), 4)
 
+    def test_write_point_value_warns_on_readback_mismatch(self):
+        from unittest.mock import MagicMock
+        from pwrcell.modbus import SerializedModbusClient
+
+        mgr = SerializedModbusClient(host="localhost", port=5020)
+        mgr.worker.start()
+        try:
+            mgr._ensure_device_connected = MagicMock()
+            mock_point = MagicMock()
+            mock_model = MagicMock()
+            mock_model.points = {"SoCMax": mock_point}
+
+            # When model.read() is called, simulate device clamping cvalue to 80.0 instead of 95.0
+            def on_read():
+                mock_point.cvalue = 80.0
+
+            mock_model.read.side_effect = on_read
+            mock_dev = MagicMock()
+            mock_dev.slave_id = 9
+            mock_dev.models = {802: [mock_model]}
+
+            with self.assertLogs("pwrcell.modbus", level="WARNING") as cm:
+                readback = mgr.write_point_value(mock_dev, 802, "SoCMax", 95.0)
+            self.assertEqual(readback, 80.0)
+            self.assertTrue(any("mismatch" in line.lower() for line in cm.output))
+        finally:
+            mgr.close()
+
 
 if __name__ == "__main__":
     unittest.main()
