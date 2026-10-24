@@ -439,6 +439,48 @@ def create_app(client: PwrcellClient) -> Flask:
         )
         return jsonify({"status": "ok", "overrides": result})
 
+    @app.route("/api/grouping/suggestions")
+    def get_grouping_suggestions():
+        from ..recommender import find_suggested_groupings
+        suggestions = find_suggested_groupings(client.state)
+        return jsonify({
+            "suggestions": [s.to_dict() for s in suggestions],
+            "count": len(suggestions),
+        })
+
+    @app.route("/api/grouping/suggestions/approve", methods=["POST"])
+    def approve_grouping_suggestion():
+        from ..grouping import approve_suggestion
+        data = request.get_json() or {}
+        device_sn = data.get("device_sn", "")
+        field_keys = data.get("field_keys", [])
+        target_concept = data.get("target_concept", "")
+        custom_label = data.get("label") or data.get("custom_label")
+        suggestion_id = data.get("suggestion_id")
+
+        if not device_sn or not field_keys or not target_concept:
+            return jsonify({"error": "device_sn, field_keys, and target_concept are required"}), 400
+
+        result = approve_suggestion(
+            device_sn=device_sn,
+            field_keys=field_keys,
+            target_concept=target_concept,
+            custom_label=custom_label,
+            suggestion_id=suggestion_id,
+        )
+        return jsonify({"status": "ok", "overrides": result})
+
+    @app.route("/api/grouping/suggestions/dismiss", methods=["POST"])
+    def dismiss_grouping_suggestion():
+        from ..grouping import dismiss_suggestion
+        data = request.get_json() or {}
+        suggestion_id = data.get("suggestion_id", "")
+        if not suggestion_id:
+            return jsonify({"error": "suggestion_id is required"}), 400
+
+        result = dismiss_suggestion(suggestion_id=suggestion_id)
+        return jsonify({"status": "ok", "overrides": result})
+
     @app.route("/api/poller/status")
     def get_poller_status():
         status = client.poller.to_dict()
