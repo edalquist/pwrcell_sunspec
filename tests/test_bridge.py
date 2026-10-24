@@ -174,6 +174,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
         msg = MagicMock()
         msg.topic = cmd_topic
         msg.payload = b"PRIORITY_BACKUP"
+        msg.retain = False
 
         self.bridge._on_message(self.mock_mqttc, None, msg)
 
@@ -438,6 +439,33 @@ class TestHomeAssistantBridge(unittest.TestCase):
             self.assertTrue(any("listener boom" in line for line in cm.output))
         finally:
             self.client.state.unsubscribe(broken_listener)
+
+    def test_retained_command_messages_are_ignored(self):
+        """Retained messages on command topics must be ignored (and logged at WARNING) so reconnects do not replay old writes."""
+        inv = self.client.state.get_inverter()
+        sn = inv.serial_number
+        self.bridge.selected_field_keys = [f"{sn}:inverter.live.system_mode"]
+        self.bridge.publish_discovery()
+        cmd_topic = f"pwrcell/{sn.lower()}/compound_system_mode/set"
+
+        # Set known baseline mode
+        self.client.controls.write_field("inverter.compound.system_mode", "SELF_SUPPLY")
+        self.assertEqual(self.client.state.get_compound_view("system_mode").latest_value, "SELF_SUPPLY")
+
+        # Send retained command attempting to change mode to CLEAN_BACKUP
+        retained_msg = MagicMock()
+        retained_msg.topic = cmd_topic
+        retained_msg.payload = b"CLEAN_BACKUP"
+        retained_msg.retain = True
+
+        with self.assertLogs("pwrcell.bridge", level="WARNING") as cm:
+            self.bridge._on_message(self.mock_mqttc, None, retained_msg)
+        self.assertTrue(any("retain" in line.lower() for line in cm.output))
+
+        import time
+        time.sleep(0.1)
+        # System mode must remain unchanged
+        self.assertEqual(self.client.state.get_compound_view("system_mode").latest_value, "SELF_SUPPLY")
 
 
 if __name__ == "__main__":
