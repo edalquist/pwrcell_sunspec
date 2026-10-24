@@ -262,7 +262,7 @@ class MockTelemetryGenerator:
         self.soh: float = 98.0  # Battery SoH percent
         self.solar_peak_w: float = 5800.0  # Max solar generation
         self.base_load_w: float = 1200.0  # Base home consumption
-        self.sys_mode = energy_record_set_pb2.SELF_SUPPLY if energy_record_set_pb2 is not None else 3
+        self.sys_mode = energy_record_set_pb2.SELF_SUPPLY
         self.total_import_ws: int = 150_000_000_000
         self.total_export_ws: int = 85_000_000_000
 

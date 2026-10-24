@@ -273,6 +273,38 @@ class TestCorrelator(unittest.TestCase):
         self.assertTrue(unit_row.is_discrepant)
         self.assertIn("Conflicting units", unit_row.discrepancy_reason)
 
+    def test_safety_shutdown_modbus_0_matches_mqtt_16(self):
+        """Modbus SysMd=0 (SAFETY_SHUTDOWN) must decode using SunSpec mode names rather than MQTT proto mode 0 (UNKNOWN)."""
+        from pwrcell.correlator import KNOWN_TELEMETRY_MAPPINGS, _build_comparison_row
+
+        # MQTT reports SAFETY_SHUTDOWN (proto value 16 -> name "SAFETY_SHUTDOWN")
+        self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="system_mode",
+            value="SAFETY_SHUTDOWN",
+            raw_value=16,
+            sub_group="live",
+        )
+        # Modbus reports raw integer 0 on SysMd (SunSpec Model 64200 value 0 -> SAFETY_SHUTDOWN)
+        mb_field = self.state.set_field(
+            device_sn=self.beacon.serial_number,
+            name="SysMd",
+            value=0,
+            raw_value=0,
+            sub_group="REbus_dir",
+        )
+
+        sys_mapping = next(m for m in KNOWN_TELEMETRY_MAPPINGS if m.mapping_id == "system_mode")
+        row = _build_comparison_row(
+            sys_mapping,
+            sys_mapping.primary_candidate,
+            mqtt_val="SAFETY_SHUTDOWN",
+            mb_field=mb_field,
+            state_store=self.state,
+        )
+        self.assertEqual(row.modbus_value, "SAFETY_SHUTDOWN")
+        self.assertEqual(row.status, "EXACT")
+
 
 if __name__ == "__main__":
     unittest.main()

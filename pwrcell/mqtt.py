@@ -74,31 +74,28 @@ class LiveTelemetrySnapshot:
     channels: Dict[int, ChannelTelemetry] = field(default_factory=dict)
 
 
-if energy_record_set_pb2 is not None:
-    CHANNEL_TYPE_NAMES = {
-        energy_record_set_pb2.UNKNOWN_CHANNEL: "UNKNOWN",
-        energy_record_set_pb2.NET: "NET_GRID",
-        energy_record_set_pb2.GENERATION: "GENERATION_SOLAR",
-        energy_record_set_pb2.CONSUMPTION: "CONSUMPTION_LOAD",
-        energy_record_set_pb2.STORAGE: "STORAGE_BATTERY",
-        energy_record_set_pb2.INVERTER_OUTPUT: "INVERTER_OUTPUT",
-        energy_record_set_pb2.GENERATION_AC: "GENERATION_AC",
-        energy_record_set_pb2.STORAGE_AC: "STORAGE_AC",
-    }
+CHANNEL_TYPE_NAMES = {
+    energy_record_set_pb2.UNKNOWN_CHANNEL: "UNKNOWN",
+    energy_record_set_pb2.NET: "NET_GRID",
+    energy_record_set_pb2.GENERATION: "GENERATION_SOLAR",
+    energy_record_set_pb2.CONSUMPTION: "CONSUMPTION_LOAD",
+    energy_record_set_pb2.STORAGE: "STORAGE_BATTERY",
+    energy_record_set_pb2.INVERTER_OUTPUT: "INVERTER_OUTPUT",
+    energy_record_set_pb2.GENERATION_AC: "GENERATION_AC",
+    energy_record_set_pb2.STORAGE_AC: "STORAGE_AC",
+}
 
-    SYSTEM_MODE_NAMES = {
-        energy_record_set_pb2.UNKNOWN_SYSTEM_MODE: "UNKNOWN",
-        energy_record_set_pb2.GRID_TIE: "GRID_TIE",
-        energy_record_set_pb2.SELF_SUPPLY: "SELF_SUPPLY",
-        energy_record_set_pb2.CLEAN_BACKUP: "CLEAN_BACKUP",
-        energy_record_set_pb2.PRIORITY_BACKUP: "PRIORITY_BACKUP",
-        energy_record_set_pb2.REMOTE_ARBITRAGE: "REMOTE_ARBITRAGE",
-        energy_record_set_pb2.SELL: "SELL",
-        energy_record_set_pb2.SAFETY_SHUTDOWN: "SAFETY_SHUTDOWN",
-    }
-else:
-    CHANNEL_TYPE_NAMES = {0: "UNKNOWN", 1: "NET_GRID", 2: "GENERATION_SOLAR", 3: "CONSUMPTION_LOAD", 4: "STORAGE_BATTERY", 5: "INVERTER_OUTPUT", 6: "GENERATION_AC", 7: "STORAGE_AC"}
-    SYSTEM_MODE_NAMES = {0: "UNKNOWN", 1: "CLEAN_BACKUP", 2: "GRID_TIE", 3: "SELF_SUPPLY", 4: "PRIORITY_BACKUP", 5: "REMOTE_ARBITRAGE", 6: "SELL", 7: "SAFETY_SHUTDOWN"}
+PROTO_SYSTEM_MODE_NAMES = {
+    energy_record_set_pb2.UNKNOWN_SYSTEM_MODE: "UNKNOWN",
+    energy_record_set_pb2.GRID_TIE: "GRID_TIE",
+    energy_record_set_pb2.SELF_SUPPLY: "SELF_SUPPLY",
+    energy_record_set_pb2.CLEAN_BACKUP: "CLEAN_BACKUP",
+    energy_record_set_pb2.PRIORITY_BACKUP: "PRIORITY_BACKUP",
+    energy_record_set_pb2.REMOTE_ARBITRAGE: "REMOTE_ARBITRAGE",
+    energy_record_set_pb2.SELL: "SELL",
+    energy_record_set_pb2.SAFETY_SHUTDOWN: "SAFETY_SHUTDOWN",
+}
+SYSTEM_MODE_NAMES = PROTO_SYSTEM_MODE_NAMES
 
 INVERTER_STATE_NAMES = {
     getattr(energy_record_set_pb2, "INVERTER_STATE_UNKNOWN", 0): "UNKNOWN",
