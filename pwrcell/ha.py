@@ -19,6 +19,7 @@ import yaml
 
 from . import __version__
 from .catalog import get_suggested_precision
+from .config import data_dir, is_addon_data_env
 from .state import FieldSource, StateField, StateStore, UnifiedDevice
 
 logger = logging.getLogger(__name__)
@@ -76,17 +77,14 @@ def get_default_seed_config_path() -> Path:
 
 
 def get_default_ha_config_path() -> Path:
-    # If running inside Home Assistant Add-on container with persistent /data
-    if Path("/data").is_dir() and Path("/data/options.json").exists():
-        return Path("/data/ha_config.yaml")
+    if is_addon_data_env():
+        return data_dir() / DEFAULT_HA_CONFIG_FILE
     repo_root = Path(__file__).resolve().parent.parent
     if (repo_root / "config" / DEFAULT_HA_CONFIG_FILE).exists():
         return repo_root / "config" / DEFAULT_HA_CONFIG_FILE
     if (repo_root / DEFAULT_HA_CONFIG_FILE).exists():
         return repo_root / DEFAULT_HA_CONFIG_FILE
-    if (repo_root / "config").is_dir():
-        return repo_root / "config" / DEFAULT_HA_CONFIG_FILE
-    return repo_root / DEFAULT_HA_CONFIG_FILE
+    return data_dir() / DEFAULT_HA_CONFIG_FILE
 
 
 def is_field_selected(

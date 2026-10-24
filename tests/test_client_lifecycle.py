@@ -305,6 +305,51 @@ class TestClientLifecycle(unittest.TestCase):
         self.assertIn("NEW_SERIAL_123", live_client.state.devices)
         self.assertEqual(live_client.state.devices["NEW_SERIAL_123"].device_type, "inverter")
 
+    def test_data_dir_persists_all_runtime_files_under_data_dir_override(self):
+        """With PWRCELL_DATA_DIR set, devices.yaml, ha_config.yaml, .ha_published_topics.json, telemetry_mappings.yaml, custom_groupings.yaml, and sunspec_cache_dir all resolve under data_dir()."""
+        import os
+        import tempfile
+        from pathlib import Path
+        from pwrcell.bridge import get_default_published_topics_path
+        from pwrcell.config import AppConfig, DeviceConfig, data_dir
+        from pwrcell.grouping import get_default_grouping_config_path, save_custom_groupings
+        from pwrcell.ha import get_default_ha_config_path, save_ha_config
+        from pwrcell.mapping import _resolve_mappings_path, get_default_mappings, save_mappings
+        from pwrcell.models import load_models_dir
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with patch.dict(os.environ, {"PWRCELL_DATA_DIR": str(tmp_path)}):
+                self.assertEqual(data_dir(), tmp_path)
+                self.assertEqual(get_default_ha_config_path(), tmp_path / "ha_config.yaml")
+                self.assertEqual(get_default_published_topics_path(), tmp_path / ".ha_published_topics.json")
+                self.assertEqual(get_default_grouping_config_path(), tmp_path / "custom_groupings.yaml")
+                self.assertEqual(_resolve_mappings_path(), tmp_path / "telemetry_mappings.yaml")
+
+                # 1. DeviceConfig.write() writes to tmp_path / devices.yaml even when it did not exist beforehand
+                dev_cfg = DeviceConfig(inverter={"0001000714E9": 8})
+                dev_cfg.write()
+                self.assertTrue((tmp_path / "devices.yaml").exists())
+                loaded_dev = DeviceConfig.read()
+                self.assertIsNotNone(loaded_dev)
+                self.assertEqual(loaded_dev.inverter.get("0001000714E9"), 8)
+
+                # 2. save_ha_config writes to tmp_path / ha_config.yaml
+                save_ha_config(["0001000714E9:inverter.live.grid_power_w"])
+                self.assertTrue((tmp_path / "ha_config.yaml").exists())
+
+                # 3. save_custom_groupings writes to tmp_path / custom_groupings.yaml
+                save_custom_groupings({"field_overrides": {"0001000714E9:inverter.inverter.W": "inverter_output_power"}})
+                self.assertTrue((tmp_path / "custom_groupings.yaml").exists())
+
+                # 4. save_mappings writes to tmp_path / telemetry_mappings.yaml (not package pwrcell/data/)
+                save_mappings(get_default_mappings())
+                self.assertTrue((tmp_path / "telemetry_mappings.yaml").exists())
+
+                # 5. load_models_dir without explicit sunspec_cache_dir uses data_dir() / sunspec-models
+                models_dir = load_models_dir(AppConfig(pwrcell=None))
+                self.assertEqual(models_dir, tmp_path / "sunspec-models")
+
 
 if __name__ == "__main__":
     unittest.main()

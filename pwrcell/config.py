@@ -14,15 +14,36 @@ logger = logging.getLogger(__name__)
 _CONFIG_FILE = "pwrcell.yaml"
 _DEVICE_FILE = "devices.yaml"
 
-def _getConfigPath(file: str) -> str:
+
+def is_addon_data_env() -> bool:
+    """Return True if running inside an explicit PWRCELL_DATA_DIR or HA Add-on /data directory."""
+    if os.environ.get("PWRCELL_DATA_DIR"):
+        return True
+    return Path("/data").is_dir() and Path("/data/options.json").exists()
+
+
+def data_dir() -> Path:
+    """Return the canonical persistent data directory for runtime configurations and caches."""
+    env_dir = os.environ.get("PWRCELL_DATA_DIR")
+    if env_dir:
+        return Path(env_dir)
+    if Path("/data").is_dir() and Path("/data/options.json").exists():
+        return Path("/data")
+    repo_root = Path(__file__).resolve().parent.parent
+    if (repo_root / "config").is_dir():
+        return repo_root / "config"
+    return repo_root
+
+
+def _getConfigPath(file: str, for_write: bool = False) -> str:
     # 1. Environment variable override
     if file in (_CONFIG_FILE, "config.yaml", "pwrcell.yaml") and "PWRCELL_CONFIG" in os.environ:
         return os.environ["PWRCELL_CONFIG"]
 
-    # 2. In Home Assistant add-on container (/data/options.json exists)
-    if Path("/data").is_dir() and Path("/data/options.json").exists():
-        data_f = Path("/data") / file
-        if data_f.exists():
+    # 2. In Home Assistant add-on container or explicit PWRCELL_DATA_DIR
+    if is_addon_data_env():
+        data_f = data_dir() / file
+        if for_write or data_f.exists() or file == _DEVICE_FILE:
             return str(data_f)
 
     # 3. Standard paths: check config/pwrcell.yaml, pwrcell.yaml, local_config.yaml, then config.yaml
@@ -49,9 +70,7 @@ def _getConfigPath(file: str) -> str:
             if p.exists():
                 return str(p)
 
-    if (repo_root / "config").is_dir():
-        return str(repo_root / "config" / file)
-    return str(repo_root / file)
+    return str(data_dir() / file)
 
 
 @dataclasses.dataclass
@@ -107,7 +126,8 @@ class AppConfig:
       raise
 
   def write(self):
-    target = "/data/pwrcell.yaml" if Path("/data").is_dir() and Path("/data/options.json").exists() else _getConfigPath(_CONFIG_FILE)
+    target = _getConfigPath(_CONFIG_FILE, for_write=True)
+    Path(target).parent.mkdir(parents=True, exist_ok=True)
     dataconf.dump(target, self, out='yaml')
 
 
@@ -128,4 +148,6 @@ class DeviceConfig:
       return None
 
   def write(self):
-    dataconf.dump(_getConfigPath(_DEVICE_FILE), self, out='yaml')
+    target = _getConfigPath(_DEVICE_FILE, for_write=True)
+    Path(target).parent.mkdir(parents=True, exist_ok=True)
+    dataconf.dump(target, self, out='yaml')

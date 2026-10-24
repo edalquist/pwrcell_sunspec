@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import yaml
 
+from .config import data_dir, is_addon_data_env
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_GROUPING_CONFIG_FILE = "custom_groupings.yaml"
@@ -22,16 +24,14 @@ DEFAULT_GROUPING_CONFIG_FILE = "custom_groupings.yaml"
 
 def get_default_grouping_config_path() -> Path:
     """Locate the custom groupings YAML file."""
-    if Path("/data").is_dir() and Path("/data/options.json").exists():
-        return Path("/data") / DEFAULT_GROUPING_CONFIG_FILE
+    if is_addon_data_env():
+        return data_dir() / DEFAULT_GROUPING_CONFIG_FILE
     repo_root = Path(__file__).resolve().parent.parent
     if (repo_root / "config" / DEFAULT_GROUPING_CONFIG_FILE).exists():
         return repo_root / "config" / DEFAULT_GROUPING_CONFIG_FILE
     if (repo_root / DEFAULT_GROUPING_CONFIG_FILE).exists():
         return repo_root / DEFAULT_GROUPING_CONFIG_FILE
-    if (repo_root / "config").is_dir():
-        return repo_root / "config" / DEFAULT_GROUPING_CONFIG_FILE
-    return repo_root / DEFAULT_GROUPING_CONFIG_FILE
+    return data_dir() / DEFAULT_GROUPING_CONFIG_FILE
 
 
 def load_custom_groupings(config_path: Optional[Path | str] = None) -> Dict[str, Any]:
