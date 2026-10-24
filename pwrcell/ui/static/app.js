@@ -4550,6 +4550,7 @@ function renderCompareTableRows(rows) {
     }
 
     // Device & Concept column content
+    const sources = r.sources || [];
     const devBadge = r.device_name ? `<span class="compare-device-pill">${escapeHtml(r.device_name)}</span>` : '';
     const ungroupAllBtn = (sources.length > 1)
       ? `<button class="btn-group-action btn-ungroup-action" data-action="ungroup-all" data-sn="${escapeHtml(r.device_sn)}" data-concept-key="${escapeHtml(r.concept_key)}" style="margin-top: 5px; width: fit-content;" title="Ungroup all sources in this concept into standalone fields">✂️ Ungroup All</button>`
@@ -4565,7 +4566,6 @@ function renderCompareTableRows(rows) {
 
     // Sources column content
     let sourcesCol = '';
-    const sources = r.sources || [];
     if (sources.length > 0) {
       const cardsHtml = sources.map(s => {
         const isDivergent = s.is_divergent || false;
