@@ -514,6 +514,16 @@ class TestStateAndControls(unittest.TestCase):
         """Zero grid voltage (outage) and zero charge/discharge limits must update state rather than leaving stale values."""
         from pwrcell.mqtt import ChannelTelemetry, LiveTelemetrySnapshot
 
+        def ChannelTelemetry_(**kw):
+            kw.setdefault("channel", kw["channel_type"])
+            kw.setdefault("real_power_w", 0.0)
+            kw.setdefault("voltage_v", None)
+            kw.setdefault("imported_energy_ws", None)
+            kw.setdefault("exported_energy_ws", None)
+            kw.setdefault("device_id", "")
+            kw.setdefault("device_type", 0)
+            return ChannelTelemetry(**kw)
+
         # 1. Normal grid voltage (240V) and battery limits (4500W)
         snap_normal = LiveTelemetrySnapshot(
             timestamp=1000.0,
@@ -743,6 +753,150 @@ class TestStateAndControls(unittest.TestCase):
         devs = self.state.get_devices_snapshot()
         self.assertEqual(len(devs), 3)
         self.assertEqual(self.state.get_device(self.inv.serial_number.lower()), self.inv)
+
+    def test_update_from_telemetry_snapshot_golden_fields(self):
+        """Golden test verifying every MQTT push field key, value, raw_value, units, and HomeAssistantHint generated from LiveTelemetrySnapshot."""
+        from pwrcell.mqtt import ChannelTelemetry, LiveTelemetrySnapshot
+
+        def ChannelTelemetry_(**kw):
+            kw.setdefault("channel", kw["channel_type"])
+            kw.setdefault("real_power_w", 0.0)
+            kw.setdefault("voltage_v", None)
+            kw.setdefault("imported_energy_ws", None)
+            kw.setdefault("exported_energy_ws", None)
+            kw.setdefault("device_id", "")
+            kw.setdefault("device_type", 0)
+            return ChannelTelemetry(**kw)
+
+        snapshot = LiveTelemetrySnapshot(
+            timestamp=1700000000.0,
+            system_mode=2,
+            system_mode_name="SELF_SUPPLY",
+            inverter_state=2,
+            inverter_state_name="GRID_TIED",
+            inverter_id="0001000714E9",
+            system_family="TYPE_2",
+            gateway_id="0001001206E8",
+            gateway_type="BEACON_V1",
+            battery_soc=78.46,
+            battery_soh=98.2,
+            grid_power_w=-1234.56,
+            solar_power_w=4567.89,
+            load_power_w=1890.12,
+            battery_power_w=-1443.21,
+            channels={
+                1: ChannelTelemetry_(
+                    channel_type=1,
+                    channel_type_name="NET",
+                    real_power_w=-1234.56,
+                    voltage_v=241.23,
+                    imported_energy_ws=36000000,
+                    exported_energy_ws=72000000,
+                ),
+                2: ChannelTelemetry_(
+                    channel_type=2,
+                    channel_type_name="GENERATION",
+                    real_power_w=4567.89,
+                    exported_energy_ws=108000000,
+                ),
+                3: ChannelTelemetry_(
+                    channel_type=3,
+                    channel_type_name="CONSUMPTION",
+                    real_power_w=1890.12,
+                    imported_energy_ws=54000000,
+                ),
+                4: ChannelTelemetry_(
+                    channel_type=4,
+                    channel_type_name="STORAGE",
+                    real_power_w=-1443.21,
+                    voltage_v=395.67,
+                    imported_energy_ws=18000000,
+                    exported_energy_ws=14400000,
+                    real_power_sink_max_w=3500.0,
+                    real_power_source_max_w=4200.0,
+                ),
+                5: ChannelTelemetry_(
+                    channel_type=5,
+                    channel_type_name="INVERTER_OUTPUT",
+                    real_power_w=3124.68,
+                    exported_energy_ws=90000000,
+                    real_power_source_max_w=7600.0,
+                ),
+                7: ChannelTelemetry_(
+                    channel_type=7,
+                    channel_type_name="STORAGE_AC",
+                    real_power_w=-1400.0,
+                    imported_energy_ws=19800000,
+                    exported_energy_ws=12600000,
+                ),
+                6: ChannelTelemetry_(
+                    channel_type=6,
+                    channel_type_name="GENERATION_AC",
+                    real_power_w=4500.0,
+                    exported_energy_ws=104400000,
+                ),
+            },
+        )
+        self.state.update_from_telemetry_snapshot(snapshot)
+
+        expected_inv = {
+            "inverter.live.grid_power_w": (-1234.6, -1234.56, "W", "power", "measurement"),
+            "inverter.live.solar_power_w": (4567.9, 4567.89, "W", "power", "measurement"),
+            "inverter.live.load_power_w": (1890.1, 1890.12, "W", "power", "measurement"),
+            "inverter.live.system_mode": ("SELF_SUPPLY", 2, None, "enum", None),
+            "inverter.live.inverter_state": (2, 2, None, None, None),
+            "inverter.live.inverter_state_name": ("GRID_TIED", 2, None, "enum", None),
+            "inverter.live.inverter_id": ("0001000714E9", "0001000714E9", None, None, None),
+            "inverter.live.system_family": ("TYPE_2", "TYPE_2", None, None, None),
+            "inverter.live.grid_voltage_v": (241.2, 241.23, "V", "voltage", "measurement"),
+            "inverter.live.grid_imported_energy_wh": (10000.0, 36000000, "Wh", "energy", "total_increasing"),
+            "inverter.live.grid_exported_energy_wh": (20000.0, 72000000, "Wh", "energy", "total_increasing"),
+            "inverter.live.solar_generation_energy_wh": (30000.0, 108000000, "Wh", "energy", "total_increasing"),
+            "inverter.live.load_imported_energy_wh": (15000.0, 54000000, "Wh", "energy", "total_increasing"),
+            "inverter.live.inverter_output_power_w": (3124.7, 3124.68, "W", "power", "measurement"),
+            "inverter.live.inverter_output_exported_energy_wh": (25000.0, 90000000, "Wh", "energy", "total_increasing"),
+            "inverter.live.inverter_max_power_w": (7600.0, 7600.0, "W", "power", "measurement"),
+            "inverter.live.solar_generation_ac_energy_wh": (29000.0, 104400000, "Wh", "energy", "total_increasing"),
+        }
+        for key, (exp_val, exp_raw, exp_units, exp_dc, exp_sc) in expected_inv.items():
+            f = self.inv.fields.get(key)
+            self.assertIsNotNone(f, f"Missing expected inverter field {key}")
+            self.assertEqual(f.value, exp_val, f"Mismatch on {key}.value")
+            self.assertEqual(f.raw_value, exp_raw, f"Mismatch on {key}.raw_value")
+            self.assertEqual(f.units, exp_units, f"Mismatch on {key}.units")
+            self.assertEqual(f.ha_hint.device_class, exp_dc, f"Mismatch on {key}.device_class")
+            self.assertEqual(f.ha_hint.state_class, exp_sc, f"Mismatch on {key}.state_class")
+
+        expected_bat = {
+            "battery.live.battery_power_w": (-1443.2, -1443.21, "W", "power", "measurement"),
+            "battery.live.state_of_charge": (78.5, 78.46, "%", "battery", "measurement"),
+            "battery.live.state_of_health": (98.2, 98.2, "%", "battery", "measurement"),
+            "battery.live.battery_voltage_v": (395.7, 395.67, "V", "voltage", "measurement"),
+            "battery.live.battery_imported_energy_wh": (5000.0, 18000000, "Wh", "energy", "total_increasing"),
+            "battery.live.battery_exported_energy_wh": (4000.0, 14400000, "Wh", "energy", "total_increasing"),
+            "battery.live.max_charge_power_w": (3500.0, 3500.0, "W", "power", "measurement"),
+            "battery.live.max_discharge_power_w": (7600.0, 7600.0, "W", "power", "measurement"),
+            "battery.live.storage_ac_discharged_energy_wh": (3500.0, 12600000, "Wh", "energy", "total_increasing"),
+            "battery.live.storage_ac_charged_energy_wh": (5500.0, 19800000, "Wh", "energy", "total_increasing"),
+        }
+        for key, (exp_val, exp_raw, exp_units, exp_dc, exp_sc) in expected_bat.items():
+            f = self.bat.fields.get(key)
+            self.assertIsNotNone(f, f"Missing expected battery field {key}")
+            self.assertEqual(f.value, exp_val, f"Mismatch on {key}.value")
+            self.assertEqual(f.raw_value, exp_raw, f"Mismatch on {key}.raw_value")
+            self.assertEqual(f.units, exp_units, f"Mismatch on {key}.units")
+            self.assertEqual(f.ha_hint.device_class, exp_dc, f"Mismatch on {key}.device_class")
+            self.assertEqual(f.ha_hint.state_class, exp_sc, f"Mismatch on {key}.state_class")
+
+        expected_beacon = {
+            "rebus_beacon.live.gateway_id": ("0001001206E8", "0001001206E8"),
+            "rebus_beacon.live.gateway_type": ("BEACON_V1", "BEACON_V1"),
+        }
+        for key, (exp_val, exp_raw) in expected_beacon.items():
+            f = self.beacon.fields.get(key)
+            self.assertIsNotNone(f, f"Missing expected beacon field {key}")
+            self.assertEqual(f.value, exp_val)
+            self.assertEqual(f.raw_value, exp_raw)
 
 
 if __name__ == "__main__":
