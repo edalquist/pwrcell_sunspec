@@ -33,6 +33,7 @@ def clean_unit(unit: Optional[str]) -> str:
         "pct": "%",
         "percent": "%",
         "%": "%",
+        "%whrtg": "%",
         "sec": "s",
         "s": "s",
         "va": "VA",
