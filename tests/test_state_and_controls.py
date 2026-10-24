@@ -356,6 +356,21 @@ class TestStateAndControls(unittest.TestCase):
             stop_threads = True
             t.join()
 
+    def test_validate_field_value_no_name_substring_false_positives(self):
+        """Bounds are driven by units/device_class, never by name substrings such as 'attempt' or 'alarm_a'."""
+        from pwrcell.state import validate_field_value
+
+        # 'attempt'/'template' contain 'temp' but are plain counters/unitless
+        self.assertEqual(validate_field_value(500.0, units="s", name="attempt_delay"), 500.0)
+        self.assertEqual(validate_field_value(900.0, units=None, name="template_id"), 900.0)
+        # 'alarm_a' ends with '_a' but is not a current
+        self.assertEqual(validate_field_value(5000.0, units=None, name="alarm_a"), 5000.0)
+        # A % point whose name contains 'temp' is judged as a percentage (bounded 0..110), not a temperature
+        self.assertIsNone(validate_field_value(150.0, units="%", name="temp_derate"))
+        self.assertEqual(validate_field_value(100.0, units="%", name="temp_derate"), 100.0)
+        # Unit is authoritative over device_class when both present
+        self.assertEqual(validate_field_value(150.0, units="C", device_class="battery", name="x"), 150.0)
+
     def test_validate_field_value_bounds(self):
         """Test physical plausibility validation across voltage, frequency, power, etc."""
         from pwrcell.state import validate_field_value

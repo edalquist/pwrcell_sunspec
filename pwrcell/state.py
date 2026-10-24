@@ -31,6 +31,27 @@ from .mqtt import LiveTelemetrySnapshot
 logger = logging.getLogger(__name__)
 
 
+# Plausibility bounds by measurement kind: (label, min, max, symmetric_abs_only)
+_BOUNDS_BY_KIND = {
+    "voltage": ("voltage", -10.0, 2000.0),      # PV/battery systems operate up to 1500V DC
+    "frequency": ("frequency", 0.0, 100.0),     # 60Hz nominal, allowing generator ramps
+    "percent": ("percentage", 0.0, 110.0),      # SoC/SoH with small float headroom
+    "temperature": ("temperature", -60.0, 250.0),
+    "power": ("power", -1000000.0, 1000000.0),  # up to 1 MW
+    "power_kw": ("power", -1000.0, 1000.0),
+    "current": ("current", -1000.0, 1000.0),    # whole-home CT services up to 1,000A
+}
+_KIND_BY_UNIT = {
+    "V": "voltage", "HZ": "frequency", "%": "percent",
+    "°C": "temperature", "C": "temperature", "DEG C": "temperature", "DEGC": "temperature",
+    "W": "power", "KW": "power_kw", "A": "current",
+}
+_KIND_BY_DEVICE_CLASS = {
+    "voltage": "voltage", "frequency": "frequency", "battery": "percent",
+    "temperature": "temperature", "power": "power", "current": "current",
+}
+
+
 def validate_field_value(
     value: Any,
     units: Optional[str] = None,
@@ -39,12 +60,13 @@ def validate_field_value(
 ) -> Optional[Any]:
     """Validate a parsed/scaled field value against physical plausibility bounds.
 
-    Returns None if the value is invalid or physically implausible for PWRcell systems.
+    Bounds are selected from the explicit units (authoritative) or device_class metadata, never from
+    point-name substrings. Returns None if the value is invalid or physically implausible.
     """
     if value is None:
         return None
 
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
         if math.isnan(value) or math.isinf(value):
             return None
 
@@ -52,48 +74,13 @@ def validate_field_value(
         if abs(value) > 1e12:
             return None
 
-        clean_units = (units or "").strip().upper()
-        clean_name = (name or "").strip().lower()
-        clean_dc = (device_class or "").strip().lower()
-
-        # 1. Voltage validation: residential & commercial PV/battery systems operate up to 1500V DC
-        if clean_units == "V" or clean_dc == "voltage" or clean_name.endswith(("_v", ".v")) or "phv" in clean_name:
-            if value < -10.0 or value > 2000.0:
-                logger.warning("Rejected out-of-bounds voltage reading %s for %s (%s)", value, name, units)
-                return None
-
-        # 2. Frequency validation: North American grid 60Hz nominal, allowing generator startup ramps (0Hz to 100Hz)
-        elif clean_units == "HZ" or clean_dc == "frequency" or clean_name.endswith(("_hz", ".hz")):
-            if value < 0.0 or value > 100.0:
-                logger.warning("Rejected out-of-bounds frequency reading %s for %s (%s)", value, name, units)
-                return None
-
-        # 3. Percentage / Battery SoC / SoH: strictly 0% to 100% (allowing small float headroom up to 110%)
-        elif clean_units == "%" or clean_dc == "battery" or clean_name in ("state_of_charge", "state_of_health", "soc", "soh"):
-            if value < 0.0 or value > 110.0:
-                logger.warning("Rejected out-of-bounds percentage reading %s for %s (%s)", value, name, units)
-                return None
-
-        # 4. Temperature validation: -60°C to 250°C (allowing high semiconductor junction / heat sink temps)
-        elif clean_units in ("°C", "C", "DEG C", "DEGC") or clean_dc == "temperature" or "tmp" in clean_name or "temp" in clean_name:
-            if value < -60.0 or value > 250.0:
-                logger.warning("Rejected out-of-bounds temperature reading %s for %s (%s)", value, name, units)
-                return None
-
-        # 5. Power validation: residential & multi-unit commercial clean energy systems up to 1 MW (1,000,000 W)
-        elif clean_units == "W" or clean_dc == "power" or clean_name.endswith(("_w", ".w")):
-            if abs(value) > 1000000.0:
-                logger.warning("Rejected out-of-bounds power reading %s for %s (%s)", value, name, units)
-                return None
-        elif clean_units == "KW":
-            if abs(value) > 1000.0:
-                logger.warning("Rejected out-of-bounds power reading %s for %s (%s)", value, name, units)
-                return None
-
-        # 6. Current validation: residential & whole-home commercial CT services up to 1,000A
-        elif clean_units == "A" or clean_dc == "current" or clean_name.endswith(("_a", ".a")):
-            if abs(value) > 1000.0:
-                logger.warning("Rejected out-of-bounds current reading %s for %s (%s)", value, name, units)
+        kind = _KIND_BY_UNIT.get((units or "").strip().upper())
+        if kind is None:
+            kind = _KIND_BY_DEVICE_CLASS.get((device_class or "").strip().lower())
+        if kind is not None:
+            label, lo, hi = _BOUNDS_BY_KIND[kind]
+            if value < lo or value > hi:
+                logger.warning("Rejected out-of-bounds %s reading %s for %s (%s)", label, value, name, units)
                 return None
 
     return value
