@@ -1,0 +1,395 @@
+version: '1.0'
+snapshot_fields:
+- device: inv
+  name: grid_power_w
+  label: Grid Net Power
+  description: Real-time power imported from (+) or exported to (-) utility grid
+  attr: grid_power_w
+  units: W
+  platform: sensor
+  device_class: power
+  state_class: measurement
+  entity_category: null
+  condition: always
+  converter: round1
+- device: inv
+  name: solar_power_w
+  label: Solar Production Power
+  description: Total real-time solar generation across all PV strings
+  attr: solar_power_w
+  units: W
+  platform: sensor
+  device_class: power
+  state_class: measurement
+  entity_category: null
+  condition: always
+  converter: round1
+- device: inv
+  name: load_power_w
+  label: Home Consumption Power
+  description: Real-time total electrical power consumed by home loads
+  attr: load_power_w
+  units: W
+  platform: sensor
+  device_class: power
+  state_class: measurement
+  entity_category: null
+  condition: always
+  converter: round1
+- device: inv
+  name: system_mode
+  label: Live System Mode
+  description: Current system operating mode pushed from inverter
+  attr: system_mode_name
+  units: null
+  platform: sensor
+  device_class: enum
+  state_class: null
+  entity_category: null
+  condition: always
+  converter: same
+- device: inv
+  name: inverter_state
+  label: Inverter State
+  description: PWRcell inverter operational status code
+  attr: inverter_state
+  units: null
+  platform: sensor
+  device_class: null
+  state_class: null
+  entity_category: diagnostic
+  condition: notnone
+  converter: same
+- device: inv
+  name: inverter_state_name
+  label: Inverter State Name
+  description: PWRcell inverter operational status description
+  attr: inverter_state_name
+  units: null
+  platform: sensor
+  device_class: enum
+  state_class: null
+  entity_category: diagnostic
+  condition: notnone
+  converter: same
+- device: inv
+  name: inverter_id
+  label: Inverter Serial Number
+  description: Inverter unique identifier from MQTT push
+  attr: inverter_id
+  units: null
+  platform: sensor
+  device_class: null
+  state_class: null
+  entity_category: diagnostic
+  condition: truthy
+  converter: same
+- device: inv
+  name: system_family
+  label: System Architecture Family
+  description: PWRcell system family architecture generation
+  attr: system_family
+  units: null
+  platform: sensor
+  device_class: null
+  state_class: null
+  entity_category: diagnostic
+  condition: truthy
+  converter: same
+- device: beacon
+  name: gateway_id
+  label: Gateway Serial Number
+  description: REbus Beacon gateway identifier from MQTT telemetry
+  attr: gateway_id
+  units: null
+  platform: sensor
+  device_class: null
+  state_class: null
+  entity_category: diagnostic
+  condition: truthy
+  converter: same
+- device: beacon
+  name: gateway_type
+  label: Gateway Type
+  description: REbus Beacon hardware gateway type
+  attr: gateway_type
+  units: null
+  platform: sensor
+  device_class: null
+  state_class: null
+  entity_category: diagnostic
+  condition: truthy
+  converter: same
+- device: bat
+  name: battery_power_w
+  label: Battery Power
+  description: Real-time battery discharge (+) or charge (-) power
+  attr: battery_power_w
+  units: W
+  platform: sensor
+  device_class: power
+  state_class: measurement
+  entity_category: null
+  condition: always
+  converter: round1
+- device: bat
+  name: state_of_charge
+  label: State of Charge
+  description: Battery state of charge percentage
+  attr: battery_soc
+  units: '%'
+  platform: sensor
+  device_class: battery
+  state_class: measurement
+  entity_category: null
+  condition: notnone
+  converter: round1
+- device: bat
+  name: state_of_health
+  label: State of Health
+  description: Battery state of health percentage
+  attr: battery_soh
+  units: '%'
+  platform: sensor
+  device_class: battery
+  state_class: measurement
+  entity_category: null
+  condition: notnone
+  converter: round1
+channel_fields:
+- channel_types:
+  - NET
+  - NET_GRID
+  channel_type_id: 1
+  fields:
+  - device: inv
+    name: grid_voltage_v
+    label: Grid AC Voltage
+    description: Real-time AC grid voltage
+    attr: voltage_v
+    units: V
+    platform: sensor
+    device_class: voltage
+    state_class: measurement
+    entity_category: null
+    condition: notnone
+    converter: round1
+  - device: inv
+    name: grid_imported_energy_wh
+    label: Grid Imported Energy
+    description: Cumulative grid imported energy
+    attr: imported_energy_ws
+    units: Wh
+    platform: sensor
+    device_class: energy
+    state_class: total_increasing
+    entity_category: null
+    condition: gt0
+    converter: ws_to_wh
+  - device: inv
+    name: grid_exported_energy_wh
+    label: Grid Exported Energy
+    description: Cumulative grid exported energy
+    attr: exported_energy_ws
+    units: Wh
+    platform: sensor
+    device_class: energy
+    state_class: total_increasing
+    entity_category: null
+    condition: gt0
+    converter: ws_to_wh
+- channel_types:
+  - GENERATION
+  - GENERATION_SOLAR
+  channel_type_id: 2
+  fields:
+  - device: inv
+    name: solar_generation_energy_wh
+    label: Solar Lifetime Generated Energy
+    description: Cumulative solar PV generated energy
+    attr: exported_energy_ws
+    units: Wh
+    platform: sensor
+    device_class: energy
+    state_class: total_increasing
+    entity_category: null
+    condition: gt0
+    converter: ws_to_wh
+- channel_types:
+  - CONSUMPTION
+  - CONSUMPTION_LOAD
+  channel_type_id: 3
+  fields:
+  - device: inv
+    name: load_imported_energy_wh
+    label: Home Consumption Energy
+    description: Cumulative home consumption energy
+    attr: imported_energy_ws
+    units: Wh
+    platform: sensor
+    device_class: energy
+    state_class: total_increasing
+    entity_category: null
+    condition: gt0
+    converter: ws_to_wh
+- channel_types:
+  - STORAGE
+  - STORAGE_BATTERY
+  channel_type_id: 4
+  fields:
+  - device: bat
+    name: battery_voltage_v
+    label: Battery DC Voltage
+    description: Real-time battery pack DC voltage
+    attr: voltage_v
+    units: V
+    platform: sensor
+    device_class: voltage
+    state_class: measurement
+    entity_category: null
+    condition: notnone
+    converter: round1
+  - device: bat
+    name: battery_imported_energy_wh
+    label: Battery Charged Energy
+    description: Cumulative energy charged into battery
+    attr: imported_energy_ws
+    units: Wh
+    platform: sensor
+    device_class: energy
+    state_class: total_increasing
+    entity_category: null
+    condition: gt0
+    converter: ws_to_wh
+  - device: bat
+    name: battery_exported_energy_wh
+    label: Battery Discharged Energy
+    description: Cumulative energy discharged from battery
+    attr: exported_energy_ws
+    units: Wh
+    platform: sensor
+    device_class: energy
+    state_class: total_increasing
+    entity_category: null
+    condition: gt0
+    converter: ws_to_wh
+  - device: bat
+    name: max_charge_power_w
+    label: Max Battery Charge Power
+    description: Maximum rated battery charging power capability
+    attr: real_power_sink_max_w
+    units: W
+    platform: sensor
+    device_class: power
+    state_class: measurement
+    entity_category: null
+    condition: notnone
+    converter: round1
+  - device: bat
+    name: max_discharge_power_w
+    label: Max Battery Discharge Power
+    description: Maximum rated battery discharge power capability
+    attr: real_power_source_max_w
+    units: W
+    platform: sensor
+    device_class: power
+    state_class: measurement
+    entity_category: null
+    condition: notnone
+    converter: round1
+- channel_types:
+  - INVERTER_OUTPUT
+  channel_type_id: 5
+  fields:
+  - device: inv
+    name: inverter_output_power_w
+    label: Inverter AC Output Power
+    description: Real-time inverter AC output real power
+    attr: real_power_w
+    units: W
+    platform: sensor
+    device_class: power
+    state_class: measurement
+    entity_category: null
+    condition: always
+    converter: round1
+  - device: inv
+    name: inverter_output_exported_energy_wh
+    label: Inverter Output Exported Energy
+    description: Cumulative inverter AC output energy
+    attr: exported_energy_ws
+    units: Wh
+    platform: sensor
+    device_class: energy
+    state_class: total_increasing
+    entity_category: null
+    condition: gt0
+    converter: ws_to_wh
+  - device: inv
+    name: inverter_max_power_w
+    label: System Max Power Capability
+    description: Instantaneous maximum power capability of inverter and battery
+    attr: real_power_source_max_w
+    units: W
+    platform: sensor
+    device_class: power
+    state_class: measurement
+    entity_category: null
+    condition: truthy
+    converter: round1
+  - device: bat
+    name: max_discharge_power_w
+    label: Max Battery Discharge Power
+    description: Maximum rated discharge power capability
+    attr: real_power_source_max_w
+    units: W
+    platform: sensor
+    device_class: power
+    state_class: measurement
+    entity_category: null
+    condition: truthy
+    converter: round1
+- channel_types:
+  - STORAGE_AC
+  channel_type_id: 7
+  fields:
+  - device: bat
+    name: storage_ac_discharged_energy_wh
+    label: Battery AC Discharged Energy
+    description: Cumulative AC energy discharged from battery
+    attr: exported_energy_ws
+    units: Wh
+    platform: sensor
+    device_class: energy
+    state_class: total_increasing
+    entity_category: null
+    condition: gt0
+    converter: ws_to_wh
+  - device: bat
+    name: storage_ac_charged_energy_wh
+    label: Battery AC Charged Energy
+    description: Cumulative AC energy charged into battery
+    attr: imported_energy_ws
+    units: Wh
+    platform: sensor
+    device_class: energy
+    state_class: total_increasing
+    entity_category: null
+    condition: gt0
+    converter: ws_to_wh
+- channel_types:
+  - GENERATION_AC
+  channel_type_id: 6
+  fields:
+  - device: inv
+    name: solar_generation_ac_energy_wh
+    label: Solar AC Generated Energy
+    description: Cumulative AC energy generated from solar PV
+    attr: exported_energy_ws
+    units: Wh
+    platform: sensor
+    device_class: energy
+    state_class: total_increasing
+    entity_category: null
+    condition: gt0
+    converter: ws_to_wh

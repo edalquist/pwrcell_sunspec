@@ -104,20 +104,6 @@ def get_active_raw_to_compound_mapping() -> Dict[str, str]:
 
 
 # ── Declarative MQTT push telemetry → StateStore field tables ────────────────
-def _hint(device_class=None, state_class=None, unit=None, platform="sensor", category=None):
-    return HomeAssistantHint(
-        platform=platform, device_class=device_class, state_class=state_class,
-        unit_of_measurement=unit, entity_category=category,
-    )
-
-
-_H_W = _hint("power", "measurement", "W")
-_H_V = _hint("voltage", "measurement", "V")
-_H_WH = _hint("energy", "total_increasing", "Wh")
-_H_PCT = _hint("battery", "measurement", "%")
-_H_DIAG = _hint(category="diagnostic")
-_H_ENUM_DIAG = _hint("enum", category="diagnostic")
-
 _TELEMETRY_CONDITIONS = {
     "always": lambda v: True,
     "notnone": lambda v: v is not None,
@@ -141,58 +127,69 @@ def _same(v):
 # Name-valued attrs whose raw_value is the numeric code
 _SNAPSHOT_RAW_ATTR = {"system_mode_name": "system_mode", "inverter_state_name": "inverter_state"}
 
-# (devkey, name, label, description, snapshot attr, units, hint, condition, value converter)
-_SNAPSHOT_FIELD_SPECS = [
-    ("inv", "grid_power_w", "Grid Net Power", "Real-time power imported from (+) or exported to (-) utility grid", "grid_power_w", "W", _H_W, "always", _r1),
-    ("inv", "solar_power_w", "Solar Production Power", "Total real-time solar generation across all PV strings", "solar_power_w", "W", _H_W, "always", _r1),
-    ("inv", "load_power_w", "Home Consumption Power", "Real-time total electrical power consumed by home loads", "load_power_w", "W", _H_W, "always", _r1),
-    ("inv", "system_mode", "Live System Mode", "Current system operating mode pushed from inverter", "system_mode_name", None, _hint("enum"), "always", _same),
-    ("inv", "inverter_state", "Inverter State", "PWRcell inverter operational status code", "inverter_state", None, _H_DIAG, "notnone", _same),
-    ("inv", "inverter_state_name", "Inverter State Name", "PWRcell inverter operational status description", "inverter_state_name", None, _H_ENUM_DIAG, "notnone", _same),
-    ("inv", "inverter_id", "Inverter Serial Number", "Inverter unique identifier from MQTT push", "inverter_id", None, _H_DIAG, "truthy", _same),
-    ("inv", "system_family", "System Architecture Family", "PWRcell system family architecture generation", "system_family", None, _H_DIAG, "truthy", _same),
-    ("beacon", "gateway_id", "Gateway Serial Number", "REbus Beacon gateway identifier from MQTT telemetry", "gateway_id", None, _H_DIAG, "truthy", _same),
-    ("beacon", "gateway_type", "Gateway Type", "REbus Beacon hardware gateway type", "gateway_type", None, _H_DIAG, "truthy", _same),
-    ("bat", "battery_power_w", "Battery Power", "Real-time battery discharge (+) or charge (-) power", "battery_power_w", "W", _H_W, "always", _r1),
-    ("bat", "state_of_charge", "State of Charge", "Battery state of charge percentage", "battery_soc", "%", _H_PCT, "notnone", _r1),
-    ("bat", "state_of_health", "State of Health", "Battery state of health percentage", "battery_soh", "%", _H_PCT, "notnone", _r1),
-]
 
-# (channel type names, channel type id, [(devkey, name, label, description, channel attr, units, hint, condition, converter)])
-# The first spec's devkey is the device the channel requires; first matching channel kind wins.
-_CHANNEL_FIELD_SPECS = [
-    (("NET", "NET_GRID"), 1, [
-        ("inv", "grid_voltage_v", "Grid AC Voltage", "Real-time AC grid voltage", "voltage_v", "V", _H_V, "notnone", _r1),
-        ("inv", "grid_imported_energy_wh", "Grid Imported Energy", "Cumulative grid imported energy", "imported_energy_ws", "Wh", _H_WH, "gt0", _ws_to_wh),
-        ("inv", "grid_exported_energy_wh", "Grid Exported Energy", "Cumulative grid exported energy", "exported_energy_ws", "Wh", _H_WH, "gt0", _ws_to_wh),
-    ]),
-    (("GENERATION", "GENERATION_SOLAR"), 2, [
-        ("inv", "solar_generation_energy_wh", "Solar Lifetime Generated Energy", "Cumulative solar PV generated energy", "exported_energy_ws", "Wh", _H_WH, "gt0", _ws_to_wh),
-    ]),
-    (("CONSUMPTION", "CONSUMPTION_LOAD"), 3, [
-        ("inv", "load_imported_energy_wh", "Home Consumption Energy", "Cumulative home consumption energy", "imported_energy_ws", "Wh", _H_WH, "gt0", _ws_to_wh),
-    ]),
-    (("STORAGE", "STORAGE_BATTERY"), 4, [
-        ("bat", "battery_voltage_v", "Battery DC Voltage", "Real-time battery pack DC voltage", "voltage_v", "V", _H_V, "notnone", _r1),
-        ("bat", "battery_imported_energy_wh", "Battery Charged Energy", "Cumulative energy charged into battery", "imported_energy_ws", "Wh", _H_WH, "gt0", _ws_to_wh),
-        ("bat", "battery_exported_energy_wh", "Battery Discharged Energy", "Cumulative energy discharged from battery", "exported_energy_ws", "Wh", _H_WH, "gt0", _ws_to_wh),
-        ("bat", "max_charge_power_w", "Max Battery Charge Power", "Maximum rated battery charging power capability", "real_power_sink_max_w", "W", _H_W, "notnone", _r1),
-        ("bat", "max_discharge_power_w", "Max Battery Discharge Power", "Maximum rated battery discharge power capability", "real_power_source_max_w", "W", _H_W, "notnone", _r1),
-    ]),
-    (("INVERTER_OUTPUT",), 5, [
-        ("inv", "inverter_output_power_w", "Inverter AC Output Power", "Real-time inverter AC output real power", "real_power_w", "W", _H_W, "always", _r1),
-        ("inv", "inverter_output_exported_energy_wh", "Inverter Output Exported Energy", "Cumulative inverter AC output energy", "exported_energy_ws", "Wh", _H_WH, "gt0", _ws_to_wh),
-        ("inv", "inverter_max_power_w", "System Max Power Capability", "Instantaneous maximum power capability of inverter and battery", "real_power_source_max_w", "W", _H_W, "truthy", _r1),
-        ("bat", "max_discharge_power_w", "Max Battery Discharge Power", "Maximum rated discharge power capability", "real_power_source_max_w", "W", _H_W, "truthy", _r1),
-    ]),
-    (("STORAGE_AC",), 7, [
-        ("bat", "storage_ac_discharged_energy_wh", "Battery AC Discharged Energy", "Cumulative AC energy discharged from battery", "exported_energy_ws", "Wh", _H_WH, "gt0", _ws_to_wh),
-        ("bat", "storage_ac_charged_energy_wh", "Battery AC Charged Energy", "Cumulative AC energy charged into battery", "imported_energy_ws", "Wh", _H_WH, "gt0", _ws_to_wh),
-    ]),
-    (("GENERATION_AC",), 6, [
-        ("inv", "solar_generation_ac_energy_wh", "Solar AC Generated Energy", "Cumulative AC energy generated from solar PV", "exported_energy_ws", "Wh", _H_WH, "gt0", _ws_to_wh),
-    ]),
-]
+def _load_mqtt_telemetry_specs():
+    """Load declarative telemetry ingestion specs from YAML configuration."""
+    from pathlib import Path
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+
+    if yaml is None:
+        return [], []
+
+    yaml_path = Path(__file__).resolve().parent / "data" / "mqtt_telemetry.yaml"
+    if not yaml_path.exists():
+        return [], []
+    with open(yaml_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+
+    convs = {
+        "round1": _r1,
+        "ws_to_wh": _ws_to_wh,
+        "same": _same,
+    }
+
+    snapshots = []
+    for s in data.get("snapshot_fields", []):
+        hint = HomeAssistantHint(
+            platform=s.get("platform", "sensor"),
+            device_class=s.get("device_class"),
+            state_class=s.get("state_class"),
+            unit_of_measurement=s.get("units"),
+            entity_category=s.get("entity_category"),
+        )
+        snapshots.append((
+            s["device"], s["name"], s["label"], s["description"],
+            s["attr"], s["units"], hint, s.get("condition", "always"),
+            convs.get(s.get("converter", "same"), _same)
+        ))
+
+    channels = []
+    for c in data.get("channel_fields", []):
+        type_names = tuple(c.get("channel_types", []))
+        type_id = c.get("channel_type_id", 0)
+        specs = []
+        for s in c.get("fields", []):
+            hint = HomeAssistantHint(
+                platform=s.get("platform", "sensor"),
+                device_class=s.get("device_class"),
+                state_class=s.get("state_class"),
+                unit_of_measurement=s.get("units"),
+                entity_category=s.get("entity_category"),
+            )
+            specs.append((
+                s["device"], s["name"], s["label"], s["description"],
+                s["attr"], s["units"], hint, s.get("condition", "always"),
+                convs.get(s.get("converter", "same"), _same)
+            ))
+        channels.append((type_names, type_id, specs))
+
+    return snapshots, channels
+
+
+_SNAPSHOT_FIELD_SPECS, _CHANNEL_FIELD_SPECS = _load_mqtt_telemetry_specs()
 
 
 
