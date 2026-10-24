@@ -271,19 +271,24 @@ class SerializedModbusClient:
                 dev.client = self._shared_client
         return self._shared_client
 
-    def _drain_stale_socket_bytes(self, client: mb.ModbusClientTCP):
-        """Drain leftover unread bytes from socket buffer to prevent packet desynchronization."""
+    def _drain_stale_socket_bytes(self, client: mb.ModbusClientTCP) -> bool:
+        """Drain leftover unread bytes from socket buffer to prevent packet desynchronization.
+
+        Returns True if socket remains open, or False if peer closed the connection (EOF).
+        """
         if not client or not getattr(client, "socket", None):
-            return
+            return True
         sock = client.socket
         try:
             sock.setblocking(False)
             while True:
                 data = sock.recv(4096)
-                if not data:
-                    break
+                if data == b"":
+                    return False
+        except (BlockingIOError, InterruptedError):
+            return True
         except Exception:
-            pass
+            return False
         finally:
             try:
                 sock.settimeout(float(self.timeout))
@@ -299,7 +304,12 @@ class SerializedModbusClient:
         if not shared.is_connected():
             shared.connect()
         else:
-            self._drain_stale_socket_bytes(shared)
+            if not self._drain_stale_socket_bytes(shared):
+                try:
+                    shared.disconnect()
+                except Exception:
+                    pass
+                shared.connect()
 
     def _handle_socket_error(self, exc: Exception):
         """Disconnect dead or desynchronized socket on transport failure so next retry starts fresh."""

@@ -198,6 +198,28 @@ class TestModbusScanRange(unittest.TestCase):
         self.assertEqual(discovered, {})
         self.assertEqual(scanned_ids, [1, 2, 3, 4, 5])
 
+    def test_drain_stale_socket_bytes_reconnects_on_eof(self):
+        from unittest.mock import MagicMock
+        from pwrcell.modbus import SerializedModbusClient
+
+        mgr = SerializedModbusClient(host="localhost", port=5020)
+        fake_sock = MagicMock()
+        # recv returning b"" means peer closed the connection (EOF)
+        fake_sock.recv.return_value = b""
+
+        fake_client = MagicMock()
+        fake_client.ipport = 5020
+        fake_client.socket = fake_sock
+        fake_client.is_connected.return_value = True
+        mgr._shared_client = fake_client
+
+        dev = MagicMock()
+        dev.slave_id = 8
+        mgr._ensure_device_connected(dev)
+
+        fake_client.disconnect.assert_called_once()
+        fake_client.connect.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
