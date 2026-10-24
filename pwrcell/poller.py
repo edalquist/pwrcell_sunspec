@@ -373,7 +373,10 @@ class TieredModbusPoller:
 
     def trigger_sync(self, tier: str | PollingTier = "config"):
         """Queue an immediate out-of-band poll for a specific tier (e.g. on keypad mode change)."""
-        tier_val = tier.value if isinstance(tier, PollingTier) else str(tier).lower()
+        tier_val = tier.value if isinstance(tier, PollingTier) else str(tier).strip().lower()
+        valid_tiers = {PollingTier.FAST.value, PollingTier.CONFIG.value, PollingTier.SLOW.value, "all", "deep"}
+        if tier_val not in valid_tiers:
+            raise ValueError(f"Unknown polling tier: {tier!r}. Expected one of {sorted(valid_tiers)}")
         with self._cond:
             self._pending_triggers.put(tier_val)
             self._cond.notify_all()

@@ -520,7 +520,10 @@ def create_app(client: PwrcellClient) -> Flask:
     def trigger_poller():
         body = request.get_json() or {}
         tier = body.get("tier", "config")
-        client.poller.trigger_sync(tier)
+        try:
+            client.poller.trigger_sync(tier)
+        except ValueError as e:
+            return jsonify({"success": False, "error": str(e)}), 400
         return jsonify({
             "success": True,
             "tier": tier,

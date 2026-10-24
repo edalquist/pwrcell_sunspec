@@ -66,6 +66,10 @@ class TestTieredModbusPoller(unittest.TestCase):
         tier = poller._pending_triggers.get_nowait()
         self.assertEqual(tier, "config")
 
+        with self.assertRaises(ValueError):
+            poller.trigger_sync("invalid_tier")
+        self.assertTrue(poller._pending_triggers.empty())
+
     def test_mqtt_keypad_mode_change_triggers_config_sync(self):
         """Verify that when MQTT push detects a change in system_mode (from physical panel), poller triggers config sync."""
         with patch.object(self.client.poller, "trigger_sync") as mock_trigger:

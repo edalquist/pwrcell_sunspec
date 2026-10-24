@@ -246,6 +246,14 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertTrue(trig_data["success"])
         self.assertEqual(trig_data["tier"], "config")
 
+        # 3. POST /api/poller/trigger with invalid tier returns 400
+        resp_bad = self.test_client.post(
+            "/api/poller/trigger",
+            json={"tier": "foo"},
+        )
+        self.assertEqual(resp_bad.status_code, 400)
+        self.assertFalse(resp_bad.get_json()["success"])
+
     def test_device_models_metadata(self):
         """Test that devices preserve and expose all supported SunSpec models and field links."""
         # 1. Check /api/devices includes supported_models and models summary
