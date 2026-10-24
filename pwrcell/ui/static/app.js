@@ -3779,9 +3779,6 @@ function closeCompareModal() {
     compareTimer = null;
   }
 }
-    compareTimer = null;
-  }
-}
 
 // Toast Notifications
 function showToast(message) {
