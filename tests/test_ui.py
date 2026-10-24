@@ -1,7 +1,13 @@
 """Unit tests for pwrcell.ha and pwrcell.ui Web Explorer API."""
 
 import json
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
+
+from pwrcell import mapping as mapping_module
 from pwrcell.client import PwrcellClient
 from pwrcell.ha import generate_discovery_payload, get_recommended_field_keys, load_ha_config, save_ha_config
 from pwrcell.ui.server import create_app
@@ -11,6 +17,22 @@ class TestWebExplorerApi(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        # Redirect every persisted config file to a temp dir so tests never touch live user config.
+        cls._tmp_dir = tempfile.TemporaryDirectory()
+        tmp = Path(cls._tmp_dir.name)
+        real_mappings = mapping_module._resolve_mappings_path()
+        tmp_mappings = tmp / "telemetry_mappings.yaml"
+        if real_mappings.exists():
+            shutil.copy(real_mappings, tmp_mappings)
+        cls._patches = [
+            mock.patch("pwrcell.ha.get_default_ha_config_path", return_value=tmp / "ha_config.yaml"),
+            mock.patch("pwrcell.bridge.get_default_ha_config_path", return_value=tmp / "ha_config.yaml"),
+            mock.patch("pwrcell.grouping.get_default_grouping_config_path", return_value=tmp / "custom_groupings.yaml"),
+            mock.patch("pwrcell.mapping._resolve_mappings_path", return_value=tmp_mappings),
+        ]
+        for p in cls._patches:
+            p.start()
+        mapping_module.MappingRegistry._instance = None
         cls.orig_ha_config = load_ha_config()
         cls.client = PwrcellClient(is_mock=True)
         cls.client.start()
@@ -20,8 +42,10 @@ class TestWebExplorerApi(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.client.stop()
-        if hasattr(cls, "orig_ha_config"):
-            save_ha_config(cls.orig_ha_config)
+        for p in reversed(cls._patches):
+            p.stop()
+        mapping_module.MappingRegistry._instance = None
+        cls._tmp_dir.cleanup()
 
     def test_index_route(self):
         resp = self.test_client.get("/")
