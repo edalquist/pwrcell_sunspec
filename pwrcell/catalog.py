@@ -37,6 +37,31 @@ def is_scale_factor_point(
     return False
 
 
+def get_suggested_precision(
+    unit: Optional[str],
+    device_class: Optional[str] = None,
+    point_name: Optional[str] = None,
+) -> Optional[int]:
+    """Derive Home Assistant suggested display precision for numeric sensors."""
+    u = (unit or "").strip()
+    if u in ("W", "VA", "VAr", "VAR", "Wh", "Ws", "VAh", "varh"):
+        return 0
+    if u in ("kWh", "Hz", "kVAh", "kvarh"):
+        return 2
+    if u in ("V", "A", "%", "C", "°C", "kW"):
+        return 1
+    if device_class == "power":
+        return 0
+    if device_class == "energy":
+        return 2 if "k" in u.lower() else 0
+    if device_class in ("voltage", "current", "battery", "temperature"):
+        return 1
+    if device_class == "frequency":
+        return 2
+    return None
+
+
+
 
 @dataclass(frozen=True)
 class SunspecSymbol:
@@ -905,21 +930,11 @@ class ModelCatalog:
             state_class = "measurement"
 
         # Determine suggested display precision
-        precision = None
-        if canonical_units in ("W", "VA", "VAr", "VAR", "Wh"):
-            precision = 0
-        elif canonical_units in ("kWh", "Hz"):
-            precision = 2
-        elif canonical_units in ("V", "A", "%", "C", "°C", "kW"):
-            precision = 1
-        elif device_class == "power":
-            precision = 0
-        elif device_class == "energy":
-            precision = 2 if "k" in (canonical_units or "").lower() else 0
-        elif device_class in ("voltage", "current", "battery", "temperature"):
-            precision = 1
-        elif device_class == "frequency":
-            precision = 2
+        precision = get_suggested_precision(
+            canonical_units,
+            device_class=device_class,
+            point_name=point.name,
+        )
 
         return HomeAssistantHint(
             platform="sensor",

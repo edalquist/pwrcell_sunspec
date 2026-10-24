@@ -34,6 +34,7 @@ from .catalog import (
     ModelCatalog,
     SunspecPointDef,
     get_catalog,
+    get_suggested_precision,
     is_scale_factor_point,
 )
 from .mapping import MappingRegistry, apply_transform
@@ -916,20 +917,7 @@ class StateStore:
         precision = None
         if ha_platform == "sensor":
             u = (m.unit or (mb_field.units if mb_field else (mqtt_field.units if mqtt_field else "")) or "").strip()
-            if u in ("W", "VA", "VAr", "VAR", "Wh"):
-                precision = 0
-            elif u in ("kWh", "Hz"):
-                precision = 2
-            elif u in ("V", "A", "%", "C", "°C", "kW"):
-                precision = 1
-            elif ha_device_class == "power":
-                precision = 0
-            elif ha_device_class == "energy":
-                precision = 2 if "k" in u.lower() else 0
-            elif ha_device_class in ("voltage", "current", "battery", "temperature"):
-                precision = 1
-            elif ha_device_class == "frequency":
-                precision = 2
+            precision = get_suggested_precision(u, device_class=ha_device_class, point_name=m.id)
 
         return CompoundFieldView(
             key=key,
