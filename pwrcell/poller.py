@@ -421,21 +421,24 @@ class TieredModbusPoller:
     def poll_tier(self, tier: str | PollingTier) -> int:
         """Poll all devices and models for a given tier synchronously. Returns models read count."""
         tier_str = tier.value if isinstance(tier, PollingTier) else str(tier).lower()
-        if tier_str == PollingTier.FAST.value:
-            models_map = self.fast_models
-        elif tier_str == PollingTier.CONFIG.value:
-            models_map = self.config_models
-        elif tier_str == PollingTier.SLOW.value:
-            models_map = self.slow_models
-        elif tier_str in ("all", "deep"):
+        with self._cond:
+            if tier_str == PollingTier.FAST.value:
+                models_map = {k: list(v) for k, v in self.fast_models.items()}
+            elif tier_str == PollingTier.CONFIG.value:
+                models_map = {k: list(v) for k, v in self.config_models.items()}
+            elif tier_str == PollingTier.SLOW.value:
+                models_map = {k: list(v) for k, v in self.slow_models.items()}
+            elif tier_str in ("all", "deep"):
+                models_map = None
+            else:
+                logger.warning("Unknown polling tier requested: %s", tier_str)
+                return 0
+
+        if models_map is None:
             return self.poll_all_devices_all_models()
-        else:
-            logger.warning("Unknown polling tier requested: %s", tier_str)
-            return 0
 
         polled_count = 0
-        with self.client.state._lock:
-            devices = list(self.client.state.devices.values())
+        devices = self.client.state.get_devices_snapshot()
 
         for dev in devices:
             if dev.slave_id is None:
@@ -446,8 +449,9 @@ class TieredModbusPoller:
                 if success:
                     polled_count += 1
 
-        self.last_poll[tier_str] = time.time()
-        self.poll_counts[tier_str] = self.poll_counts.get(tier_str, 0) + 1
+        with self._cond:
+            self.last_poll[tier_str] = time.time()
+            self.poll_counts[tier_str] = self.poll_counts.get(tier_str, 0) + 1
         logger.debug("Completed Modbus poll for tier '%s': %d models updated", tier_str, polled_count)
         return polled_count
 
@@ -482,9 +486,11 @@ class TieredModbusPoller:
                         any_read = True
                 return any_read
         except Exception as e:
-            self.poll_counts["errors"] = self.poll_counts.get("errors", 0) + 1
-            if self.poll_counts["errors"] % 20 == 1:
-                logger.warning("Repeated Modbus read failure on model %s (slave %d, %s): %s (total errors: %d)", model_id, slave_id, serial_number, e, self.poll_counts["errors"])
+            with self._cond:
+                self.poll_counts["errors"] = self.poll_counts.get("errors", 0) + 1
+                err_cnt = self.poll_counts["errors"]
+            if err_cnt % 20 == 1:
+                logger.warning("Repeated Modbus read failure on model %s (slave %d, %s): %s (total errors: %d)", model_id, slave_id, serial_number, e, err_cnt)
             else:
                 logger.debug("Failed reading model %s on slave %d (%s): %s", model_id, slave_id, serial_number, e)
 
@@ -492,7 +498,7 @@ class TieredModbusPoller:
 
     def poll_device_all_models(self, slave_id: int, serial_number: str) -> int:
         """Poll all supported SunSpec models for a specific device."""
-        dev = self.client.state.devices.get(serial_number)
+        dev = self.client.state.get_device(serial_number)
         models_to_poll = list(dev.supported_models) if (dev and dev.supported_models) else []
         if not models_to_poll and self.client.modbus:
             tcp_dev = self.client.modbus.get_or_create_device(slave_id)
@@ -512,11 +518,12 @@ class TieredModbusPoller:
     def poll_all_devices_all_models(self) -> int:
         """Poll all supported models across all devices."""
         total = 0
-        for dev in list(self.client.state.devices.values()):
+        for dev in self.client.state.get_devices_snapshot():
             if dev.slave_id is not None:
                 total += self.poll_device_all_models(dev.slave_id, dev.serial_number)
-        self.last_poll["all"] = time.time()
-        self.poll_counts["all"] = self.poll_counts.get("all", 0) + 1
+        with self._cond:
+            self.last_poll["all"] = time.time()
+            self.poll_counts["all"] = self.poll_counts.get("all", 0) + 1
         return total
 
     def refresh_model_resolutions(self):
@@ -526,24 +533,23 @@ class TieredModbusPoller:
             catalog=self.client.catalog if self.client else None,
             state_store=self.client.state if self.client else None,
         )
-        for dev_type, mids in resolved_fast.items():
-            self.fast_models[dev_type] = sorted(list(set(self.fast_models.get(dev_type, [])) | set(mids)))
-
         resolved_config = resolve_paths_to_models(
             self.config_paths,
             catalog=self.client.catalog if self.client else None,
             state_store=self.client.state if self.client else None,
         )
-        for dev_type, mids in resolved_config.items():
-            self.config_models[dev_type] = sorted(list(set(self.config_models.get(dev_type, [])) | set(mids)))
-
         resolved_slow = resolve_paths_to_models(
             self.slow_paths,
             catalog=self.client.catalog if self.client else None,
             state_store=self.client.state if self.client else None,
         )
-        for dev_type, mids in resolved_slow.items():
-            self.slow_models[dev_type] = sorted(list(set(self.slow_models.get(dev_type, [])) | set(mids)))
+        with self._cond:
+            for dev_type, mids in resolved_fast.items():
+                self.fast_models[dev_type] = sorted(list(set(self.fast_models.get(dev_type, [])) | set(mids)))
+            for dev_type, mids in resolved_config.items():
+                self.config_models[dev_type] = sorted(list(set(self.config_models.get(dev_type, [])) | set(mids)))
+            for dev_type, mids in resolved_slow.items():
+                self.slow_models[dev_type] = sorted(list(set(self.slow_models.get(dev_type, [])) | set(mids)))
 
     def sync_ha_selected_fields(self, selected_keys: List[str]):
         """Ensure all SunSpec models backing selected Home Assistant entities are polled (minimal set)."""
@@ -553,49 +559,51 @@ class TieredModbusPoller:
             state_store=self.client.state if self.client else None,
             optimize=True,
         )
-        for dev_type, model_ids in ha_models.items():
-            current_active = (
-                set(self.fast_models.get(dev_type, []))
-                | set(self.config_models.get(dev_type, []))
-                | set(self.slow_models.get(dev_type, []))
-            )
-            for mid in model_ids:
-                if mid not in current_active:
-                    self.slow_models.setdefault(dev_type, []).append(mid)
-                    self.slow_models[dev_type] = sorted(list(set(self.slow_models[dev_type])))
-                    logger.info(
-                        "Auto-registered model %s on %s to slow polling tier for selected Home Assistant entity",
-                        mid,
-                        dev_type,
-                    )
+        with self._cond:
+            for dev_type, model_ids in ha_models.items():
+                current_active = (
+                    set(self.fast_models.get(dev_type, []))
+                    | set(self.config_models.get(dev_type, []))
+                    | set(self.slow_models.get(dev_type, []))
+                )
+                for mid in model_ids:
+                    if mid not in current_active:
+                        self.slow_models.setdefault(dev_type, []).append(mid)
+                        self.slow_models[dev_type] = sorted(list(set(self.slow_models[dev_type])))
+                        logger.info(
+                            "Auto-registered model %s on %s to slow polling tier for selected Home Assistant entity",
+                            mid,
+                            dev_type,
+                        )
 
     def to_dict(self) -> Dict[str, Any]:
         """Return JSON-serializable status dictionary for Web UI and REST API."""
-        return {
-            "enabled": self.enabled,
-            "running": self._running,
-            "intervals": {
-                "fast_seconds": self.fast_interval,
-                "config_seconds": self.config_interval,
-                "slow_seconds": self.slow_interval,
-            },
-            "last_poll": {
-                "fast": self.last_poll.get(PollingTier.FAST.value, 0.0),
-                "config": self.last_poll.get(PollingTier.CONFIG.value, 0.0),
-                "slow": self.last_poll.get(PollingTier.SLOW.value, 0.0),
-            },
-            "poll_counts": dict(self.poll_counts),
-            "paths": {
-                "fast": self.fast_paths,
-                "config": self.config_paths,
-                "slow": self.slow_paths,
-            },
-            "models": {
-                "fast": self.fast_models,
-                "config": self.config_models,
-                "slow": self.slow_models,
-            },
-        }
+        with self._cond:
+            return {
+                "enabled": self.enabled,
+                "running": self._running,
+                "intervals": {
+                    "fast_seconds": self.fast_interval,
+                    "config_seconds": self.config_interval,
+                    "slow_seconds": self.slow_interval,
+                },
+                "last_poll": {
+                    "fast": self.last_poll.get(PollingTier.FAST.value, 0.0),
+                    "config": self.last_poll.get(PollingTier.CONFIG.value, 0.0),
+                    "slow": self.last_poll.get(PollingTier.SLOW.value, 0.0),
+                },
+                "poll_counts": dict(self.poll_counts),
+                "paths": {
+                    "fast": list(self.fast_paths),
+                    "config": list(self.config_paths),
+                    "slow": list(self.slow_paths),
+                },
+                "models": {
+                    "fast": {k: list(v) for k, v in self.fast_models.items()},
+                    "config": {k: list(v) for k, v in self.config_models.items()},
+                    "slow": {k: list(v) for k, v in self.slow_models.items()},
+                },
+            }
 
     def _worker_loop(self):
         """Internal daemon loop scheduling polls and processing triggers."""

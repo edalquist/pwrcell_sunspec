@@ -379,10 +379,11 @@ class HomeAssistantBridge:
         with self._lock:
             if comp_id in self._active_compound_keys:
                 return True
+            selected_snapshot = set(self.selected_field_keys) | set(self._selected_set)
         c_views = self.client.state.get_compound_views(field.device_sn)
         for c_view in c_views:
             if c_view.key == field.compound_key:
-                if is_field_selected(c_view.key, field.device_sn, self.selected_field_keys, getattr(c_view, "mqtt_key", None)):
+                if is_field_selected(c_view.key, field.device_sn, selected_snapshot, getattr(c_view, "mqtt_key", None)):
                     with self._lock:
                         self._active_compound_keys.add(comp_id)
                     return True
@@ -392,12 +393,14 @@ class HomeAssistantBridge:
         """Called when a field value updates in the StateStore."""
         if not self._mqttc or field.value is None:
             return
-        if not is_field_selected(field.key, field.device_sn, self.selected_field_keys):
+        with self._lock:
+            selected_snapshot = set(self.selected_field_keys) | set(self._selected_set)
+        if not is_field_selected(field.key, field.device_sn, selected_snapshot):
             return
         if self._is_field_suppressed_by_compound(field):
             return
 
-        dev = self.client.state.devices.get(field.device_sn)
+        dev = self.client.state.get_device(field.device_sn)
         if not dev:
             return
 
@@ -411,10 +414,13 @@ class HomeAssistantBridge:
         )
 
         config_topic = payload_info["config_topic"]
-        if config_topic not in self._published_discovery_topics:
+        with self._lock:
+            needs_discovery = config_topic not in self._published_discovery_topics
+            if needs_discovery:
+                self._published_discovery_topics.add(config_topic)
+        if needs_discovery:
             config_payload = json.dumps(payload_info["payload"])
             self._mqttc.publish(config_topic, config_payload, retain=True)
-            self._published_discovery_topics.add(config_topic)
             if payload_info.get("old_sensor_topic"):
                 self._mqttc.publish(payload_info["old_sensor_topic"], "", retain=True)
             cmd_topic = payload_info.get("command_topic")
@@ -429,12 +435,14 @@ class HomeAssistantBridge:
         """Called when a compound view updates from either MQTT push or Modbus poll."""
         if not self._mqttc or c_view.latest_value is None:
             return
-        if not is_field_selected(c_view.key, c_view.device_sn, self.selected_field_keys, getattr(c_view, "mqtt_key", None)):
+        with self._lock:
+            selected_snapshot = set(self.selected_field_keys) | set(self._selected_set)
+        if not is_field_selected(c_view.key, c_view.device_sn, selected_snapshot, getattr(c_view, "mqtt_key", None)):
             return
         clean_sn = c_view.device_sn.strip().upper()
         with self._lock:
             self._active_compound_keys.add(f"{clean_sn}:{c_view.key}")
-        dev = self.client.state.devices.get(c_view.device_sn)
+        dev = self.client.state.get_device(c_view.device_sn)
         if not dev:
             return
         gateway = self.client.state.get_beacon() or self.client.state.get_inverter()
@@ -447,10 +455,13 @@ class HomeAssistantBridge:
         )
 
         config_topic = payload_info["config_topic"]
-        if config_topic not in self._published_discovery_topics:
+        with self._lock:
+            needs_discovery = config_topic not in self._published_discovery_topics
+            if needs_discovery:
+                self._published_discovery_topics.add(config_topic)
+        if needs_discovery:
             config_payload = json.dumps(payload_info["payload"])
             self._mqttc.publish(config_topic, config_payload, retain=True)
-            self._published_discovery_topics.add(config_topic)
             if payload_info.get("old_sensor_topic"):
                 self._mqttc.publish(payload_info["old_sensor_topic"], "", retain=True)
             cmd_topic = payload_info.get("command_topic")

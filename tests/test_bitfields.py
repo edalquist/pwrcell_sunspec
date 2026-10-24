@@ -175,6 +175,7 @@ class TestBitfieldSupport(unittest.TestCase):
 
         res = self.controls.write_field("battery.test_group.CustomBits", ["BIT_A", "BIT_C"])
         self.assertEqual(res, ["BIT_A", "BIT_C"])
+        field = self.battery.fields.get("battery.test_group.CustomBits")
         self.assertEqual(field.value, ["BIT_A", "BIT_C"])
         self.assertEqual(field.raw_value, 5)  # 1 | 4
         self.assertTrue(field.is_flag_set("BIT_A"))

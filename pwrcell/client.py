@@ -334,7 +334,7 @@ class PwrcellClient:
             return
 
         logger.info("Starting background initial SunSpec model poll across devices...")
-        for dev in list(self.state.devices.values()):
+        for dev in self.state.get_devices_snapshot():
             if not self._running:
                 break
             if dev.slave_id is None:
@@ -352,8 +352,11 @@ class PwrcellClient:
                 if 1 in tcp_dev.models or "common" in tcp_dev.models:
                     model_inst = self.modbus.read_model_block(tcp_dev, 1)
                     if model_inst and hasattr(tcp_dev, "common") and tcp_dev.common:
-                        dev.model_name = str(tcp_dev.common[0].Md.value).strip() or dev.model_name
-                        dev.version = str(tcp_dev.common[0].Vr.value).strip() or dev.version
+                        self.state.update_device_metadata(
+                            dev.serial_number,
+                            model_name=str(tcp_dev.common[0].Md.value).strip() or dev.model_name,
+                            version=str(tcp_dev.common[0].Vr.value).strip() or dev.version,
+                        )
                         raw_pts = {p_name: p.value for p_name, p in model_inst.points.items()}
                         comp_pts = {p_name: safe_point_cvalue(p) for p_name, p in model_inst.points.items()}
                         self.state.update_from_modbus_points(dev.serial_number, 1, raw_values=raw_pts, computed_values=comp_pts)

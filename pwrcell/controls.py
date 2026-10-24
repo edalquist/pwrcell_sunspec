@@ -159,15 +159,38 @@ class ControlDispatcher:
             )
 
         # Also update any other SysMd fields across devices in state store
-        for dev in self.state_store.devices.values():
+        for dev in self.state_store.get_devices_snapshot():
             if dev.serial_number == target_device.serial_number:
                 continue
             for f_key, f in list(dev.fields.items()):
                 if f.name == "SysMd" or f_key.endswith(".SysMd"):
-                    f.value = mode_name
-                    f.raw_value = int_mode
-                    f.last_updated = time.time()
-                    self.state_store.notify_field_change(f)
+                    parts = f.key.split(".")
+                    sub_g = parts[1] if len(parts) > 2 else None
+                    self.state_store.set_field(
+                        device_sn=dev.serial_number,
+                        name=f.name,
+                        label=f.label,
+                        description=f.description,
+                        value=mode_name,
+                        raw_value=int_mode,
+                        units=f.units,
+                        source=f.source,
+                        access=f.access,
+                        symbols=f.symbols,
+                        point_type=f.point_type,
+                        is_enum=f.is_enum,
+                        is_bitfield=f.is_bitfield,
+                        bitmask_flags=f.bitmask_flags,
+                        is_scale_factor=f.is_scale_factor,
+                        scale_factor_point=f.scale_factor_point,
+                        offset=f.offset,
+                        size=f.size,
+                        ha_hint=f.ha_hint,
+                        sub_group=sub_g,
+                        model_id=f.model_id,
+                        model_name=f.model_name,
+                        model_label=f.model_label,
+                    )
 
         # Also update compound view for system_mode
         c_view = self.state_store.get_compound_view("system_mode")
@@ -196,7 +219,7 @@ class ControlDispatcher:
             or field_key in ("inverter.live.system_mode", "system_mode", "inverter.compound.system_mode")
         ):
             self.set_system_mode(new_value)
-            for dev in self.state_store.devices.values():
+            for dev in self.state_store.get_devices_snapshot():
                 if field_key in dev.fields:
                     return dev.fields[field_key].value
             c_view = self.state_store.get_compound_view("system_mode")
@@ -227,7 +250,7 @@ class ControlDispatcher:
                 self.state_store.notify_compound_change(updated_c)
             return res
 
-        for dev in self.state_store.devices.values():
+        for dev in self.state_store.get_devices_snapshot():
             if field_key in dev.fields:
                 target_field = dev.fields[field_key]
                 target_dev = dev
@@ -238,7 +261,8 @@ class ControlDispatcher:
 
         if target_field.name in ("SysMd", "system_mode"):
             self.set_system_mode(new_value)
-            return target_field.value
+            updated_f = target_dev.fields.get(field_key)
+            return updated_f.value if updated_f else target_field.value
 
         if not target_field.is_writable:
             raise PermissionError(f"Field '{field_key}' is read-only (access: {target_field.access})")
@@ -304,13 +328,39 @@ class ControlDispatcher:
                         display_val = readback
                         raw_val = readback
 
-        target_field.value = display_val
-        target_field.raw_value = raw_val
-        if getattr(target_field, "is_bitfield", False) or (point_def and point_def.is_bitfield):
-            target_field.is_bitfield = True
-            target_field.bitmask_flags = display_val if isinstance(display_val, list) else (point_def.decode_bitfield(raw_val) if point_def else None)
-        target_field.last_updated = time.time()
-        self.state_store.notify_field_change(target_field)
+        parts = field_key.split(".")
+        sub_g = parts[1] if len(parts) > 2 else None
+        is_bf = bool(getattr(target_field, "is_bitfield", False) or (point_def and point_def.is_bitfield))
+        bf_flags = (
+            display_val
+            if isinstance(display_val, list)
+            else (point_def.decode_bitfield(raw_val) if (point_def and is_bf) else target_field.bitmask_flags)
+        )
+        self.state_store.set_field(
+            device_sn=target_dev.serial_number,
+            name=target_field.name,
+            label=target_field.label,
+            description=target_field.description,
+            value=display_val,
+            raw_value=raw_val,
+            units=target_field.units,
+            source=target_field.source,
+            access=target_field.access,
+            symbols=target_field.symbols,
+            point_type=target_field.point_type,
+            is_enum=target_field.is_enum,
+            is_bitfield=is_bf,
+            bitmask_flags=bf_flags,
+            is_scale_factor=target_field.is_scale_factor,
+            scale_factor_point=target_field.scale_factor_point,
+            offset=target_field.offset,
+            size=target_field.size,
+            ha_hint=target_field.ha_hint,
+            sub_group=sub_g,
+            model_id=target_field.model_id,
+            model_name=target_field.model_name,
+            model_label=target_field.model_label,
+        )
         return display_val
 
     def _validate_against_symbols(self, field: Any, new_value: Any) -> tuple[Any, Any]:
