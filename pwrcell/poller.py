@@ -631,8 +631,17 @@ class TieredModbusPoller:
 
     def _worker_loop(self):
         """Internal daemon loop scheduling polls and processing triggers."""
-        # Initial stagger: wait 2 seconds after startup before first poll
-        time.sleep(2.0)
+        # Initial stagger: wait up to 2 seconds after startup before first poll, interruptible on stop/trigger
+        with self._cond:
+            if not self._running:
+                return
+            self._cond.wait(timeout=2.0)
+
+        tier_schedule = (
+            (PollingTier.FAST, "fast_interval"),
+            (PollingTier.CONFIG, "config_interval"),
+            (PollingTier.SLOW, "slow_interval"),
+        )
 
         while True:
             with self._cond:
@@ -678,31 +687,16 @@ class TieredModbusPoller:
                 )
                 self.client._init_poll_thread.start()
 
-            # Fast Tier
-            last_fast = max(self.last_poll.get(PollingTier.FAST.value, 0.0), self.last_poll_attempt.get(PollingTier.FAST.value, 0.0))
-            if now - last_fast >= self.fast_interval:
-                try:
-                    self.poll_tier(PollingTier.FAST)
-                except Exception as e:
-                    logger.error("Error during fast tier poll: %s", e)
-
-            # Config & Keypad State Sync Tier
-            now = time.time()
-            last_cfg = max(self.last_poll.get(PollingTier.CONFIG.value, 0.0), self.last_poll_attempt.get(PollingTier.CONFIG.value, 0.0))
-            if now - last_cfg >= self.config_interval:
-                try:
-                    self.poll_tier(PollingTier.CONFIG)
-                except Exception as e:
-                    logger.error("Error during config tier poll: %s", e)
-
-            # Slow Energy & Diagnostics Tier
-            now = time.time()
-            last_slow = max(self.last_poll.get(PollingTier.SLOW.value, 0.0), self.last_poll_attempt.get(PollingTier.SLOW.value, 0.0))
-            if now - last_slow >= self.slow_interval:
-                try:
-                    self.poll_tier(PollingTier.SLOW)
-                except Exception as e:
-                    logger.error("Error during slow tier poll: %s", e)
+            for tier_enum, interval_attr in tier_schedule:
+                tier_key = tier_enum.value
+                interval = getattr(self, interval_attr)
+                with self._cond:
+                    last_ts = max(self.last_poll.get(tier_key, 0.0), self.last_poll_attempt.get(tier_key, 0.0))
+                if time.time() - last_ts >= interval:
+                    try:
+                        self.poll_tier(tier_enum)
+                    except Exception as e:
+                        logger.error("Error during %s tier poll: %s", tier_key, e)
 
             bridge = getattr(self.client, "bridge", None)
             if bridge and hasattr(bridge, "check_availability"):
@@ -711,8 +705,16 @@ class TieredModbusPoller:
                 except Exception as e:
                     logger.debug("Error checking HA availability: %s", e)
 
-            # 3. Wait up to 1 second before next tick or trigger notification
+            # 3. Compute wait until next scheduled tier due (clamped to [0.1s, 5.0s]) or trigger notification
+            now = time.time()
+            next_waits = []
             with self._cond:
                 if not self._running:
                     break
-                self._cond.wait(timeout=1.0)
+                for tier_enum, interval_attr in tier_schedule:
+                    tier_key = tier_enum.value
+                    interval = getattr(self, interval_attr)
+                    last_ts = max(self.last_poll.get(tier_key, 0.0), self.last_poll_attempt.get(tier_key, 0.0))
+                    next_waits.append(max(0.1, (last_ts + interval) - now))
+                wait_timeout = min(next_waits + [5.0])
+                self._cond.wait(timeout=wait_timeout)

@@ -399,6 +399,22 @@ class TestTieredModbusPoller(unittest.TestCase):
         self.assertGreater(poller.last_poll_attempt[PollingTier.FAST.value], 0.0)
         self.assertEqual(poller.poll_attempts[PollingTier.FAST.value], 1)
 
+    def test_poller_start_stop_exits_promptly_during_initial_stagger(self):
+        """poller.stop() called immediately after poller.start() must interrupt the initial stagger and exit in < 0.5s."""
+        import time
+
+        poller = TieredModbusPoller(client=self.client, enabled=True)
+        poller.start()
+        try:
+            time.sleep(0.05)
+            t0 = time.monotonic()
+            poller.stop()
+            elapsed = time.monotonic() - t0
+            self.assertLess(elapsed, 0.5, f"poller.stop() took {elapsed:.2f}s due to non-stoppable initial stagger")
+            self.assertFalse(poller._running)
+        finally:
+            poller.stop()
+
 
 if __name__ == "__main__":
     unittest.main()
