@@ -136,25 +136,6 @@ DEFAULT_SLOW_PATHS: List[str] = [
 ]
 
 
-# Default SunSpec models by device type for each polling tier
-DEFAULT_FAST_MODELS: Dict[str, List[int]] = {
-    "inverter": [102, 64208, 64207],
-    "battery": [802, 64252],
-    "pv_link": [64207],
-}
-
-DEFAULT_CONFIG_MODELS: Dict[str, List[int]] = {
-    "rebus_beacon": [64200],  # Master Operating Mode (SysMd), system controls
-    "inverter": [102],        # Inverter state & grid reconnect parameters
-}
-
-DEFAULT_SLOW_MODELS: Dict[str, List[int]] = {
-    "battery": [64209],       # Cumulative energy charged / discharged (WhIn, WhOut)
-    "inverter": [64208],      # Cumulative grid energy (WhIn, WhOut)
-    "pv_link": [404],         # DC string combiner metrics, temperatures
-}
-
-
 def resolve_paths_to_models(
     paths: List[str],
     catalog: Optional[Any] = None,
@@ -265,6 +246,12 @@ def resolve_paths_to_models(
                 continue
 
     return {d: sorted(list(mids)) for d, mids in result.items() if mids}
+
+
+# Default SunSpec models by device type for each polling tier (derived from DEFAULT_*_PATHS)
+DEFAULT_FAST_MODELS: Dict[str, List[int]] = resolve_paths_to_models(DEFAULT_FAST_PATHS)
+DEFAULT_CONFIG_MODELS: Dict[str, List[int]] = resolve_paths_to_models(DEFAULT_CONFIG_PATHS)
+DEFAULT_SLOW_MODELS: Dict[str, List[int]] = resolve_paths_to_models(DEFAULT_SLOW_PATHS)
 
 
 class TieredModbusPoller:

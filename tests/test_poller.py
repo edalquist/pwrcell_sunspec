@@ -288,6 +288,22 @@ class TestTieredModbusPoller(unittest.TestCase):
         self.assertIsNotNone(rb_field)
         self.assertIn("HEARTBEAT_GOOD", rb_field.active_flags)
 
+    def test_default_tier_models_match_default_paths(self):
+        """Verify DEFAULT_*_MODELS are consistently derived from DEFAULT_*_PATHS."""
+        from pwrcell.poller import (
+            DEFAULT_CONFIG_MODELS,
+            DEFAULT_CONFIG_PATHS,
+            DEFAULT_FAST_MODELS,
+            DEFAULT_FAST_PATHS,
+            DEFAULT_SLOW_MODELS,
+            DEFAULT_SLOW_PATHS,
+            resolve_paths_to_models,
+        )
+
+        self.assertEqual(DEFAULT_FAST_MODELS, resolve_paths_to_models(DEFAULT_FAST_PATHS))
+        self.assertEqual(DEFAULT_CONFIG_MODELS, resolve_paths_to_models(DEFAULT_CONFIG_PATHS))
+        self.assertEqual(DEFAULT_SLOW_MODELS, resolve_paths_to_models(DEFAULT_SLOW_PATHS))
+
 
 if __name__ == "__main__":
     unittest.main()
