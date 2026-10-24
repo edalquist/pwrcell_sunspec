@@ -1815,23 +1815,6 @@ class StateStore:
                     scaled_val = cand
                     if cand is None:
                         raw_val = None
-            # Case 3: Defined scale factor from SunSpec model definition (e.g. AMax_SF, VT_sf)
-            elif isinstance(raw_val, (int, float)) and pt_def and pt_def.sf:
-                sf_name = pt_def.sf
-                sf = scale_factors.get(sf_name) if sf_name in scale_factors else (
-                    scale_factors.get(sf_name.lower()) if sf_name.lower() in scale_factors else scale_factors.get(sf_name.upper())
-                )
-                if sf is not None and -10 <= sf <= 10:
-                    scaled_val = round(raw_val * (10 ** sf), abs(sf) if sf < 0 else 0)
-                else:
-                    scaled_val = None
-            # Case 4: Standard convention <name>_sf
-            elif isinstance(raw_val, (int, float)) and (f"{pt_name}_sf" in scale_factors or f"{pt_name}_SF" in scale_factors):
-                sf = scale_factors.get(f"{pt_name}_sf", scale_factors.get(f"{pt_name}_SF"))
-                if sf is not None and -10 <= sf <= 10:
-                    scaled_val = round(raw_val * (10 ** sf), abs(sf) if sf < 0 else 0)
-                else:
-                    scaled_val = None
             else:
                 scaled_val = raw_val
 

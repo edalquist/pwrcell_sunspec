@@ -254,11 +254,12 @@ class TestTieredModbusPoller(unittest.TestCase):
         self.assertIsNone(safe_point_cvalue(p))
 
     def test_model_64207_sentinel_scale_factors_in_state(self):
-        """Verify model 64207 points with sentinel scale factors are handled safely in StateStore."""
+        """Verify model 64207 points with cvalue from safe_point_cvalue (or raw fallback without home-grown scaling) are handled safely in StateStore."""
         state = self.client.state
         dev = state.register_device("000100034AC7", 3, "pv_link", "PV Link")
 
-        # Simulate polling Model 64207 with invalid scale factor registers (32767)
+        # Simulate polling Model 64207 where safe_point_cvalue returned None for V and T (due to invalid VT_sf=32767)
+        # and 0.0 for I (due to valid I_sf=-2)
         raw_values = {
             "P": 0,
             "E": 2153252067,
@@ -268,20 +269,45 @@ class TestTieredModbusPoller(unittest.TestCase):
             "St": 12546,
             "Ev": 34048,
             "RB": 8225,
-            "VT_sf": 32767,  # Sentinel!
+            "VT_sf": 32767,
             "I_sf": -2,
         }
-        state.update_from_modbus_points("000100034AC7", 64207, raw_values=raw_values)
+        computed_values = {
+            "P": 0,
+            "E": 2153252067,
+            "V": None,
+            "I": 0.0,
+            "T": None,
+            "St": 12546,
+            "Ev": 34048,
+            "RB": 8225,
+            "VT_sf": None,
+            "I_sf": -2,
+        }
+        state.update_from_modbus_points(
+            "000100034AC7",
+            64207,
+            raw_values=raw_values,
+            computed_values=computed_values,
+        )
 
-        # Points V and T depend on VT_sf which was 32767. Their value MUST be None, not 3816 * 10^32767!
+        # Points V and T have computed_values=None. Their value MUST be None!
         v_field = dev.fields.get("pv_link.REbus_status.V")
         self.assertIsNotNone(v_field)
         self.assertIsNone(v_field.value)
 
-        # Point I depends on I_sf which was -2. It should be scaled normally: 0 * 10^-2 = 0.0
+        # Point I has computed_values=0.0
         i_field = dev.fields.get("pv_link.REbus_status.I")
         self.assertIsNotNone(i_field)
         self.assertEqual(i_field.value, 0.0)
+
+        # Verify that without computed_values, update_from_modbus_points does NOT re-implement home-grown SF scaling
+        state.update_from_modbus_points(
+            "000100034AC7",
+            64207,
+            raw_values={"V": 380, "VT_sf": -1},
+        )
+        self.assertEqual(dev.fields["pv_link.REbus_status.V"].value, 380)
 
         # Bitfield RB should be properly decoded into symbols
         rb_field = dev.fields.get("pv_link.REbus_status.RB")
