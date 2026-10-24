@@ -1,6 +1,8 @@
 """Unit tests for pwrcell.tunnel PwrCellTunnel and pwrcell_tunnel context manager."""
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from pwrcell.config import AppConfig, PwrcellConfig, SshTunnel
 from pwrcell.tunnel import PwrCellTunnel, pwrcell_tunnel
@@ -9,13 +11,18 @@ from pwrcell.tunnel import PwrCellTunnel, pwrcell_tunnel
 class TestPwrCellTunnel(unittest.TestCase):
 
     def setUp(self):
+        # Use a throwaway identity file so tests don't depend on the host's ~/.ssh/id_rsa.
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
+        identity = Path(tmp_dir.name) / "id_test"
+        identity.write_text("not-a-real-key")
         self.config = AppConfig(
             pwrcell=PwrcellConfig(
                 ssh_tunnel=SshTunnel(
                     host="192.168.0.73",
                     port=22,
                     username="root",
-                    identity_file="~/.ssh/id_rsa",
+                    identity_file=str(identity),
                 )
             )
         )
