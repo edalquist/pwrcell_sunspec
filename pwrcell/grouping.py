@@ -178,3 +178,140 @@ def approve_suggestion(
 
     save_custom_groupings(data, config_path)
     return data
+
+
+def export_generalized_groupings(config_path: Optional[Path | str] = None) -> Dict[str, Any]:
+    """Export custom groupings stripped of device-specific serial numbers.
+
+    Produces a clean, portable custom_groupings.yaml format where overrides are keyed
+    directly by device field key (e.g. 'inverter.inverter.W': 'inverter_output_power').
+    This can be placed in /data/custom_groupings.yaml or config/custom_groupings.yaml
+    to apply universally across any PWRcell system on fresh install.
+    """
+    raw_data = load_custom_groupings(config_path)
+    overrides = raw_data.get("field_overrides", {}) or {}
+    custom_concepts = raw_data.get("custom_concepts", {}) or {}
+
+    generalized_overrides: Dict[str, Any] = {}
+    for qual_key, target in overrides.items():
+        if not qual_key:
+            continue
+        # Strip serial prefix if present (e.g. '0001000714E9:inverter.inverter.W' -> 'inverter.inverter.W')
+        if ":" in qual_key:
+            _, f_key = qual_key.split(":", 1)
+        else:
+            f_key = qual_key
+        generalized_overrides[f_key.strip()] = target
+
+    result_dict = {
+        "field_overrides": generalized_overrides,
+        "custom_concepts": custom_concepts,
+    }
+
+    yaml_header = (
+        "# PWRcell SunSpec - Generalized Custom Field Groupings\n"
+        "# Portable configuration without device serial numbers.\n"
+        "# Place in /data/custom_groupings.yaml or config/custom_groupings.yaml to set defaults for new installs.\n\n"
+    )
+    yaml_str = yaml_header + yaml.safe_dump(result_dict, default_flow_style=False, sort_keys=True)
+    return {
+        "data": result_dict,
+        "yaml": yaml_str,
+    }
+
+
+def export_as_telemetry_mappings(
+    state_store: Any,
+    config_path: Optional[Path | str] = None,
+    only_custom: bool = True,
+) -> Dict[str, Any]:
+    """Export active field groupings as built-in telemetry_mappings.yaml format.
+
+    Generates official mapping schema entries (id, device_type, mqtt_field, modbus_candidates)
+    suitable for updating pwrcell/data/telemetry_mappings.yaml or submitting a pull request.
+    """
+    from .optimizer import group_device_fields
+    raw_data = load_custom_groupings(config_path)
+    custom_concepts = set(raw_data.get("custom_concepts", {}).keys())
+    overrides = set(raw_data.get("field_overrides", {}).keys())
+
+    mappings_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    if hasattr(state_store, "devices") and state_store.devices:
+        for dev in state_store.devices.values():
+            dev_type = getattr(dev, "device_type", "inverter")
+            dev_sn = getattr(dev, "serial_number", "")
+            groups = group_device_fields(dev, custom_groupings=raw_data)
+
+            for g in groups:
+                if getattr(g, "is_scale_factor", False):
+                    continue
+
+                # Filter if only exporting custom groups
+                is_custom = (
+                    getattr(g, "is_custom_override", False)
+                    or g.concept_key in custom_concepts
+                    or any(f"{dev_sn}:{s.field_key}" in overrides or s.field_key in overrides for s in g.sources)
+                )
+
+                if only_custom and not is_custom:
+                    continue
+
+                map_key = (dev_type, g.concept_key)
+
+                # Extract MQTT and Modbus sources
+                mqtt_sources = [s for s in g.sources if s.source_type == "MQTT"]
+                mb_sources = [s for s in g.sources if s.source_type != "MQTT"]
+
+                # Modbus candidates
+                candidates: List[str] = []
+                for s in mb_sources:
+                    if s.model_id and s.name:
+                        cand_ref = f"{dev_type}.model_{s.model_id}.{s.name}"
+                    else:
+                        cand_ref = s.field_key
+                    if cand_ref not in candidates:
+                        candidates.append(cand_ref)
+
+                primary_mb = candidates[0] if candidates else ""
+                mqtt_field = mqtt_sources[0].field_key if mqtt_sources else f"{dev_type}.live.{g.concept_key}"
+
+                if map_key in mappings_by_key:
+                    # Merge candidates if already present from another unit
+                    existing = mappings_by_key[map_key]
+                    for c in candidates:
+                        if c not in existing["modbus_candidates"]:
+                            existing["modbus_candidates"].append(c)
+                else:
+                    mappings_by_key[map_key] = {
+                        "id": g.concept_key,
+                        "label": g.label or g.concept_key.replace("_", " ").title(),
+                        "device_type": dev_type,
+                        "unit": g.units or "",
+                        "mqtt_field": mqtt_field,
+                        "modbus_field": primary_mb,
+                        "modbus_candidates": candidates,
+                        "transform": "none",
+                        "transform_desc": "",
+                        "description": g.description or f"Aggregated {g.label} telemetry",
+                        "ha_platform": getattr(g, "ha_platform", "sensor"),
+                        "ha_device_class": getattr(g, "ha_device_class", None),
+                        "ha_state_class": getattr(g, "ha_state_class", None),
+                    }
+
+    mappings_list = list(mappings_by_key.values())
+    output_dict = {
+        "version": "1.0",
+        "mappings": mappings_list,
+    }
+
+    yaml_header = (
+        "# PWRcell SunSpec - Custom Telemetry Mappings Export\n"
+        "# Formatted for pwrcell/data/telemetry_mappings.yaml to contribute to integration defaults.\n\n"
+    )
+    yaml_str = yaml_header + yaml.safe_dump(output_dict, default_flow_style=False, sort_keys=False)
+    return {
+        "mappings": mappings_list,
+        "yaml": yaml_str,
+    }
+

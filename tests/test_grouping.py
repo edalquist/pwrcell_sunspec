@@ -163,6 +163,62 @@ class TestGroupingOverrides(unittest.TestCase):
         data = resp.get_json()
         self.assertEqual(data.get("status"), "ok")
 
+    def test_export_generalized_and_telemetry_mappings(self):
+        from pwrcell.grouping import export_generalized_groupings, export_as_telemetry_mappings
+        # Add an override with device serial prefix
+        set_field_grouping_override(
+            device_sn=self.inv.serial_number,
+            field_key="inverter.inverter.W",
+            target_concept="custom_inverter_power",
+            custom_label="Custom Inverter Power",
+            config_path=self.config_path,
+        )
+
+        # 1. Test export_generalized_groupings
+        gen_res = export_generalized_groupings(self.config_path)
+        self.assertIn("custom_concepts", gen_res["data"])
+        self.assertIn("field_overrides", gen_res["data"])
+        # Serial prefix should be stripped
+        self.assertIn("inverter.inverter.W", gen_res["data"]["field_overrides"])
+        self.assertEqual(gen_res["data"]["field_overrides"]["inverter.inverter.W"], "custom_inverter_power")
+        self.assertIn("custom_inverter_power", gen_res["data"]["custom_concepts"])
+        self.assertIn("custom_inverter_power", gen_res["yaml"])
+        self.assertNotIn(self.inv.serial_number, gen_res["yaml"])
+
+        # 2. Test export_as_telemetry_mappings
+        tel_res = export_as_telemetry_mappings(self.client.state, config_path=self.config_path)
+        self.assertIn("mappings", tel_res)
+        self.assertIn("yaml", tel_res)
+        self.assertIn("version: '1.0'", tel_res["yaml"])
+        # Custom concept should be in mappings
+        match = next((m for m in tel_res["mappings"] if m["id"] == "custom_inverter_power"), None)
+        self.assertIsNotNone(match)
+        self.assertEqual(match["device_type"], "inverter")
+        self.assertEqual(match["label"], "Custom Inverter Power")
+
+        # 3. Test API export routes
+        app = create_app(self.client)
+        app.config["TESTING"] = True
+        test_client = app.test_client()
+
+        resp_gen = test_client.get("/api/grouping/export?format=generalized")
+        self.assertEqual(resp_gen.status_code, 200)
+        gen_json = resp_gen.get_json()
+        self.assertEqual(gen_json["status"], "ok")
+        self.assertEqual(gen_json["filename"], "custom_groupings.yaml")
+
+        resp_tel = test_client.get("/api/grouping/export?format=telemetry_mappings")
+        self.assertEqual(resp_tel.status_code, 200)
+        tel_json = resp_tel.get_json()
+        self.assertEqual(tel_json["status"], "ok")
+        self.assertEqual(tel_json["filename"], "telemetry_mappings.yaml")
+
+        # Download format
+        resp_dl = test_client.get("/api/grouping/export?format=generalized&download=true")
+        self.assertEqual(resp_dl.status_code, 200)
+        self.assertEqual(resp_dl.mimetype, "text/yaml")
+        self.assertIn("attachment; filename=custom_groupings.yaml", resp_dl.headers.get("Content-Disposition", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

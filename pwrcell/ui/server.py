@@ -481,6 +481,35 @@ def create_app(client: PwrcellClient) -> Flask:
         result = dismiss_suggestion(suggestion_id=suggestion_id)
         return jsonify({"status": "ok", "overrides": result})
 
+    @app.route("/api/grouping/export")
+    def export_grouping_mappings():
+        from flask import Response
+        from ..grouping import export_generalized_groupings, export_as_telemetry_mappings
+        fmt = request.args.get("format", "generalized").lower()
+        as_download = request.args.get("download", "").lower() in ("true", "1", "yes")
+
+        if fmt in ("telemetry", "telemetry_mappings", "builtin"):
+            res = export_as_telemetry_mappings(client.state)
+            filename = "telemetry_mappings.yaml"
+        else:
+            res = export_generalized_groupings()
+            filename = "custom_groupings.yaml"
+
+        if as_download:
+            return Response(
+                res["yaml"],
+                mimetype="text/yaml",
+                headers={"Content-Disposition": f"attachment; filename={filename}"},
+            )
+
+        return jsonify({
+            "status": "ok",
+            "format": fmt,
+            "filename": filename,
+            "yaml": res["yaml"],
+            "data": res.get("data") or res.get("mappings"),
+        })
+
     @app.route("/api/poller/status")
     def get_poller_status():
         status = client.poller.to_dict()
