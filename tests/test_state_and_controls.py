@@ -446,6 +446,14 @@ class TestStateAndControls(unittest.TestCase):
         )
         self.assertEqual(f4.value, 23492000)
 
+        # N=3 consecutive consistent lower positive readings (e.g. after a single high glitch or legitimate reset) must recover instead of latching forever
+        f_drop1 = self.state.set_field(device_sn=self.inv.serial_number, name="WhIn", value=500000, units="Wh", ha_hint=hint)
+        self.assertEqual(f_drop1.value, 23492000)
+        f_drop2 = self.state.set_field(device_sn=self.inv.serial_number, name="WhIn", value=500010, units="Wh", ha_hint=hint)
+        self.assertEqual(f_drop2.value, 23492000)
+        f_drop3 = self.state.set_field(device_sn=self.inv.serial_number, name="WhIn", value=500020, units="Wh", ha_hint=hint)
+        self.assertEqual(f_drop3.value, 500020)
+
     def test_pvlink_daily_energy_reset_allowed(self):
         """Verify that PV link daily/session energy counters are allowed to reset at sunrise."""
         from pwrcell.catalog import HomeAssistantHint

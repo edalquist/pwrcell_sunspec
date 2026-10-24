@@ -668,6 +668,7 @@ class StateStore:
         self.devices_by_slave_id: Dict[int, UnifiedDevice] = {}
         self._listeners: List[Callable[[StateField], None]] = []
         self._compound_listeners: List[Callable[[CompoundFieldView], None]] = []
+        self._monotonic_drop_counts: Dict[tuple[str, str], tuple[int, float]] = {}
         self._lock = threading.RLock()
 
     def register_device(
@@ -1089,14 +1090,34 @@ class StateStore:
                     and ((ha_hint and ha_hint.state_class == "total_increasing") or (units in ("Wh", "kWh") and not name.endswith("_w")))
                 )
                 if is_total_inc and isinstance(existing.value, (int, float)) and existing.value > 100.0:
+                    drop_key = (device_sn, key)
                     if isinstance(value, (int, float)) and value < existing.value:
+                        dev_info = f" on {dev.serial_number}" + (f" (slave {dev.slave_id})" if dev.slave_id is not None else "")
                         if value <= 0 or (existing.value - value) > (0.1 * existing.value):
-                            dev_info = f" on {dev.serial_number}" + (f" (slave {dev.slave_id})" if dev.slave_id is not None else "")
-                            logger.warning(
-                                "Suppressed anomalous drop in cumulative energy counter %s%s (%s -> %s)",
-                                key, dev_info, existing.value, value
-                            )
-                            return existing
+                            prev_count, prev_cand = self._monotonic_drop_counts.get(drop_key, (0, 0.0))
+                            if value > 0 and prev_count > 0 and value >= prev_cand * 0.9:
+                                new_count = prev_count + 1
+                            elif value > 0:
+                                new_count = 1
+                            else:
+                                new_count = 0
+
+                            if new_count >= 3:
+                                logger.warning(
+                                    "Accepted reset/lower baseline in cumulative energy counter %s%s after %d consecutive readings (%s -> %s)",
+                                    key, dev_info, new_count, existing.value, value,
+                                )
+                                self._monotonic_drop_counts.pop(drop_key, None)
+                            else:
+                                if prev_count == 0:
+                                    logger.warning(
+                                        "Suppressed anomalous drop in cumulative energy counter %s%s (%s -> %s)",
+                                        key, dev_info, existing.value, value,
+                                    )
+                                self._monotonic_drop_counts[drop_key] = (max(1, new_count), float(value))
+                                return existing
+                    else:
+                        self._monotonic_drop_counts.pop(drop_key, None)
 
                 changed = (existing.value != value)
                 existing.value = value
