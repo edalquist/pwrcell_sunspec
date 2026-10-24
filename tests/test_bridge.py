@@ -310,6 +310,37 @@ class TestHomeAssistantBridge(unittest.TestCase):
             bridge.stop()
             self.assertFalse(bridge._running)
 
+    def test_save_ha_config_atomic_and_distinct_object_ids_for_same_suffix_serials(self):
+        """save_ha_config must write atomically via Path.replace, and devices with identical last-4 serial digits must not collide on object_id."""
+        from unittest.mock import patch
+        from pwrcell.ha import export_default_config, save_ha_config
+        from pwrcell.state import StateField, UnifiedDevice
+
+        cfg_file = Path(self.tmp_dir.name) / "ha_config.yaml"
+        seed_file = Path(self.tmp_dir.name) / "ha_default_config.yaml"
+        replaced_targets = []
+        orig_replace = Path.replace
+
+        def tracking_replace(path_self, target):
+            replaced_targets.append(Path(target))
+            return orig_replace(path_self, target)
+
+        with patch.object(Path, "replace", autospec=True, side_effect=tracking_replace):
+            save_ha_config(["0001000714E9:inverter.live.grid_power_w"], config_path=cfg_file)
+            export_default_config(source_path=cfg_file, target_path=seed_file)
+
+        self.assertIn(cfg_file, replaced_targets)
+        self.assertIn(seed_file, replaced_targets)
+
+        # Devices sharing the last 4 serial characters must have distinct payload['object_id']
+        dev1 = UnifiedDevice(serial_number="00010000ABCD", slave_id=2, device_type="pv_link", model_name="PV Link", manufacturer="Generac", version="1.0")
+        dev2 = UnifiedDevice(serial_number="00020000ABCD", slave_id=3, device_type="pv_link", model_name="PV Link", manufacturer="Generac", version="1.0")
+        f1 = StateField(key="pv_link.string_combiner.DCW", device_sn=dev1.serial_number, device_type="pv_link", name="DCW", label="DC Power", description="", value=100.0, raw_value=100.0)
+        f2 = StateField(key="pv_link.string_combiner.DCW", device_sn=dev2.serial_number, device_type="pv_link", name="DCW", label="DC Power", description="", value=100.0, raw_value=100.0)
+        p1 = generate_discovery_payload(f1, dev1)["payload"]
+        p2 = generate_discovery_payload(f2, dev2)["payload"]
+        self.assertNotEqual(p1["object_id"], p2["object_id"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,10 +15,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
-try:
-    import yaml
-except ImportError:
-    yaml = None
+import yaml
 
 from . import __version__
 from .state import FieldSource, StateField, StateStore, UnifiedDevice
@@ -145,13 +142,16 @@ def save_ha_config(selected_field_keys: List[str], config_path: Optional[Path | 
     """Save list of selected field keys to ha_config.yaml."""
     path = Path(config_path) if config_path else get_default_ha_config_path()
     try:
-        with open(path, "w", encoding="utf-8") as f:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
             yaml.dump(
                 {"selected_fields": sorted(list(set(selected_field_keys)))},
                 f,
                 default_flow_style=False,
                 sort_keys=False,
             )
+        tmp_path.replace(path)
         logger.info("Saved %d entities to %s", len(selected_field_keys), path)
     except Exception as e:
         logger.error("Failed to save %s: %s", path, e)
@@ -191,10 +191,13 @@ def export_default_config(
     raw_keys = load_ha_config(config_path=src, allow_default_seed=False)
     generic_keys = unqualify_ha_config(raw_keys)
 
-    with open(dst, "w", encoding="utf-8") as f:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dst = dst.with_suffix(".tmp")
+    with open(tmp_dst, "w", encoding="utf-8") as f:
         f.write("# PWRcell Default Home Assistant Entity Configuration\n")
         f.write("# Generated from existing ha_config.yaml (hardware serial numbers stripped)\n\n")
         yaml.dump({"selected_fields": generic_keys}, f, default_flow_style=False, sort_keys=False)
+    tmp_dst.replace(dst)
 
     logger.info("Exported %d generic default field IDs from %s to %s", len(generic_keys), src, dst)
     return generic_keys
@@ -344,7 +347,6 @@ def generate_discovery_payload(
             platform = "sensor"
 
     clean_sn = device.serial_number.strip().lower()
-    short_sn = clean_sn[-4:] if len(clean_sn) >= 4 else clean_sn
 
     # Build unique object_id from sub-key path (e.g. 'live_solar_power_w' or 'compound_grid_power')
     sub_key = field.key.split(".", 1)[-1].replace(".", "_").lower()
@@ -367,7 +369,7 @@ def generate_discovery_payload(
         "has_entity_name": True,
         "name": field.label,
         "unique_id": unique_id,
-        "object_id": f"{device.device_type}_{short_sn}_{object_id}",
+        "object_id": f"{device.device_type}_{clean_sn}_{object_id}",
         "state_topic": state_topic,
         "availability": [
             {
