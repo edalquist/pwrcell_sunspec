@@ -33,6 +33,7 @@ const state = {
   multiSortMode: false,
   bannerCollapsed: false,
   showAvoidedModels: false,
+  groupingModalData: null,
 };
 
 // DOM Elements
@@ -122,6 +123,20 @@ const el = {
   btnCloseDetailsModal: document.getElementById('btnCloseDetailsModal'),
   btnCloseDetailsFooter: document.getElementById('btnCloseDetailsFooter'),
   btnCopyDetailsJson: document.getElementById('btnCopyDetailsJson'),
+  groupingModal: document.getElementById('groupingModal'),
+  btnCloseGroupingModal: document.getElementById('btnCloseGroupingModal'),
+  btnCancelGroupingModal: document.getElementById('btnCancelGroupingModal'),
+  btnSaveGroupingModal: document.getElementById('btnSaveGroupingModal'),
+  btnResetGroupingModal: document.getElementById('btnResetGroupingModal'),
+  groupingFieldKeyBadge: document.getElementById('groupingFieldKeyBadge'),
+  groupingDeviceLabel: document.getElementById('groupingDeviceLabel'),
+  groupingCurrentConceptLabel: document.getElementById('groupingCurrentConceptLabel'),
+  groupingTargetConceptSelect: document.getElementById('groupingTargetConceptSelect'),
+  groupingNewConceptKey: document.getElementById('groupingNewConceptKey'),
+  groupingNewConceptLabel: document.getElementById('groupingNewConceptLabel'),
+  radioGroupExisting: document.getElementById('radioGroupExisting'),
+  radioGroupNew: document.getElementById('radioGroupNew'),
+  radioGroupUngroup: document.getElementById('radioGroupUngroup'),
   toast: document.getElementById('toast'),
   counts: {
     all: document.getElementById('countAll'),
@@ -1268,6 +1283,10 @@ function renderFieldTable() {
               <button class="action-menu-item item-details" data-key="${targetFieldRef.key}">📋 Modbus Details</button>
               ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${targetFieldRef.key}">✏️ Edit Value</button>` : ''}
               <button class="action-menu-item item-copy" data-key="${targetFieldRef.key}">📄 Copy Key</button>
+              <button class="action-menu-item item-group-with" data-key="${targetFieldRef.key}">🔗 Group with Concept...</button>
+              ${(f.sources && f.sources.length > 1) ? `<button class="action-menu-item item-ungroup" data-key="${targetFieldRef.key}">✂️ Ungroup Field</button>` : ''}
+              ${(f.sources && f.sources.length > 1) ? `<button class="action-menu-item item-ungroup-all" data-concept="${f.concept_key}">✂️ Ungroup All Sources</button>` : ''}
+              ${f.is_custom_override ? `<button class="action-menu-item item-reset-group" data-key="${targetFieldRef.key}">↩️ Reset Grouping</button>` : ''}
             </div>
           </div>
         </div>
@@ -1366,6 +1385,42 @@ function renderFieldTable() {
           showToast(`Copied ${copyKey} to clipboard`);
         });
       }
+
+      const menuGroupWith = dropdownMenu.querySelector('.item-group-with');
+      if (menuGroupWith) {
+        menuGroupWith.addEventListener('click', (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          openGroupingModal(f.device_sn, targetFieldRef.key, f.concept_key, f.label);
+        });
+      }
+
+      const menuUngroup = dropdownMenu.querySelector('.item-ungroup');
+      if (menuUngroup) {
+        menuUngroup.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          await ungroupFieldAction(f.device_sn, targetFieldRef.key);
+        });
+      }
+
+      const menuUngroupAll = dropdownMenu.querySelector('.item-ungroup-all');
+      if (menuUngroupAll) {
+        menuUngroupAll.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          await ungroupAllAction(f.device_sn, f.concept_key);
+        });
+      }
+
+      const menuResetGroup = dropdownMenu.querySelector('.item-reset-group');
+      if (menuResetGroup) {
+        menuResetGroup.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          await resetGroupingAction(f.device_sn, targetFieldRef.key);
+        });
+      }
     }
 
     return tr;
@@ -1447,6 +1502,8 @@ function renderFieldTable() {
                 <button class="action-menu-item item-details" data-key="${f.key}">📋 Modbus Details</button>
                 ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${f.key}">✏️ Edit Value</button>` : ''}
                 <button class="action-menu-item item-copy" data-key="${f.key}">📄 Copy Key</button>
+                <button class="action-menu-item item-group-with" data-key="${f.key}">🔗 Group with Concept...</button>
+                ${f.is_custom_override ? `<button class="action-menu-item item-reset-group" data-key="${f.key}">↩️ Reset Grouping</button>` : ''}
               </div>
             </div>
           </div>
@@ -1498,6 +1555,8 @@ function renderFieldTable() {
                 <button class="action-menu-item item-details" data-key="${f.key}">📋 Modbus Details</button>
                 ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${f.key}">✏️ Edit Value</button>` : ''}
                 <button class="action-menu-item item-copy" data-key="${f.key}">📄 Copy Key</button>
+                <button class="action-menu-item item-group-with" data-key="${f.key}">🔗 Group with Concept...</button>
+                ${f.is_custom_override ? `<button class="action-menu-item item-reset-group" data-key="${f.key}">↩️ Reset Grouping</button>` : ''}
               </div>
             </div>
           </div>
@@ -1565,6 +1624,24 @@ function renderFieldTable() {
           dropdownMenu.classList.remove('show');
           copyToClipboard(f.key);
           showToast(`Copied ${f.key} to clipboard`);
+        });
+      }
+
+      const menuGroupWith = dropdownMenu.querySelector('.item-group-with');
+      if (menuGroupWith) {
+        menuGroupWith.addEventListener('click', (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          openGroupingModal(f.device_sn, f.key, f.concept_key || '', f.label || f.name);
+        });
+      }
+
+      const menuResetGroup = dropdownMenu.querySelector('.item-reset-group');
+      if (menuResetGroup) {
+        menuResetGroup.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          await resetGroupingAction(f.device_sn, f.key);
         });
       }
     }
@@ -3447,6 +3524,238 @@ function setupEventListeners() {
       }
     });
   }
+
+  // Grouping Modal
+  if (el.btnCloseGroupingModal) {
+    el.btnCloseGroupingModal.addEventListener('click', closeGroupingModal);
+  }
+  if (el.btnCancelGroupingModal) {
+    el.btnCancelGroupingModal.addEventListener('click', closeGroupingModal);
+  }
+  if (el.btnSaveGroupingModal) {
+    el.btnSaveGroupingModal.addEventListener('click', saveGroupingAction);
+  }
+  if (el.btnResetGroupingModal) {
+    el.btnResetGroupingModal.addEventListener('click', async () => {
+      if (!state.groupingModalData) return;
+      await resetGroupingAction(state.groupingModalData.deviceSn, state.groupingModalData.fieldKey);
+      closeGroupingModal();
+    });
+  }
+  if (el.groupingModal) {
+    el.groupingModal.addEventListener('click', (e) => {
+      if (e.target === el.groupingModal) closeGroupingModal();
+    });
+  }
+
+  // Compare Table Event Delegation for Grouping Actions
+  if (el.compareTableBody) {
+    el.compareTableBody.addEventListener('click', async (e) => {
+      const btn = e.target.closest('.btn-group-action');
+      if (!btn) return;
+      e.stopPropagation();
+      const action = btn.dataset.action;
+      const sn = btn.dataset.sn;
+      const fieldKey = btn.dataset.fieldKey;
+      const conceptKey = btn.dataset.conceptKey;
+      const conceptLabel = btn.dataset.conceptLabel;
+
+      if (action === 'ungroup') {
+        await ungroupFieldAction(sn, fieldKey);
+      } else if (action === 'group-with') {
+        openGroupingModal(sn, fieldKey, conceptKey, conceptLabel);
+      } else if (action === 'reset-group') {
+        await resetGroupingAction(sn, fieldKey);
+      } else if (action === 'ungroup-all') {
+        await ungroupAllAction(sn, conceptKey);
+      }
+    });
+  }
+}
+
+// Field Grouping & Ungrouping Modal Logic
+async function openGroupingModal(deviceSn, fieldKey, currentConceptKey, currentConceptLabel) {
+  if (!el.groupingModal) return;
+  state.groupingModalData = {
+    deviceSn,
+    fieldKey,
+    currentConceptKey: currentConceptKey || '',
+    currentConceptLabel: currentConceptLabel || currentConceptKey || '(Standalone)',
+  };
+
+  el.groupingFieldKeyBadge.textContent = fieldKey;
+  el.groupingDeviceLabel.textContent = deviceSn;
+  el.groupingCurrentConceptLabel.textContent = state.groupingModalData.currentConceptLabel;
+
+  el.radioGroupExisting.checked = true;
+  el.groupingNewConceptKey.value = '';
+  el.groupingNewConceptLabel.value = '';
+  el.groupingTargetConceptSelect.innerHTML = '<option value="">-- Loading concepts... --</option>';
+
+  el.groupingModal.classList.add('open');
+
+  try {
+    const res = await fetch(apiPath(`api/devices/${encodeURIComponent(deviceSn)}/unified_fields`));
+    const data = await res.json();
+    const groups = data.unified_fields || [];
+    
+    // Sort concepts by label
+    groups.sort((a, b) => (a.label || a.concept_key).localeCompare(b.label || b.concept_key));
+
+    el.groupingTargetConceptSelect.innerHTML = '<option value="">-- Choose an existing concept --</option>';
+    groups.forEach(g => {
+      const isCurrent = g.concept_key === currentConceptKey;
+      const opt = document.createElement('option');
+      opt.value = g.concept_key;
+      opt.textContent = `${g.label || g.concept_key} (${g.concept_key})${isCurrent ? ' [Current]' : ''}`;
+      if (isCurrent) opt.selected = true;
+      el.groupingTargetConceptSelect.appendChild(opt);
+    });
+  } catch (err) {
+    el.groupingTargetConceptSelect.innerHTML = '<option value="">Failed loading concepts</option>';
+  }
+}
+
+function closeGroupingModal() {
+  if (el.groupingModal) {
+    el.groupingModal.classList.remove('open');
+  }
+  state.groupingModalData = null;
+}
+
+async function saveGroupingAction() {
+  if (!state.groupingModalData) return;
+  const { deviceSn, fieldKey } = state.groupingModalData;
+
+  let targetConcept = null;
+  let customLabel = null;
+
+  if (el.radioGroupExisting.checked) {
+    targetConcept = el.groupingTargetConceptSelect.value;
+    if (!targetConcept) {
+      alert('Please select an existing concept from the dropdown, or choose "Create a new custom concept".');
+      return;
+    }
+  } else if (el.radioGroupNew.checked) {
+    targetConcept = el.groupingNewConceptKey.value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+    customLabel = el.groupingNewConceptLabel.value.trim();
+    if (!targetConcept) {
+      alert('Please enter a concept key (e.g. "pool_heater_power").');
+      return;
+    }
+  } else if (el.radioGroupUngroup.checked) {
+    targetConcept = null;
+  }
+
+  try {
+    el.btnSaveGroupingModal.disabled = true;
+    el.btnSaveGroupingModal.textContent = 'Saving...';
+
+    const res = await fetch(apiPath('api/grouping/override'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        device_sn: deviceSn,
+        field_key: fieldKey,
+        target_concept: targetConcept,
+        custom_label: customLabel,
+      }),
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast(targetConcept ? `Grouped ${fieldKey} with ${targetConcept}` : `Ungrouped ${fieldKey}`);
+      closeGroupingModal();
+      await refreshAfterGroupingChange(deviceSn);
+    } else {
+      alert(`Error saving grouping: ${data.error || 'Unknown error'}`);
+    }
+  } catch (err) {
+    alert(`Failed saving grouping: ${err}`);
+  } finally {
+    if (el.btnSaveGroupingModal) {
+      el.btnSaveGroupingModal.disabled = false;
+      el.btnSaveGroupingModal.textContent = 'Save Grouping';
+    }
+  }
+}
+
+async function ungroupFieldAction(deviceSn, fieldKey) {
+  try {
+    const res = await fetch(apiPath('api/grouping/override'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        device_sn: deviceSn,
+        field_key: fieldKey,
+        target_concept: null,
+      }),
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast(`Ungrouped ${fieldKey}`);
+      await refreshAfterGroupingChange(deviceSn);
+    } else {
+      alert(`Error ungrouping field: ${data.error || 'Unknown error'}`);
+    }
+  } catch (err) {
+    alert(`Failed ungrouping field: ${err}`);
+  }
+}
+
+async function resetGroupingAction(deviceSn, fieldKey) {
+  try {
+    const res = await fetch(apiPath('api/grouping/reset'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        device_sn: deviceSn,
+        field_key: fieldKey,
+      }),
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast(`Reset ${fieldKey} to default grouping`);
+      await refreshAfterGroupingChange(deviceSn);
+    } else {
+      alert(`Error resetting grouping: ${data.error || 'Unknown error'}`);
+    }
+  } catch (err) {
+    alert(`Failed resetting grouping: ${err}`);
+  }
+}
+
+async function ungroupAllAction(deviceSn, conceptKey) {
+  if (!confirm(`Are you sure you want to ungroup all sources in '${conceptKey}'? Each register will become an independent standalone field.`)) {
+    return;
+  }
+  try {
+    const res = await fetch(apiPath('api/grouping/ungroup_all'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        device_sn: deviceSn,
+        concept_key: conceptKey,
+      }),
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast(`Ungrouped all sources in ${conceptKey}`);
+      await refreshAfterGroupingChange(deviceSn);
+    } else {
+      alert(`Error ungrouping concept: ${data.error || 'Unknown error'}`);
+    }
+  } catch (err) {
+    alert(`Failed ungrouping concept: ${err}`);
+  }
+}
+
+async function refreshAfterGroupingChange(deviceSn) {
+  if (state.activeDevice && state.activeDevice.serial_number === deviceSn) {
+    await fetchDeviceFields(deviceSn);
+  }
+  if (el.compareModal && el.compareModal.classList.contains('open')) {
+    await fetchAndRenderCompare();
+  }
 }
 
 // Grouped Registers & Telemetry Compare Modal
@@ -3661,11 +3970,15 @@ function renderCompareTableRows(rows) {
 
     // Device & Concept column content
     const devBadge = r.device_name ? `<span class="compare-device-pill">${escapeHtml(r.device_name)}</span>` : '';
+    const ungroupAllBtn = (sources.length > 1)
+      ? `<button class="btn-group-action btn-ungroup-action" data-action="ungroup-all" data-sn="${escapeHtml(r.device_sn)}" data-concept-key="${escapeHtml(r.concept_key)}" style="margin-top: 5px; width: fit-content;" title="Ungroup all sources in this concept into standalone fields">✂️ Ungroup All</button>`
+      : '';
     const conceptCol = `
       <div class="field-cell-main">
         ${devBadge}
         <strong>${escapeHtml(r.label || r.concept_key)}</strong>
         <span class="field-key">${escapeHtml(r.concept_key || r.mapping_id || '')}</span>
+        ${ungroupAllBtn}
       </div>
     `;
 
@@ -3696,6 +4009,18 @@ function renderCompareTableRows(rows) {
           ? `<span class="compare-source-tag pinned" title="Manually pinned by user">📌 Pinned</span>`
           : '';
 
+        const customDisplay = s.is_custom_override
+          ? `<span class="badge-custom-override" title="Custom grouping override active">Custom</span>`
+          : '';
+
+        const actionButtons = `
+          <div class="compare-source-actions">
+            ${sources.length > 1 ? `<button class="btn-group-action btn-ungroup-action" data-action="ungroup" data-sn="${escapeHtml(r.device_sn)}" data-field-key="${escapeHtml(s.field_key)}" title="Ungroup this field from '${escapeHtml(r.label || r.concept_key)}'">✂️ Ungroup</button>` : ''}
+            <button class="btn-group-action btn-group-with-action" data-action="group-with" data-sn="${escapeHtml(r.device_sn)}" data-field-key="${escapeHtml(s.field_key)}" data-concept-key="${escapeHtml(r.concept_key)}" data-concept-label="${escapeHtml(r.label || r.concept_key)}" title="Group this field with an existing or new concept...">🔗 Group...</button>
+            ${s.is_custom_override ? `<button class="btn-group-action btn-reset-action" data-action="reset-group" data-sn="${escapeHtml(r.device_sn)}" data-field-key="${escapeHtml(s.field_key)}" title="Reset to default automatic grouping">↩️ Reset</button>` : ''}
+          </div>
+        `;
+
         return `
           <div class="compare-source-card ${isDivergent ? 'is-divergent' : ''}">
             <div class="compare-source-left">
@@ -3711,6 +4036,8 @@ function renderCompareTableRows(rows) {
               ${tfDisplay}
               ${optDisplay}
               ${pinDisplay}
+              ${customDisplay}
+              ${actionButtons}
             </div>
           </div>
         `;

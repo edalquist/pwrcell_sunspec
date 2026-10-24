@@ -34,6 +34,9 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertIn(b"hideCombinedRaw", resp.data)
         self.assertIn(b"btnApplySameType", resp.data)
         self.assertIn(b"sortBar", resp.data)
+        self.assertIn(b"groupingModal", resp.data)
+        self.assertIn(b"radioGroupExisting", resp.data)
+        self.assertIn(b"radioGroupUngroup", resp.data)
         resp.close()
 
     def test_overview_endpoint(self):

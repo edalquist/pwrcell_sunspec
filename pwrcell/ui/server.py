@@ -373,6 +373,72 @@ def create_app(client: PwrcellClient) -> Flask:
             "unrecognized_proto_fields": unrecognized,
         })
 
+    @app.route("/api/grouping/overrides")
+    def get_grouping_overrides():
+        from ..grouping import load_custom_groupings
+        return jsonify(load_custom_groupings())
+
+    @app.route("/api/grouping/override", methods=["POST"])
+    def set_grouping_override():
+        from ..grouping import set_field_grouping_override
+        data = request.get_json() or {}
+        device_sn = data.get("device_sn", "")
+        field_key = data.get("field_key", "")
+        target_concept = data.get("target_concept")
+        custom_label = data.get("custom_label")
+        if not device_sn or not field_key:
+            return jsonify({"error": "device_sn and field_key are required"}), 400
+        
+        result = set_field_grouping_override(
+            device_sn=device_sn,
+            field_key=field_key,
+            target_concept=target_concept,
+            custom_label=custom_label,
+        )
+        return jsonify({"status": "ok", "overrides": result})
+
+    @app.route("/api/grouping/reset", methods=["POST"])
+    def reset_grouping_override():
+        from ..grouping import reset_field_grouping_override
+        data = request.get_json() or {}
+        device_sn = data.get("device_sn", "")
+        field_key = data.get("field_key", "")
+        if not device_sn or not field_key:
+            return jsonify({"error": "device_sn and field_key are required"}), 400
+        
+        result = reset_field_grouping_override(
+            device_sn=device_sn,
+            field_key=field_key,
+        )
+        return jsonify({"status": "ok", "overrides": result})
+
+    @app.route("/api/grouping/ungroup_all", methods=["POST"])
+    def ungroup_all():
+        from ..grouping import ungroup_entire_concept
+        data = request.get_json() or {}
+        device_sn = data.get("device_sn", "")
+        concept_key = data.get("concept_key", "")
+        if not device_sn or not concept_key:
+            return jsonify({"error": "device_sn and concept_key are required"}), 400
+        
+        dev = client.state.devices.get(device_sn)
+        if not dev:
+            return jsonify({"error": f"Device {device_sn} not found"}), 404
+        
+        from ..optimizer import group_device_fields
+        groups = group_device_fields(dev)
+        grp = next((g for g in groups if g.concept_key == concept_key or g.id == concept_key), None)
+        if not grp:
+            return jsonify({"error": f"Concept {concept_key} not found"}), 404
+        
+        device_fields = {s.field_key: None for s in grp.sources}
+        result = ungroup_entire_concept(
+            device_sn=device_sn,
+            concept_key=concept_key,
+            device_fields=device_fields,
+        )
+        return jsonify({"status": "ok", "overrides": result})
+
     @app.route("/api/poller/status")
     def get_poller_status():
         status = client.poller.to_dict()

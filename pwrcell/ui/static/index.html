@@ -391,6 +391,70 @@
     </div>
   </div>
 
+  <!-- Field Grouping / Regrouping Modal -->
+  <div class="modal-backdrop" id="groupingModal">
+    <div class="modal modal-md grouping-modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-tag">FIELD GROUPING CONFIGURATION</span>
+          <h3 id="groupingModalTitle">🔗 Group Field with Concept</h3>
+          <span class="field-key-badge" id="groupingFieldKeyBadge">--</span>
+        </div>
+        <button class="modal-close" id="btnCloseGroupingModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="grouping-context-banner">
+          <div class="grouping-meta-row">
+            <span class="grouping-meta-label">Device:</span>
+            <span class="grouping-meta-value" id="groupingDeviceLabel">--</span>
+          </div>
+          <div class="grouping-meta-row">
+            <span class="grouping-meta-label">Current Concept:</span>
+            <span class="grouping-meta-value" id="groupingCurrentConceptLabel">--</span>
+          </div>
+        </div>
+
+        <div class="grouping-form-section">
+          <label class="grouping-section-title">Select Target Grouping:</label>
+          <div class="grouping-options-list">
+            <label class="grouping-radio-label">
+              <input type="radio" name="groupingTargetType" value="existing" checked id="radioGroupExisting" />
+              <span>Group with existing concept on this device:</span>
+            </label>
+            <div class="grouping-select-container">
+              <select class="form-control" id="groupingTargetConceptSelect">
+                <option value="">-- Choose an existing concept --</option>
+              </select>
+            </div>
+
+            <label class="grouping-radio-label" style="margin-top: 16px;">
+              <input type="radio" name="groupingTargetType" value="new" id="radioGroupNew" />
+              <span>Create a new custom concept:</span>
+            </label>
+            <div class="grouping-input-container">
+              <input type="text" class="form-control" id="groupingNewConceptKey" placeholder="Concept key (e.g. pool_heater_power)" />
+              <input type="text" class="form-control" id="groupingNewConceptLabel" placeholder="Display Label (e.g. Pool Heater Power)" style="margin-top: 8px;" />
+            </div>
+
+            <label class="grouping-radio-label" style="margin-top: 16px;">
+              <input type="radio" name="groupingTargetType" value="ungroup" id="radioGroupUngroup" />
+              <span><strong>Ungroup / Isolate</strong> (treat as independent standalone field)</span>
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div class="details-footer-left">
+          <button class="btn btn-secondary btn-sm" id="btnResetGroupingModal" title="Reset field to automatic default grouping heuristics">↩️ Reset to Default</button>
+        </div>
+        <div class="details-footer-actions">
+          <button class="btn btn-secondary" id="btnCancelGroupingModal">Cancel</button>
+          <button class="btn btn-primary" id="btnSaveGroupingModal">Save Grouping</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Notification -->
   <div class="toast" id="toast"></div>
 

@@ -117,6 +117,7 @@ class ComparisonResultRow:
     device_name: str = ""
     status_label: str = ""
     is_discrepant: bool = False
+    is_custom_override: bool = False
     discrepancy_reason: str = ""
     source_count: int = 0
     polled_count: int = 0
@@ -141,6 +142,7 @@ class ComparisonResultRow:
             "status": self.status,
             "status_label": self.status_label or self.status,
             "is_discrepant": self.is_discrepant,
+            "is_custom_override": self.is_custom_override,
             "match_pct": round(self.match_pct, 1) if self.match_pct is not None else None,
             "delta": round(self.delta, 2) if self.delta is not None else None,
             "notes": self.notes,
@@ -246,6 +248,7 @@ def _build_group_comparison_row(dev, g, mapping_id: Optional[str] = None) -> Com
             "transform": s.transform,
             "is_optimal": s.is_optimal,
             "is_pinned": s.is_pinned,
+            "is_custom_override": getattr(s, "is_custom_override", False),
             "is_divergent": False,
         }
         sources_dicts.append(s_dict)
@@ -413,6 +416,7 @@ def _build_group_comparison_row(dev, g, mapping_id: Optional[str] = None) -> Com
         status=status,
         status_label=status_label,
         is_discrepant=is_discrepant,
+        is_custom_override=getattr(g, "is_custom_override", False),
         match_pct=match_pct,
         delta=delta,
         notes=discrepancy_reason,

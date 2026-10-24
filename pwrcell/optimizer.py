@@ -587,6 +587,7 @@ class UnifiedSource:
     symbols: Optional[List[Any]] = None
     bitmask_flags: Optional[List[str]] = None
     is_scale_factor: bool = False
+    is_custom_override: bool = False
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -624,6 +625,7 @@ class UnifiedFieldGroup:
     bitmask_flags: Optional[List[str]] = None
     raw_value: Any = None
     is_scale_factor: bool = False
+    is_custom_override: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -656,6 +658,7 @@ class UnifiedFieldGroup:
             "symbols": self.symbols,
             "bitmask_flags": self.bitmask_flags,
             "is_scale_factor": self.is_scale_factor,
+            "is_custom_override": self.is_custom_override,
             "source_count": len(self.sources),
             "sunspec_model_count": len({s.model_id for s in self.sources if s.model_id is not None}),
         }
@@ -711,6 +714,7 @@ def group_device_fields(
     mapping_registry: Optional[Any] = None,
     ha_selected_keys: Optional[Set[str]] = None,
     preferred_sources: Optional[Dict[str, str]] = None,
+    custom_groupings: Optional[Dict[str, Any]] = None,
 ) -> List[UnifiedFieldGroup]:
     """Group all fields of a device into unified semantic rows with minimal model solving.
 
@@ -719,6 +723,7 @@ def group_device_fields(
         mapping_registry: MappingRegistry instance
         ha_selected_keys: Set of keys currently selected in HA export
         preferred_sources: Dict of group_id -> preferred field_key (pinned by user)
+        custom_groupings: Dict of custom user grouping overrides
 
     Returns:
         List of UnifiedFieldGroup objects sorted cleanly.
@@ -727,6 +732,16 @@ def group_device_fields(
     reg = mapping_registry or MappingRegistry.get_instance()
     selected_keys = ha_selected_keys or set()
     user_pins = preferred_sources or {}
+
+    if custom_groupings is None:
+        try:
+            from .grouping import load_custom_groupings
+            custom_groupings = load_custom_groupings()
+        except Exception:
+            custom_groupings = {}
+
+    overrides = custom_groupings.get("field_overrides", {}) or {}
+    custom_concepts = custom_groupings.get("custom_concepts", {}) or {}
 
     dev_type = getattr(dev, "device_type", "inverter")
     dev_sn = getattr(dev, "serial_number", "")
@@ -757,6 +772,51 @@ def group_device_fields(
     assigned_field_keys: Set[str] = set()
 
     for f_key, f in all_fields.items():
+        # Check user custom grouping overrides first
+        qual_key = f"{dev_sn}:{f_key}" if dev_sn else f_key
+        has_override = qual_key in overrides or f_key in overrides
+
+        if has_override:
+            target_concept = overrides.get(qual_key, overrides.get(f_key))
+            if target_concept is None or str(target_concept).strip().lower() in ("", "null", "none", "standalone", "ungrouped"):
+                c_id = f"{dev_type}.standalone.{f.name.lower()}_{getattr(f, 'model_id', 'raw')}"
+                if c_id not in concept_metadata:
+                    concept_metadata[c_id] = {
+                        "id": c_id,
+                        "concept_key": f"{f.name.lower()}_{getattr(f, 'model_id', 'raw')}",
+                        "name": f.name,
+                        "label": f"{f.label} (Ungrouped)",
+                        "description": f.description,
+                        "units": f.units,
+                        "ha_platform": f.ha_hint.platform if f.ha_hint else ("sensor" if not f.is_writable else "number"),
+                        "ha_device_class": f.ha_hint.device_class if f.ha_hint else None,
+                        "ha_state_class": f.ha_hint.state_class if f.ha_hint else None,
+                        "is_custom_override": True,
+                    }
+                concept_buckets.setdefault(c_id, []).append((f_key, f, None))
+                assigned_field_keys.add(f_key)
+                continue
+            else:
+                target_key = str(target_concept).strip()
+                c_id = f"{dev_type}.concept.{target_key}"
+                c_meta = custom_concepts.get(target_key, {})
+                if c_id not in concept_metadata:
+                    concept_metadata[c_id] = {
+                        "id": c_id,
+                        "concept_key": target_key,
+                        "name": target_key,
+                        "label": c_meta.get("label") or target_key.replace("_", " ").title(),
+                        "description": c_meta.get("description", f.description),
+                        "units": c_meta.get("units", f.units),
+                        "ha_platform": c_meta.get("ha_platform", f.ha_hint.platform if f.ha_hint else "sensor"),
+                        "ha_device_class": c_meta.get("ha_device_class"),
+                        "ha_state_class": c_meta.get("ha_state_class"),
+                        "is_custom_override": True,
+                    }
+                concept_buckets.setdefault(c_id, []).append((f_key, f, None))
+                assigned_field_keys.add(f_key)
+                continue
+
         # Check if mapped to a TelemetryMappingDef
         assigned = False
         for m in reg.get_all():
@@ -925,6 +985,7 @@ def group_device_fields(
                     symbols=syms,
                     bitmask_flags=bm_flags,
                     is_scale_factor=is_sf,
+                    is_custom_override=(qual_key in overrides or f_key in overrides),
                 )
             )
 
@@ -982,6 +1043,7 @@ def group_device_fields(
                 or meta.get("concept_key", "").startswith(("sf_", "SF_", "sunssf_"))
                 or bool(meta.get("label", "") and meta.get("label", "").lower().startswith("scale factor"))
             ),
+            is_custom_override=any(s.is_custom_override for s in sources) or meta.get("is_custom_override", False),
         )
         groups.append(group)
 
