@@ -69,6 +69,38 @@ class TestModelCatalog(unittest.TestCase):
         self.assertEqual(hint.entity_category, "config")
         self.assertIn("SELF_SUPPLY", hint.options)
 
+    def test_is_scale_factor_point(self):
+        from pwrcell.catalog import is_scale_factor_point
+
+        self.assertTrue(is_scale_factor_point(point_type="sunssf"))
+        self.assertTrue(is_scale_factor_point(name="W_SF"))
+        self.assertTrue(is_scale_factor_point(name="vt_sf"))
+        self.assertTrue(is_scale_factor_point(name="SF_W"))
+        self.assertTrue(is_scale_factor_point(name="sf_v"))
+        self.assertTrue(is_scale_factor_point(name="sunssf_1"))
+        self.assertTrue(is_scale_factor_point(label="Scale Factor for Voltage"))
+        self.assertTrue(is_scale_factor_point(label="Power Scale Factor"))
+        self.assertTrue(is_scale_factor_point(explicit=True))
+        self.assertFalse(is_scale_factor_point(name="W", point_type="int16", label="Watts"))
+
+    def test_get_suggested_precision(self):
+        from pwrcell.catalog import get_suggested_precision
+
+        self.assertEqual(get_suggested_precision("W"), 0)
+        self.assertEqual(get_suggested_precision("Wh"), 0)
+        self.assertEqual(get_suggested_precision("VAh"), 0)
+        self.assertEqual(get_suggested_precision("kWh"), 2)
+        self.assertEqual(get_suggested_precision("Hz"), 2)
+        self.assertEqual(get_suggested_precision("V"), 1)
+        self.assertEqual(get_suggested_precision("A"), 1)
+        self.assertEqual(get_suggested_precision("%"), 1)
+        self.assertEqual(get_suggested_precision(None, device_class="power"), 0)
+        self.assertEqual(get_suggested_precision(None, device_class="energy"), 0)
+        self.assertEqual(get_suggested_precision("kWh", device_class="energy"), 2)
+        self.assertEqual(get_suggested_precision(None, device_class="voltage"), 1)
+        self.assertEqual(get_suggested_precision(None, device_class="frequency"), 2)
+        self.assertIsNone(get_suggested_precision(None, None))
+
 
 if __name__ == "__main__":
     unittest.main()

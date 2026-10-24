@@ -570,11 +570,11 @@ def _build_comparison_row(
         else:
             mb_val = raw_mb_val
 
-    # For system_mode, normalize integer enum values to string names
+    # For system_mode, normalize integer enum values to string names using the SunSpec SysMd table
     if mapping.mapping_id == "system_mode":
         if isinstance(mb_val, int):
-            from .mqtt import SYSTEM_MODE_NAMES
-            mb_val = SYSTEM_MODE_NAMES.get(mb_val, f"MODE_{mb_val}")
+            from .controls import SUNSPEC_SYS_MD_NAMES
+            mb_val = SUNSPEC_SYS_MD_NAMES.get(mb_val, f"MODE_{mb_val}")
 
     # Comparison logic
     delta: Optional[float] = None

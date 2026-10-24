@@ -29,7 +29,14 @@ SUNSPEC_SENTINELS = {
     0xFFFFFFFE, 4294967294,   # uint32 invalid / overflow
 }
 
-from .catalog import HomeAssistantHint, ModelCatalog, SunspecPointDef, get_catalog
+from .catalog import (
+    HomeAssistantHint,
+    ModelCatalog,
+    SunspecPointDef,
+    get_catalog,
+    get_suggested_precision,
+    is_scale_factor_point,
+)
 from .mapping import MappingRegistry, apply_transform
 from .mqtt import LiveTelemetrySnapshot
 
@@ -910,20 +917,7 @@ class StateStore:
         precision = None
         if ha_platform == "sensor":
             u = (m.unit or (mb_field.units if mb_field else (mqtt_field.units if mqtt_field else "")) or "").strip()
-            if u in ("W", "VA", "VAr", "VAR", "Wh"):
-                precision = 0
-            elif u in ("kWh", "Hz"):
-                precision = 2
-            elif u in ("V", "A", "%", "C", "°C", "kW"):
-                precision = 1
-            elif ha_device_class == "power":
-                precision = 0
-            elif ha_device_class == "energy":
-                precision = 2 if "k" in u.lower() else 0
-            elif ha_device_class in ("voltage", "current", "battery", "temperature"):
-                precision = 1
-            elif ha_device_class == "frequency":
-                precision = 2
+            precision = get_suggested_precision(u, device_class=ha_device_class, point_name=m.id)
 
         return CompoundFieldView(
             key=key,
@@ -1154,13 +1148,11 @@ class StateStore:
                     existing.model_name = model_name
                 if model_label is not None:
                     existing.model_label = model_label
-                is_sf_val = (
-                    is_scale_factor
-                    or name.endswith(("_SF", "_sf"))
-                    or name.startswith(("sf_", "SF_", "sunssf_"))
-                    or (point_type == "sunssf")
-                    or (label and label.lower().startswith("scale factor"))
-                    or existing.is_scale_factor
+                is_sf_val = is_scale_factor_point(
+                    name=name,
+                    point_type=point_type,
+                    label=label,
+                    explicit=bool(is_scale_factor or existing.is_scale_factor),
                 )
                 existing.is_scale_factor = is_sf_val
                 if scale_factor_point is not None:
@@ -1192,12 +1184,11 @@ class StateStore:
                     source=source,
                     access=access,
                     symbols=symbols,
-                    is_scale_factor=(
-                        is_scale_factor
-                        or name.endswith(("_SF", "_sf"))
-                        or name.startswith(("sf_", "SF_", "sunssf_"))
-                        or (point_type == "sunssf")
-                        or bool(label and label.lower().startswith("scale factor"))
+                    is_scale_factor=is_scale_factor_point(
+                        name=name,
+                        point_type=point_type,
+                        label=label,
+                        explicit=bool(is_scale_factor),
                     ),
                     scale_factor_point=scale_factor_point,
                     offset=offset,
@@ -1800,10 +1791,11 @@ class StateStore:
         scale_factors: Dict[str, int] = {}
         for pt_name, val in raw_values.items():
             pt_d = model_def.points.get(pt_name) if model_def else None
-            is_sf_point = (
-                (pt_d and (pt_d.is_scale_factor or pt_d.type == "sunssf"))
-                or pt_name.endswith(("_sf", "_SF"))
-                or pt_name.startswith(("sf_", "SF_"))
+            is_sf_point = is_scale_factor_point(
+                name=pt_name,
+                point_type=pt_d.type if pt_d else None,
+                label=pt_d.label if pt_d else None,
+                explicit=bool(pt_d and pt_d.is_scale_factor),
             )
             if is_sf_point and isinstance(val, (int, float)):
                 if val not in SUNSPEC_SENTINELS and -10 <= val <= 10:
@@ -1892,11 +1884,11 @@ class StateStore:
             symbols_defs = [s.to_dict() for s in pt_def.symbols] if (pt_def and (pt_def.is_enum or pt_def.is_bitfield or pt_def.symbols)) else None
 
             # Detect scale factor point
-            is_sf = (
-                (pt_def and (pt_def.is_scale_factor or pt_def.type == "sunssf"))
-                or pt_name.endswith(("_SF", "_sf"))
-                or pt_name.startswith(("sf_", "SF_", "sunssf_"))
-                or bool(label and label.lower().startswith("scale factor"))
+            is_sf = is_scale_factor_point(
+                name=pt_name,
+                point_type=pt_def.type if pt_def else None,
+                label=label,
+                explicit=bool(pt_def and pt_def.is_scale_factor),
             )
 
             self.set_field(

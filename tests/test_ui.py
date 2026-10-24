@@ -865,6 +865,25 @@ class TestWebExplorerApi(unittest.TestCase):
         opt_src = next(s for s in unpinned_sys["sources"] if s.get("is_optimal"))
         self.assertEqual(opt_src["model_id"], 64208)
 
+    def test_overview_integer_mode_uses_canonical_name(self):
+        """When system_mode is an integer, /api/overview must return canonical mode names rather than overwritten aliases."""
+        from unittest.mock import MagicMock, patch
+
+        fake_view = MagicMock(latest_value=1)
+        orig_get_cv = self.client.state.get_compound_view
+
+        def patched_get_cv(mapping_id):
+            if mapping_id == "system_mode":
+                return fake_view
+            return orig_get_cv(mapping_id)
+
+        with patch.object(self.client.state, "get_compound_view", side_effect=patched_get_cv):
+            for mode_int, expected_name in [(0, "SAFETY_SHUTDOWN"), (1, "GRID_TIE"), (5, "REMOTE_ARBITRAGE"), (6, "SELL")]:
+                fake_view.latest_value = mode_int
+                resp = self.test_client.get("/api/overview")
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(resp.get_json()["system_mode"], expected_name)
+
 
 if __name__ == "__main__":
     unittest.main()

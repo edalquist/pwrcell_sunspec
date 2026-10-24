@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Set
 import yaml
 
 from . import __version__
+from .catalog import get_suggested_precision
 from .state import FieldSource, StateField, StateStore, UnifiedDevice
 
 logger = logging.getLogger(__name__)
@@ -294,26 +295,6 @@ def get_device_info(
         dev_info["via_device"] = f"pwrcell_{gateway_device.serial_number.strip().lower()}"
 
     return dev_info
-
-
-def get_suggested_precision(unit: Optional[str], device_class: Optional[str] = None) -> Optional[int]:
-    """Derive Home Assistant suggested display precision for numeric sensors."""
-    u = (unit or "").strip()
-    if u in ("W", "VA", "VAr", "VAR", "Wh", "Ws", "VAh", "varh"):
-        return 0
-    if u in ("kWh", "Hz", "kVAh", "kvarh"):
-        return 2
-    if u in ("V", "A", "%", "C", "°C", "kW"):
-        return 1
-    if device_class == "power":
-        return 0
-    if device_class == "energy":
-        return 2 if "k" in u.lower() else 0
-    if device_class in ("voltage", "current", "battery", "temperature"):
-        return 1
-    if device_class == "frequency":
-        return 2
-    return None
 
 
 def generate_discovery_payload(

@@ -13,6 +13,8 @@ import logging
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
+from .catalog import is_scale_factor_point
+
 logger = logging.getLogger(__name__)
 
 
@@ -867,12 +869,11 @@ def group_device_fields(
         norm_name = f.name.lower()
         c_unit = clean_unit(f.units)
         pt_type = getattr(f, "point_type", None)
-        is_sf = (
-            getattr(f, "is_scale_factor", False)
-            or (pt_type == "sunssf")
-            or f.name.endswith(("_SF", "_sf"))
-            or f.name.startswith(("sf_", "SF_", "sunssf_"))
-            or bool(getattr(f, "label", None) and f.label.lower().startswith("scale factor"))
+        is_sf = is_scale_factor_point(
+            name=f.name,
+            point_type=pt_type,
+            label=getattr(f, "label", None),
+            explicit=bool(getattr(f, "is_scale_factor", False)),
         )
         is_model_specific = (
             is_sf
@@ -945,12 +946,11 @@ def group_device_fields(
             syms = getattr(f, "symbols", None)
             bm_flags = getattr(f, "bitmask_flags", None) or (f.value if (is_bf and isinstance(f.value, list)) else None)
             pt_type = getattr(f, "point_type", None)
-            is_sf = (
-                getattr(f, "is_scale_factor", False)
-                or (pt_type == "sunssf")
-                or f.name.endswith(("_SF", "_sf"))
-                or f.name.startswith(("sf_", "SF_", "sunssf_"))
-                or bool(getattr(f, "label", None) and f.label.lower().startswith("scale factor"))
+            is_sf = is_scale_factor_point(
+                name=f.name,
+                point_type=pt_type,
+                label=getattr(f, "label", None),
+                explicit=bool(getattr(f, "is_scale_factor", False)),
             )
 
             effective_val = f.value
@@ -1036,12 +1036,12 @@ def group_device_fields(
             symbols=next((s.symbols for s in sources if s.symbols), None),
             bitmask_flags=next((s.bitmask_flags for s in sources if s.bitmask_flags), None),
             is_scale_factor=(
-                any(s.is_scale_factor for s in sources)
-                or meta.get("name", "").endswith(("_SF", "_sf"))
-                or meta.get("name", "").startswith(("sf_", "SF_", "sunssf_"))
-                or meta.get("concept_key", "").endswith(("_sf", "_SF"))
-                or meta.get("concept_key", "").startswith(("sf_", "SF_", "sunssf_"))
-                or bool(meta.get("label", "") and meta.get("label", "").lower().startswith("scale factor"))
+                is_scale_factor_point(
+                    name=meta.get("name"),
+                    label=meta.get("label"),
+                    explicit=any(s.is_scale_factor for s in sources),
+                )
+                or is_scale_factor_point(name=meta.get("concept_key"))
             ),
             is_custom_override=any(s.is_custom_override for s in sources) or meta.get("is_custom_override", False),
         )

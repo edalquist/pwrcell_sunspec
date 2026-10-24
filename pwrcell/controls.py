@@ -16,7 +16,18 @@ from .state import StateStore
 
 logger = logging.getLogger(__name__)
 
-# System operating mode mapping
+# Canonical SunSpec Model 64200 SysMd integer-to-name map (note: 0 is SAFETY_SHUTDOWN, unlike MQTT proto where 0 is UNKNOWN and 16 is SAFETY_SHUTDOWN)
+SUNSPEC_SYS_MD_NAMES: Dict[int, str] = {
+    0: "SAFETY_SHUTDOWN",
+    1: "GRID_TIE",
+    2: "SELF_SUPPLY",
+    3: "CLEAN_BACKUP",
+    4: "PRIORITY_BACKUP",
+    5: "REMOTE_ARBITRAGE",
+    6: "SELL",
+}
+
+# System operating mode mapping (includes SunSpec XML symbol aliases)
 OPERATING_MODES: Dict[str, int] = {
     "SAFETY_SHUTDOWN": 0,
     "GRID_TIE": 1,

@@ -97,9 +97,8 @@ def create_app(client: PwrcellClient) -> Flask:
             inv.fields.get("inverter.live.system_mode").value if (inv and "inverter.live.system_mode" in inv.fields) else "UNKNOWN"
         )
         if isinstance(mode, int):
-            from ..controls import OPERATING_MODES
-            inv_modes = {v: k for k, v in OPERATING_MODES.items()}
-            mode = inv_modes.get(mode, f"MODE_{mode}")
+            from ..controls import SUNSPEC_SYS_MD_NAMES
+            mode = SUNSPEC_SYS_MD_NAMES.get(mode, f"MODE_{mode}")
 
         bat_w = bat_view.latest_value if (bat_view and bat_view.latest_value is not None) else (
             bat.fields.get("battery.live.battery_power_w").value if (bat and "battery.live.battery_power_w" in bat.fields) else 0.0
