@@ -12,7 +12,24 @@ import time
 from contextlib import contextmanager
 from typing import Generator, List, Optional
 
-from .catalog import ModelCatalog, get_catalog
+from .catalog import (
+    MODEL_BATTERY_BASE,
+    MODEL_BATTERY_STATUS,
+    MODEL_BATTERY_WARRANTY,
+    MODEL_FLASH_READER,
+    MODEL_INVERTER_SPLIT_PHASE,
+    MODEL_INVERTER_STATUS,
+    MODEL_LITHIUM_ION_STRING,
+    MODEL_PVLINK_STATUS,
+    MODEL_PVRSS_CONFIG,
+    MODEL_PVRSS_TELEMETRY,
+    MODEL_REBUS_ARB,
+    MODEL_REBUS_DIR,
+    MODEL_RECONNECT,
+    MODEL_STRING_COMBINER,
+    ModelCatalog,
+    get_catalog,
+)
 from .config import AppConfig, DeviceConfig
 from .controls import ControlDispatcher
 from .fixtures import MockFixtureLoader, MockTelemetryGenerator
@@ -413,25 +430,57 @@ class PwrcellClient:
                 )
 
     def _save_scanned_devices(self, discovered: dict):
+        if not discovered:
+            logger.warning("No devices discovered during Modbus scan; skipping devices.yaml save")
+            return
+
         cfg = DeviceConfig()
         for slave_id, dev in discovered.items():
             if not hasattr(dev, "common") or not dev.common:
                 continue
             sn = str(dev.common[0].SN.value).strip()
             md = str(dev.common[0].Md.value).strip()
-            dev_type = "inverter" if "Inverter" in md else ("battery" if "Battery" in md else ("rebus_beacon" if "Beacon" in md else ("pv_link" if "PV" in md else "icm")))
             supported = [mid for mid in dev.models.keys() if isinstance(mid, int)] if hasattr(dev, "models") else []
-            self.state.register_device(
+            dev_type = self._classify_device_type(supported, md)
+            dev_state = self.state.register_device(
                 serial_number=sn,
                 slave_id=slave_id,
                 device_type=dev_type,
                 model_name=md,
                 supported_models=supported,
             )
-            getattr(cfg, dev_type)[sn] = slave_id
+            getattr(cfg, dev_type)[dev_state.serial_number] = slave_id
+
+        if self._is_empty_device_config(cfg):
+            logger.warning("No valid devices discovered during Modbus scan; skipping devices.yaml save")
+            return
 
         cfg.write()
         logger.info("Saved discovered devices to devices.yaml")
+
+    @staticmethod
+    def _classify_device_type(supported_models: List[int], model_name: str = "") -> str:
+        """Classify a discovered PWRcell device by its supported SunSpec model IDs first, then model name."""
+        models_set = set(supported_models)
+        if MODEL_REBUS_DIR in models_set:
+            return "rebus_beacon"
+        if models_set & {MODEL_INVERTER_SPLIT_PHASE, MODEL_INVERTER_STATUS, MODEL_REBUS_ARB, MODEL_RECONNECT}:
+            return "inverter"
+        if models_set & {MODEL_BATTERY_BASE, MODEL_BATTERY_STATUS, MODEL_BATTERY_WARRANTY, MODEL_LITHIUM_ION_STRING}:
+            return "battery"
+        if models_set & {MODEL_STRING_COMBINER, MODEL_PVLINK_STATUS, MODEL_PVRSS_CONFIG, MODEL_PVRSS_TELEMETRY, MODEL_FLASH_READER}:
+            return "pv_link"
+
+        md_lower = (model_name or "").lower()
+        if "beacon" in md_lower:
+            return "rebus_beacon"
+        if "inverter" in md_lower:
+            return "inverter"
+        if "battery" in md_lower:
+            return "battery"
+        if "pv" in md_lower:
+            return "pv_link"
+        return "icm"
 
 
 @contextmanager

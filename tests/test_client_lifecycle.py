@@ -134,6 +134,43 @@ class TestClientLifecycle(unittest.TestCase):
                 policy_arg2 = mock_ssh.set_missing_host_key_policy.call_args[0][0]
                 self.assertIsInstance(policy_arg2, RejectPolicy)
 
+    def test_save_scanned_devices_classifies_by_models_and_skips_empty_persist(self):
+        """_save_scanned_devices must classify devices by exposed SunSpec model IDs (not fragile Md substring matching) and refuse to write an empty scan."""
+        from types import SimpleNamespace
+        from pwrcell.config import DeviceConfig
+
+        client = PwrcellClient(is_mock=False)
+
+        with patch.object(DeviceConfig, "write") as mock_write:
+            # 1. Empty scan must not persist devices.yaml
+            client._save_scanned_devices({})
+            mock_write.assert_not_called()
+
+            # 2. Classify by SunSpec model IDs even when Md string is non-standard or contains "PV"
+            def _make_dev(sn: str, md: str, models: list[int]):
+                common_inst = SimpleNamespace(
+                    SN=SimpleNamespace(value=sn),
+                    Md=SimpleNamespace(value=md),
+                )
+                return SimpleNamespace(
+                    common=[common_inst],
+                    models={mid: [object()] for mid in models},
+                )
+
+            discovered = {
+                1: _make_dev("0001000714E9", "REbus Gateway", [1, 64200, 64260]),
+                8: _make_dev("00010007901A", "Generac PV Hybrid X7602", [1, 102, 64208]),
+                9: _make_dev("000100083F22", "Generac Storage Pack", [1, 802, 64252]),
+                10: _make_dev("00010009ABCD", "S2502 Combiner", [1, 404, 64251]),
+            }
+            client._save_scanned_devices(discovered)
+            mock_write.assert_called_once()
+
+            self.assertEqual(client.state.devices["0001000714E9"].device_type, "rebus_beacon")
+            self.assertEqual(client.state.devices["00010007901A"].device_type, "inverter")
+            self.assertEqual(client.state.devices["000100083F22"].device_type, "battery")
+            self.assertEqual(client.state.devices["00010009ABCD"].device_type, "pv_link")
+
 
 if __name__ == "__main__":
     unittest.main()
