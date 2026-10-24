@@ -56,7 +56,7 @@ def is_ha_writable_allowed(field: Any) -> bool:
     """Return True if the field is both writable and in the Home Assistant writable allow-list."""
     if not getattr(field, "is_writable", False):
         return False
-    if getattr(field, "is_compound", False):
+    if field.is_compound:
         mapping_id = getattr(field, "mapping_id", None) or getattr(field, "name", "")
         return mapping_id in HA_WRITABLE_ALLOWLIST
     pt_name = getattr(field, "name", "") or str(getattr(field, "key", "")).split(".")[-1]
@@ -97,19 +97,15 @@ def is_field_selected(
     if not selected_keys:
         return False
     s_set = selected_keys if isinstance(selected_keys, set) else set(selected_keys)
+    # Selected keys are normalized at load time (qualify_legacy_ha_config): '<SERIAL_UPPER>:<field_key>'.
     if device_sn:
-        clean_sn = device_sn.strip().upper()
-        if f"{clean_sn}:{field_key}" in s_set:
+        prefix = f"{device_sn.strip().upper()}:"
+        if f"{prefix}{field_key}" in s_set:
             return True
-        if mqtt_key and f"{clean_sn}:{mqtt_key}" in s_set:
-            return True
-        clean_sn_lower = device_sn.strip().lower()
-        if f"{clean_sn_lower}:{field_key}" in s_set:
-            return True
-        if mqtt_key and f"{clean_sn_lower}:{mqtt_key}" in s_set:
+        if mqtt_key and f"{prefix}{mqtt_key}" in s_set:
             return True
 
-    # Fall back to legacy global key (without device serial prefix)
+    # Legacy global keys (no serial prefix) are only present until a device of that type registers.
     if field_key in s_set:
         return True
     if mqtt_key and mqtt_key in s_set:
@@ -337,7 +333,7 @@ def generate_discovery_payload(
     ha_prefix: str = "homeassistant",
 ) -> Dict[str, Any]:
     """Generate modern Home Assistant MQTT Discovery configuration dictionary and topics."""
-    is_compound = getattr(field, "is_compound", False)
+    is_compound = field.is_compound
     is_writable = is_ha_writable_allowed(field)
 
     if is_compound:

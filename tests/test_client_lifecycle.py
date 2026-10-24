@@ -26,7 +26,7 @@ class TestClientLifecycle(unittest.TestCase):
         mock_mqttc.connect.side_effect = ConnectionRefusedError("broker not ready")
 
         with patch("pwrcell.mqtt.mqtt.Client", return_value=mock_mqttc), \
-             patch("pwrcell.models.load_models_dir", side_effect=RuntimeError("skip scp")), \
+             patch("pwrcell.model_sync.load_models_dir", side_effect=RuntimeError("skip scp")), \
              patch("pwrcell.modbus.configure_sunspec_model_paths"), \
              patch.object(PwrcellClient, "load_or_discover_devices"), \
              patch.object(PwrcellClient, "_poll_device_models_live"):
@@ -82,7 +82,7 @@ class TestClientLifecycle(unittest.TestCase):
         from pathlib import Path
         from paramiko import AutoAddPolicy, RejectPolicy
         from pwrcell.config import AppConfig, PwrcellConfig, SshTunnel
-        from pwrcell.models import load_models_dir
+        from pwrcell.model_sync import load_models_dir
 
         with tempfile.TemporaryDirectory() as tmp:
             cache_dir = Path(tmp)
@@ -109,8 +109,8 @@ class TestClientLifecycle(unittest.TestCase):
             mock_scp.get.side_effect = fake_scp_get
 
             # 1. First run: known_hosts does not exist -> AutoAddPolicy used, then saved to known_hosts
-            with patch("pwrcell.models.SSHClient", return_value=mock_ssh), \
-                 patch("pwrcell.models.SCPClient", return_value=mock_scp):
+            with patch("pwrcell.model_sync.SSHClient", return_value=mock_ssh), \
+                 patch("pwrcell.model_sync.SCPClient", return_value=mock_scp):
                 res_dir = load_models_dir(cfg)
                 self.assertEqual(res_dir, cache_dir / "sunspec-models")
                 self.assertTrue((res_dir / "version").exists())
@@ -126,8 +126,8 @@ class TestClientLifecycle(unittest.TestCase):
             mock_ssh.reset_mock()
 
             # 2. Second run with existing known_hosts -> RejectPolicy used (pinned host key) and up-to-date check cleans version.chk
-            with patch("pwrcell.models.SSHClient", return_value=mock_ssh), \
-                 patch("pwrcell.models.SCPClient", return_value=mock_scp):
+            with patch("pwrcell.model_sync.SSHClient", return_value=mock_ssh), \
+                 patch("pwrcell.model_sync.SCPClient", return_value=mock_scp):
                 res_dir2 = load_models_dir(cfg)
                 self.assertEqual(res_dir2, cache_dir / "sunspec-models")
                 self.assertFalse((res_dir2 / "version.chk").exists())
@@ -315,7 +315,7 @@ class TestClientLifecycle(unittest.TestCase):
         from pwrcell.grouping import get_default_grouping_config_path, save_custom_groupings
         from pwrcell.ha import get_default_ha_config_path, save_ha_config
         from pwrcell.mapping import _resolve_mappings_path, get_default_mappings, save_mappings
-        from pwrcell.models import load_models_dir
+        from pwrcell.model_sync import load_models_dir
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

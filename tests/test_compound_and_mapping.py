@@ -263,6 +263,46 @@ class TestConfigurableMappingsAndCompoundViews(unittest.TestCase):
         self.assertAlmostEqual(c_view.delta, 1.0, places=1)
         self.assertGreater(c_view.match_pct, 99.9)
 
+    def test_mapping_registry_reload_dynamically_updates_set_field_linkage(self):
+        """Adding a new mapping and calling reg.reload() must dynamically update set_field compound_key and mqtt_equivalent without process restart."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from pwrcell.mapping import get_default_mappings, save_mappings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mappings_path = Path(tmp) / "telemetry_mappings.yaml"
+            with patch("pwrcell.mapping._resolve_mappings_path", return_value=mappings_path):
+                reg = MappingRegistry.get_instance()
+                try:
+                    custom_mapping = TelemetryMappingDef(
+                        id="custom_ac_voltage",
+                        label="Custom AC Voltage",
+                        device_type="inverter",
+                        unit="V",
+                        mqtt_field="inverter.live.custom_ac_v",
+                        modbus_field="inverter.inverter.PhVphA",
+                        modbus_candidates=["inverter.inverter.PhVphA"],
+                        transform="none",
+                    )
+                    save_mappings(get_default_mappings() + [custom_mapping], mappings_path)
+                    reg.reload()
+
+                    f_mb = self.state.set_field(
+                        device_sn=self.inv.serial_number,
+                        name="PhVphA",
+                        sub_group="inverter",
+                        value=241.2,
+                        units="V",
+                        source=FieldSource.MODBUS_POLL,
+                    )
+                    self.assertEqual(f_mb.mqtt_equivalent, "inverter.live.custom_ac_v")
+                    self.assertEqual(f_mb.compound_key, "inverter.compound.custom_ac_voltage")
+                    self.assertTrue(f_mb.is_compound_raw)
+                finally:
+                    save_mappings(get_default_mappings(), mappings_path)
+                    reg.reload()
+
 
 if __name__ == "__main__":
     unittest.main()
