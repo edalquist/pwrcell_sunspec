@@ -596,6 +596,43 @@ class TestStateAndControls(unittest.TestCase):
         self.assertIsNotNone(evt_field)
         self.assertEqual(evt_field.active_flags, ["COMMUNICATION_ERROR"])
 
+    def test_write_scaled_numeric_register_preserves_decimals_and_ha_bounds(self):
+        """Writing a decimal to a scaled RW register (e.g. SF=-1) must preserve the scaled value and compute raw register value, and HA discovery must use real bounds."""
+        from unittest.mock import MagicMock
+        from pwrcell.ha import generate_discovery_payload
+
+        # Model 802 has SoCMax (uint16, RW, sf='SoC_SF', units='%WHRtg')
+        self.state.update_from_modbus_points(
+            serial_number=self.bat.serial_number,
+            model_id=802,
+            raw_values={"SoCMax": 900, "SoC_SF": -1},
+            computed_values={"SoCMax": 90.0, "SoC_SF": -1},
+        )
+        socmax_field = self.bat.fields.get("battery.battery.SoCMax")
+        self.assertIsNotNone(socmax_field)
+        self.assertEqual(socmax_field.value, 90.0)
+
+        # Verify HA discovery payload uses real scaled bounds (min=0.0, max=6553.5, step=0.1)
+        disc = generate_discovery_payload(socmax_field, self.bat)
+        self.assertEqual(disc["platform"], "number")
+        self.assertEqual(disc["payload"]["step"], 0.1)
+        self.assertEqual(disc["payload"]["min"], 0.0)
+        self.assertEqual(disc["payload"]["max"], 6553.5)
+
+        # Attach mock modbus client to verify what value is sent to write_point_value
+        mock_mb = MagicMock()
+        mock_mb.write_point_value.return_value = 50.5
+        self.controls.modbus_client = mock_mb
+
+        res = self.controls.write_field("battery.battery.SoCMax", 50.5)
+        self.assertEqual(res, 50.5)
+        self.assertEqual(socmax_field.value, 50.5)
+        self.assertEqual(socmax_field.raw_value, 505)
+        # write_point_value assigns point.cvalue = value, so it expects the scaled engineering value 50.5
+        mock_mb.write_point_value.assert_called_once()
+        _, kwargs = mock_mb.write_point_value.call_args
+        self.assertEqual(kwargs["value"], 50.5)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -220,9 +220,10 @@ class ControlDispatcher:
 
         # Look up point descriptor from catalog
         point_def = self.catalog.get_point_for_field(field_key)
+        sf_val = target_dev.get_scale_factor_value(target_field) if hasattr(target_dev, "get_scale_factor_value") else None
 
         if point_def:
-            raw_val, display_val = point_def.validate_and_convert(new_value)
+            raw_val, display_val = point_def.validate_and_convert(new_value, sf_value=sf_val)
         elif target_field.symbols:
             # Fallback validation for fields with symbols directly on StateField
             raw_val, display_val = self._validate_against_symbols(target_field, new_value)
@@ -247,11 +248,13 @@ class ControlDispatcher:
 
             if model_id:
                 device_tcp = self.modbus_client.get_or_create_device(target_dev.slave_id)
+                # write_point_value assigns point.cvalue = value, which expects scaled engineering units for numeric points
+                cvalue_to_write = display_val if (point_def and point_def.is_numeric) else raw_val
                 self.modbus_client.write_point_value(
                     device=device_tcp,
                     model_id=model_id,
                     point_name=target_field.name,
-                    value=raw_val,
+                    value=cvalue_to_write,
                 )
 
         target_field.value = display_val

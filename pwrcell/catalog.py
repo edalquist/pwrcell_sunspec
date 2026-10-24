@@ -409,7 +409,12 @@ class SunspecPointDef:
             "description": f"Type: {self.type}",
         }
 
-    def validate_and_convert(self, input_val: Any, ignore_access: bool = False) -> tuple[Any, Any]:
+    def validate_and_convert(
+        self,
+        input_val: Any,
+        ignore_access: bool = False,
+        sf_value: Optional[int] = None,
+    ) -> tuple[Any, Any]:
         """Validate input value against point descriptor and return (raw_register_val, state_display_val).
         
         Raises PermissionError if point is not writable and ignore_access is False.
@@ -479,9 +484,15 @@ class SunspecPointDef:
         if self.type in ("uint16", "int16", "uint32", "int32", "uint64", "int64", "acc16", "acc32", "acc64"):
             try:
                 num_val = float(input_val)
-                int_val = int(num_val)
             except (ValueError, TypeError):
-                raise ValueError(f"Invalid integer value '{input_val}' for point '{self.name}' ({self.type})")
+                raise ValueError(f"Invalid numeric value '{input_val}' for point '{self.name}' ({self.type})")
+
+            if sf_value is not None and -10 <= sf_value <= 10:
+                int_val = int(round(num_val / (10.0 ** sf_value)))
+                display_val = round(int_val * (10.0 ** sf_value), abs(sf_value)) if sf_value < 0 else int(round(int_val * (10.0 ** sf_value)))
+            else:
+                int_val = int(num_val)
+                display_val = int_val
 
             bounds = {
                 "uint16": (0, 65535),
@@ -495,9 +506,9 @@ class SunspecPointDef:
                 min_b, max_b = bounds[self.type]
                 if not (min_b <= int_val <= max_b):
                     raise ValueError(
-                        f"Value {int_val} out of range for point '{self.name}' ({self.type}). Must be between {min_b} and {max_b}"
+                        f"Value {input_val} (raw {int_val}) out of range for point '{self.name}' ({self.type}). Raw must be between {min_b} and {max_b}"
                     )
-            return int_val, int_val
+            return int_val, display_val
 
         # 3. Float numeric types (float32, float64)
         if self.type in ("float32", "float64"):
@@ -851,7 +862,12 @@ class ModelCatalog:
         self._models_by_name[f"model_{model_id}"] = model_def
         self._models_by_name[str(model_id)] = model_def
 
-    def derive_ha_metadata(self, point: SunspecPointDef, model_id: Optional[int] = None) -> HomeAssistantHint:
+    def derive_ha_metadata(
+        self,
+        point: SunspecPointDef,
+        model_id: Optional[int] = None,
+        sf_value: Optional[int] = None,
+    ) -> HomeAssistantHint:
         """Derive Home Assistant entity platform, device_class, state_class, and units."""
         raw_units = point.units or ""
         canonical_units = raw_units
@@ -873,13 +889,14 @@ class ModelCatalog:
 
         # 2. Writable numeric entities (RW number)
         if point.is_writable and point.is_numeric and not point.is_scale_factor:
+            bounds = point.get_bounds(sf_value=sf_value)
             return HomeAssistantHint(
                 platform="number",
                 unit_of_measurement=canonical_units if canonical_units else None,
                 entity_category="config",
-                min_value=1.0 if "Sec" in raw_units else 0.0,
-                max_value=3600.0 if "Sec" in raw_units else (100.0 if canonical_units == "%" else 10000.0),
-                step=1.0,
+                min_value=bounds.get("min_value"),
+                max_value=bounds.get("max_value"),
+                step=bounds.get("step") if isinstance(bounds.get("step"), (int, float)) else 1.0,
             )
 
         # 3. Read-only Enum sensors

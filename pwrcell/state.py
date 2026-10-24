@@ -1878,7 +1878,13 @@ class StateStore:
                     bitmask_flags = scaled_val
 
             # Derive HA hints
-            ha_hint = self.catalog.derive_ha_metadata(pt_def, model_id=model_id) if pt_def else None
+            pt_sf = None
+            if pt_def and pt_def.sf:
+                sf_name = pt_def.sf
+                pt_sf = scale_factors.get(sf_name) if sf_name in scale_factors else (
+                    scale_factors.get(sf_name.lower()) if sf_name.lower() in scale_factors else scale_factors.get(sf_name.upper())
+                )
+            ha_hint = self.catalog.derive_ha_metadata(pt_def, model_id=model_id, sf_value=pt_sf) if pt_def else None
 
             # Symbol definitions if enum or bitfield
             symbols_defs = [s.to_dict() for s in pt_def.symbols] if (pt_def and (pt_def.is_enum or pt_def.is_bitfield or pt_def.symbols)) else None
