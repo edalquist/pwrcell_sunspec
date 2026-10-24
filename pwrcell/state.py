@@ -1421,7 +1421,7 @@ class StateStore:
                 ha_hint=HomeAssistantHint(platform="sensor", device_class="enum", entity_category=None),
                 sub_group="live",
             )
-            if snapshot.inverter_state:
+            if snapshot.inverter_state is not None:
                 self.set_field(
                     device_sn=inv.serial_number,
                     name="inverter_state",
@@ -1547,7 +1547,7 @@ class StateStore:
         for ch in snapshot.channels.values():
             # Channel 1: NET / Grid
             if (ch.channel_type_name in ("NET", "NET_GRID") or ch.channel_type == 1) and inv:
-                if ch.voltage_v:
+                if ch.voltage_v is not None:
                     self.set_field(
                         device_sn=inv.serial_number,
                         name="grid_voltage_v",
@@ -1621,7 +1621,7 @@ class StateStore:
 
             # Channel 4: STORAGE / Battery DC
             elif (ch.channel_type_name in ("STORAGE", "STORAGE_BATTERY") or ch.channel_type == 4) and bat:
-                if ch.voltage_v:
+                if ch.voltage_v is not None:
                     self.set_field(
                         device_sn=bat.serial_number,
                         name="battery_voltage_v",
@@ -1660,7 +1660,7 @@ class StateStore:
                         ha_hint=HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh"),
                         sub_group="live",
                     )
-                if ch.real_power_sink_max_w:
+                if ch.real_power_sink_max_w is not None:
                     self.set_field(
                         device_sn=bat.serial_number,
                         name="max_charge_power_w",
@@ -1673,7 +1673,7 @@ class StateStore:
                         ha_hint=HomeAssistantHint(platform="sensor", device_class="power", state_class="measurement", unit_of_measurement="W"),
                         sub_group="live",
                     )
-                if ch.real_power_source_max_w:
+                if ch.real_power_source_max_w is not None:
                     self.set_field(
                         device_sn=bat.serial_number,
                         name="max_discharge_power_w",

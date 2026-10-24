@@ -496,6 +496,90 @@ class TestStateAndControls(unittest.TestCase):
         )
         self.assertEqual(f_dcwh_reset.value, 698)
 
+    def test_telemetry_snapshot_publishes_zero_grid_voltage_and_limits(self):
+        """Zero grid voltage (outage) and zero charge/discharge limits must update state rather than leaving stale values."""
+        from pwrcell.mqtt import ChannelTelemetry, LiveTelemetrySnapshot
+
+        # 1. Normal grid voltage (240V) and battery limits (4500W)
+        snap_normal = LiveTelemetrySnapshot(
+            timestamp=1000.0,
+            system_mode=2,
+            system_mode_name="SELF_SUPPLY",
+            inverter_state=2080,
+            inverter_state_name="GRID_CONNECTED",
+            channels={
+                1: ChannelTelemetry(
+                    channel=1,
+                    channel_type=1,
+                    channel_type_name="NET_GRID",
+                    real_power_w=500.0,
+                    voltage_v=240.2,
+                    imported_energy_ws=3600000,
+                    exported_energy_ws=0,
+                    device_id="",
+                    device_type=0,
+                ),
+                4: ChannelTelemetry(
+                    channel=4,
+                    channel_type=4,
+                    channel_type_name="STORAGE_BATTERY",
+                    real_power_w=0.0,
+                    voltage_v=380.0,
+                    imported_energy_ws=3600000,
+                    exported_energy_ws=3600000,
+                    device_id=self.bat.serial_number,
+                    device_type=1,
+                    real_power_source_max_w=4500.0,
+                    real_power_sink_max_w=4500.0,
+                ),
+            },
+        )
+        self.state.update_from_telemetry_snapshot(snap_normal)
+        self.assertEqual(self.inv.fields["inverter.live.grid_voltage_v"].value, 240.2)
+        self.assertEqual(self.bat.fields["battery.live.max_charge_power_w"].value, 4500.0)
+        self.assertEqual(self.bat.fields["battery.live.max_discharge_power_w"].value, 4500.0)
+
+        # 2. Grid outage (voltage_v == 0.0) and battery full (sink_max_w == 0.0)
+        snap_outage = LiveTelemetrySnapshot(
+            timestamp=1005.0,
+            system_mode=2,
+            system_mode_name="SELF_SUPPLY",
+            inverter_state=0,
+            inverter_state_name="UNKNOWN",
+            channels={
+                1: ChannelTelemetry(
+                    channel=1,
+                    channel_type=1,
+                    channel_type_name="NET_GRID",
+                    real_power_w=0.0,
+                    voltage_v=0.0,
+                    imported_energy_ws=3600000,
+                    exported_energy_ws=0,
+                    device_id="",
+                    device_type=0,
+                ),
+                4: ChannelTelemetry(
+                    channel=4,
+                    channel_type=4,
+                    channel_type_name="STORAGE_BATTERY",
+                    real_power_w=0.0,
+                    voltage_v=0.0,
+                    imported_energy_ws=3600000,
+                    exported_energy_ws=3600000,
+                    device_id=self.bat.serial_number,
+                    device_type=1,
+                    real_power_source_max_w=0.0,
+                    real_power_sink_max_w=0.0,
+                ),
+            },
+        )
+        self.state.update_from_telemetry_snapshot(snap_outage)
+        self.assertEqual(self.inv.fields["inverter.live.grid_voltage_v"].value, 0.0)
+        self.assertEqual(self.inv.fields["inverter.live.inverter_state"].value, 0)
+        self.assertEqual(self.bat.fields["battery.live.battery_voltage_v"].value, 0.0)
+        self.assertEqual(self.bat.fields["battery.live.max_charge_power_w"].value, 0.0)
+        self.assertEqual(self.bat.fields["battery.live.max_discharge_power_w"].value, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
