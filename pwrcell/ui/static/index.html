@@ -395,8 +395,11 @@
           </div>
         </div>
       </div>
-      <div class="modal-footer">
-        <span class="compare-footer-note">⚡ Live sync updates every 2 seconds</span>
+      <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <button class="btn btn-secondary btn-sm" id="btnOpenExportMappings" title="Export custom field groupings to YAML">📥 Export Mappings</button>
+          <span class="compare-footer-note">⚡ Live sync updates every 2 seconds</span>
+        </div>
         <button class="btn btn-primary" id="btnCloseCompareFooter">Close</button>
       </div>
     </div>
@@ -462,6 +465,56 @@
           <button class="btn btn-secondary" id="btnCancelGroupingModal">Cancel</button>
           <button class="btn btn-primary" id="btnSaveGroupingModal">Save Grouping</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export Mappings Modal -->
+  <div class="modal-backdrop" id="exportMappingsModal">
+    <div class="modal modal-lg export-mappings-dialog">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-tag">EXPORT MAPPINGS CONFIGURATION</span>
+          <h3>📥 Export Custom Mappings</h3>
+        </div>
+        <button class="modal-close" id="btnCloseExportModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">
+          Export your approved custom groupings to YAML. Choose between portable user defaults for new installs or the built-in integration schema to contribute to package defaults.
+        </p>
+
+        <!-- Segmented Format Switcher -->
+        <div class="export-format-toggle">
+          <button class="format-btn active" data-format="generalized" id="btnFormatGeneralized">
+            <span class="format-icon">📁</span>
+            <div class="format-info">
+              <strong>Portable custom_groupings.yaml</strong>
+              <span>Strips device serial numbers to apply across any new install or backup</span>
+            </div>
+          </button>
+          <button class="format-btn" data-format="telemetry_mappings" id="btnFormatTelemetry">
+            <span class="format-icon">📦</span>
+            <div class="format-info">
+              <strong>Built-in telemetry_mappings.yaml</strong>
+              <span>Formats groupings into official integration schema to update package defaults or submit a PR</span>
+            </div>
+          </button>
+        </div>
+
+        <div class="export-file-meta">
+          <span>Target File: <strong id="exportTargetFilename">custom_groupings.yaml</strong></span>
+          <span class="text-muted" id="exportTargetLocation">Place in /data/custom_groupings.yaml or config/custom_groupings.yaml</span>
+        </div>
+
+        <div class="export-preview-container">
+          <pre class="export-code-block"><code id="exportYamlCode">Loading export YAML...</code></pre>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btnCopyExportYaml">📋 Copy YAML</button>
+        <button class="btn btn-primary" id="btnDownloadExportYaml">⬇️ Download File</button>
+        <button class="btn btn-secondary" id="btnCloseExportFooter">Close</button>
       </div>
     </div>
   </div>

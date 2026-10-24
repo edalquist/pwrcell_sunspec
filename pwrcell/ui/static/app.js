@@ -144,6 +144,17 @@ const el = {
   radioGroupExisting: document.getElementById('radioGroupExisting'),
   radioGroupNew: document.getElementById('radioGroupNew'),
   radioGroupUngroup: document.getElementById('radioGroupUngroup'),
+  btnOpenExportMappings: document.getElementById('btnOpenExportMappings'),
+  exportMappingsModal: document.getElementById('exportMappingsModal'),
+  btnCloseExportModal: document.getElementById('btnCloseExportModal'),
+  btnCloseExportFooter: document.getElementById('btnCloseExportFooter'),
+  btnFormatGeneralized: document.getElementById('btnFormatGeneralized'),
+  btnFormatTelemetry: document.getElementById('btnFormatTelemetry'),
+  exportTargetFilename: document.getElementById('exportTargetFilename'),
+  exportTargetLocation: document.getElementById('exportTargetLocation'),
+  exportYamlCode: document.getElementById('exportYamlCode'),
+  btnCopyExportYaml: document.getElementById('btnCopyExportYaml'),
+  btnDownloadExportYaml: document.getElementById('btnDownloadExportYaml'),
   toast: document.getElementById('toast'),
   counts: {
     all: document.getElementById('countAll'),
@@ -3674,6 +3685,49 @@ function setupEventListeners() {
     });
   }
 
+  // Export Mappings Modal
+  if (el.btnOpenExportMappings) {
+    el.btnOpenExportMappings.addEventListener('click', () => openExportModal());
+  }
+  if (el.btnCloseExportModal) {
+    el.btnCloseExportModal.addEventListener('click', closeExportModal);
+  }
+  if (el.btnCloseExportFooter) {
+    el.btnCloseExportFooter.addEventListener('click', closeExportModal);
+  }
+  if (el.exportMappingsModal) {
+    el.exportMappingsModal.addEventListener('click', (e) => {
+      if (e.target === el.exportMappingsModal) closeExportModal();
+    });
+  }
+  if (el.btnFormatGeneralized) {
+    el.btnFormatGeneralized.addEventListener('click', async () => {
+      currentExportFormat = 'generalized';
+      updateExportFormatUI();
+      await fetchExportYaml();
+    });
+  }
+  if (el.btnFormatTelemetry) {
+    el.btnFormatTelemetry.addEventListener('click', async () => {
+      currentExportFormat = 'telemetry_mappings';
+      updateExportFormatUI();
+      await fetchExportYaml();
+    });
+  }
+  if (el.btnCopyExportYaml) {
+    el.btnCopyExportYaml.addEventListener('click', () => {
+      if (currentExportYaml) {
+        copyToClipboard(currentExportYaml);
+        showToast(`Copied ${currentExportFilename} to clipboard!`);
+      }
+    });
+  }
+  if (el.btnDownloadExportYaml) {
+    el.btnDownloadExportYaml.addEventListener('click', () => {
+      window.location.href = apiPath(`api/grouping/export?format=${encodeURIComponent(currentExportFormat)}&download=true`);
+    });
+  }
+
   // Compare Table Event Delegation for Grouping Actions
   if (el.compareTableBody) {
     el.compareTableBody.addEventListener('click', async (e) => {
@@ -3882,6 +3936,60 @@ async function refreshAfterGroupingChange(deviceSn) {
   }
   if (el.compareModal && el.compareModal.classList.contains('open')) {
     await fetchAndRenderCompare();
+  }
+}
+
+// Export Custom Mappings Logic
+let currentExportFormat = 'generalized';
+let currentExportYaml = '';
+let currentExportFilename = 'custom_groupings.yaml';
+
+async function openExportModal(initialFormat = 'generalized') {
+  if (!el.exportMappingsModal) return;
+  currentExportFormat = initialFormat;
+  updateExportFormatUI();
+  el.exportMappingsModal.classList.add('open');
+  await fetchExportYaml();
+}
+
+function closeExportModal() {
+  if (el.exportMappingsModal) {
+    el.exportMappingsModal.classList.remove('open');
+  }
+}
+
+function updateExportFormatUI() {
+  if (currentExportFormat === 'generalized') {
+    if (el.btnFormatGeneralized) el.btnFormatGeneralized.classList.add('active');
+    if (el.btnFormatTelemetry) el.btnFormatTelemetry.classList.remove('active');
+    if (el.exportTargetFilename) el.exportTargetFilename.textContent = 'custom_groupings.yaml';
+    if (el.exportTargetLocation) el.exportTargetLocation.textContent = 'Place in /data/custom_groupings.yaml or config/custom_groupings.yaml';
+    currentExportFilename = 'custom_groupings.yaml';
+  } else {
+    if (el.btnFormatGeneralized) el.btnFormatGeneralized.classList.remove('active');
+    if (el.btnFormatTelemetry) el.btnFormatTelemetry.classList.add('active');
+    if (el.exportTargetFilename) el.exportTargetFilename.textContent = 'telemetry_mappings.yaml';
+    if (el.exportTargetLocation) el.exportTargetLocation.textContent = 'Place in pwrcell/data/telemetry_mappings.yaml or use to submit a PR';
+    currentExportFilename = 'telemetry_mappings.yaml';
+  }
+}
+
+async function fetchExportYaml() {
+  if (!el.exportYamlCode) return;
+  el.exportYamlCode.textContent = '# Generating export YAML...';
+  try {
+    const res = await fetch(apiPath(`api/grouping/export?format=${encodeURIComponent(currentExportFormat)}`));
+    const data = await res.json();
+    if (data.status === 'ok') {
+      currentExportYaml = data.yaml || '';
+      el.exportYamlCode.textContent = currentExportYaml || '# No custom groupings defined yet.';
+      currentExportFilename = data.filename || currentExportFilename;
+      if (el.exportTargetFilename) el.exportTargetFilename.textContent = currentExportFilename;
+    } else {
+      el.exportYamlCode.textContent = `# Error generating export: ${data.error || 'Unknown error'}`;
+    }
+  } catch (err) {
+    el.exportYamlCode.textContent = `# Failed to load export: ${err}`;
   }
 }
 
