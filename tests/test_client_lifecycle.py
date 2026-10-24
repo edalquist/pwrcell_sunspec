@@ -41,6 +41,30 @@ class TestClientLifecycle(unittest.TestCase):
             finally:
                 client.stop()
 
+    def test_config_read_missing_and_malformed(self):
+        """AppConfig.read returns defaults when missing, fails loudly when malformed; DeviceConfig.read is Optional."""
+        import os
+        import tempfile
+        from pathlib import Path
+        from typing import get_type_hints
+        from pwrcell.config import AppConfig, DeviceConfig
+
+        # 1. Verify DeviceConfig.read return annotation includes None
+        hints = get_type_hints(DeviceConfig.read)
+        self.assertIn(type(None), getattr(hints.get("return"), "__args__", ()))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_cfg = Path(tmp) / "nonexistent_pwrcell.yaml"
+            with patch.dict(os.environ, {"PWRCELL_CONFIG": str(missing_cfg)}):
+                cfg = AppConfig.read()
+                self.assertIsInstance(cfg, AppConfig)
+
+            bad_cfg = Path(tmp) / "malformed_pwrcell.yaml"
+            bad_cfg.write_text("poll_rate: [not_an_int\n", encoding="utf-8")
+            with patch.dict(os.environ, {"PWRCELL_CONFIG": str(bad_cfg)}):
+                with self.assertRaises(Exception):
+                    AppConfig.read()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,7 @@ import logging
 import sys
 from dataclasses import field
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import dataconf
 
@@ -39,7 +39,6 @@ def _getConfigPath(file: str) -> str:
                 "config/config.yaml",
                 "pwrcell.yaml",
                 "local_config.yaml",
-                "config.yaml",
             ):
                 p = base / candidate
                 if p.exists():
@@ -100,9 +99,12 @@ class AppConfig:
     config_path = _getConfigPath(_CONFIG_FILE)
     try:
       return dataconf.load(config_path, AppConfig)
-    except Exception as e:
-      logger.warning("Could not load config from %s (%s), returning defaults", config_path, e)
+    except FileNotFoundError:
+      logger.info("Config file %s not found, using defaults", config_path)
       return cls()
+    except Exception as e:
+      logger.error("Failed to load config from %s: %s", config_path, e)
+      raise
 
   def write(self):
     target = "/data/pwrcell.yaml" if Path("/data").is_dir() and Path("/data/options.json").exists() else _getConfigPath(_CONFIG_FILE)
@@ -118,7 +120,7 @@ class DeviceConfig:
   icm: Dict[str, int] = field(default_factory=dict)
 
   @classmethod
-  def read(cls) -> 'DeviceConfig':
+  def read(cls) -> Optional['DeviceConfig']:
     path = _getConfigPath(_DEVICE_FILE)
     try:
       return dataconf.load(path, DeviceConfig)
