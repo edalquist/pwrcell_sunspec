@@ -97,19 +97,15 @@ def is_field_selected(
     if not selected_keys:
         return False
     s_set = selected_keys if isinstance(selected_keys, set) else set(selected_keys)
+    # Selected keys are normalized at load time (qualify_legacy_ha_config): '<SERIAL_UPPER>:<field_key>'.
     if device_sn:
-        clean_sn = device_sn.strip().upper()
-        if f"{clean_sn}:{field_key}" in s_set:
+        prefix = f"{device_sn.strip().upper()}:"
+        if f"{prefix}{field_key}" in s_set:
             return True
-        if mqtt_key and f"{clean_sn}:{mqtt_key}" in s_set:
-            return True
-        clean_sn_lower = device_sn.strip().lower()
-        if f"{clean_sn_lower}:{field_key}" in s_set:
-            return True
-        if mqtt_key and f"{clean_sn_lower}:{mqtt_key}" in s_set:
+        if mqtt_key and f"{prefix}{mqtt_key}" in s_set:
             return True
 
-    # Fall back to legacy global key (without device serial prefix)
+    # Legacy global keys (no serial prefix) are only present until a device of that type registers.
     if field_key in s_set:
         return True
     if mqtt_key and mqtt_key in s_set:

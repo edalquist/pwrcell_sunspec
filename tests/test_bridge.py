@@ -523,6 +523,16 @@ class TestHomeAssistantBridge(unittest.TestCase):
             self.assertEqual(raw_payload["platform"], "select")
             self.assertNotIn("SAFETY_SHUTDOWN", raw_payload["payload"].get("options", []))
 
+    def test_is_field_selected_uses_normalized_uppercase_serial(self):
+        """Selection is an exact match on normalized '<SERIAL_UPPER>:<key>' (plus legacy global keys); no lowercase-serial variant."""
+        from pwrcell.ha import is_field_selected
+
+        sel = {"ABC123:inverter.live.grid_power_w", "battery.live.state_of_charge"}
+        self.assertTrue(is_field_selected("inverter.live.grid_power_w", "abc123", sel))
+        self.assertFalse(is_field_selected("inverter.live.grid_power_w", "OTHER", sel))
+        self.assertTrue(is_field_selected("battery.live.state_of_charge", "ANY", sel))
+        self.assertFalse(is_field_selected("inverter.live.grid_power_w", "ABC123", {"abc123:inverter.live.grid_power_w"}))
+
 
 if __name__ == "__main__":
     unittest.main()
