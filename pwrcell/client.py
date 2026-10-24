@@ -57,6 +57,7 @@ class PwrcellClient:
         self.state = StateStore(catalog=self.catalog)
         self.modbus = modbus_client
         self.mqtt = mqtt_client
+        self.bridge: Optional[Any] = None
         self.controls = ControlDispatcher(self.modbus, self.state, self.catalog)
         self.is_mock = is_mock
         self._mock_generator: Optional[MockTelemetryGenerator] = None
@@ -140,17 +141,28 @@ class PwrcellClient:
             init_poll_thread = self._init_poll_thread
             sim_thread = self._sim_thread
             poller = self.poller
+            bridge = self.bridge
             mqtt = self.mqtt
             modbus = self.modbus
 
         if init_poll_thread and init_poll_thread.is_alive():
             init_poll_thread.join(timeout=1.0)
+            if init_poll_thread.is_alive():
+                logger.warning("Initial model poll thread did not exit within 1.0s")
 
         if poller:
             poller.stop()
 
         if sim_thread and sim_thread.is_alive():
             sim_thread.join(timeout=2.0)
+            if sim_thread.is_alive():
+                logger.warning("Mock simulation thread did not exit within 2.0s")
+
+        if bridge:
+            try:
+                bridge.stop()
+            except Exception as e:
+                logger.debug("Error stopping HA bridge: %s", e)
 
         if mqtt:
             mqtt.stop()
@@ -346,7 +358,9 @@ class PwrcellClient:
                 continue
 
             try:
-                tcp_dev = self.modbus.scan_device(dev.slave_id, full_model_read=False)
+                tcp_dev = self.modbus.get_or_create_device(dev.slave_id)
+                if not getattr(tcp_dev, "models", None):
+                    tcp_dev = self.modbus.scan_device(dev.slave_id, full_model_read=False)
                 if not tcp_dev or not self._running:
                     continue
 
@@ -378,7 +392,7 @@ class PwrcellClient:
 
         logger.info("Completed background initial SunSpec model poll across devices")
         self.poller.refresh_model_resolutions()
-        if getattr(self, "bridge", None):
+        if self.bridge:
             try:
                 self.bridge.publish_discovery()
             except Exception as e:

@@ -415,6 +415,8 @@ class TieredModbusPoller:
 
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=timeout)
+            if self._thread.is_alive():
+                logger.warning("Tiered Modbus Poller thread did not exit within %gs", timeout)
             logger.info("Stopped Tiered Modbus Poller")
 
     def trigger_sync(self, tier: str | PollingTier = "config"):
@@ -655,17 +657,26 @@ class TieredModbusPoller:
             # 2. Check periodic intervals
             now = time.time()
 
-            # If no devices are registered (e.g. initial connection failed or inverter was rebooting), retry discovery
+            # If no devices are registered (e.g. initial connection failed or inverter was rebooting), retry discovery asynchronously
             with self.client.state._lock:
                 no_devices = len(self.client.state.devices) == 0
-            if no_devices and (now - self._last_discovery_retry >= 30.0):
+            if no_devices and not self.client.is_initial_poll_running and (now - self._last_discovery_retry >= 30.0):
                 self._last_discovery_retry = now
-                logger.info("No devices registered in StateStore; attempting Modbus discovery...")
-                try:
-                    self.client.load_or_discover_devices()
-                    self.client._poll_device_models_live()
-                except Exception as de:
-                    logger.debug("Discovery retry failed: %s", de)
+                logger.info("No devices registered in StateStore; spawning background Modbus discovery retry...")
+
+                def _retry_discovery():
+                    try:
+                        self.client.load_or_discover_devices()
+                        self.client._poll_device_models_live()
+                    except Exception as de:
+                        logger.debug("Discovery retry failed: %s", de)
+
+                self.client._init_poll_thread = threading.Thread(
+                    target=_retry_discovery,
+                    name="PwrCellDiscoveryRetry",
+                    daemon=True,
+                )
+                self.client._init_poll_thread.start()
 
             # Fast Tier
             last_fast = max(self.last_poll.get(PollingTier.FAST.value, 0.0), self.last_poll_attempt.get(PollingTier.FAST.value, 0.0))

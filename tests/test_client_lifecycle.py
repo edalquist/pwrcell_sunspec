@@ -228,6 +228,46 @@ class TestClientLifecycle(unittest.TestCase):
             self.assertTrue(ensure_done.wait(timeout=0.5), "ensure_active() did not wake promptly on tunnel.stop()")
             self.assertLess(time.monotonic() - t0, 0.5)
 
+    def test_startup_shutdown_ordering_and_no_worker_resurrection(self):
+        """After close(), SerializedModbusWorker.submit() must not resurrect the worker thread; PwrcellClient.stop() stops self.bridge; _poll_device_models_live reuses already-scanned devices."""
+        from types import SimpleNamespace
+        from pwrcell.modbus import SerializedModbusClient
+
+        # 1. Submitting a job after close() must fail without restarting the worker thread
+        mb_client = SerializedModbusClient(host="127.0.0.1", port=5020)
+        mb_client.worker.start()
+        self.assertTrue(mb_client.worker._running)
+        mb_client.close()
+        self.assertFalse(mb_client.worker._running)
+
+        with self.assertRaises(RuntimeError):
+            mb_client.worker.execute_sync(lambda: "should not run", retries=1, timeout=1.0)
+        self.assertFalse(mb_client.worker._running)
+
+        # 2. PwrcellClient.stop() stops attached self.bridge
+        client = PwrcellClient(is_mock=True)
+        mock_bridge = MagicMock()
+        client.bridge = mock_bridge
+        client.start()
+        client.stop()
+        mock_bridge.stop.assert_called_once()
+
+        # 3. _poll_device_models_live reuses existing tcp_dev.models from get_or_create_device instead of re-scanning
+        live_client = PwrcellClient(is_mock=False)
+        live_client._running = True
+        live_client.state.register_device("0001000714E9", 8, "inverter", "Inverter")
+        fake_tcp_dev = SimpleNamespace(
+            models={1: [object()], 102: [object()]},
+            common=[SimpleNamespace(Md=SimpleNamespace(value="X7602"), Vr=SimpleNamespace(value="1.2"))],
+        )
+        mock_modbus = MagicMock()
+        mock_modbus.get_or_create_device.return_value = fake_tcp_dev
+        mock_modbus.read_model_block.return_value = SimpleNamespace(points={})
+        live_client.modbus = mock_modbus
+        with patch.object(live_client.poller, "poll_device_model"):
+            live_client._poll_device_models_live()
+        mock_modbus.scan_device.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -81,10 +81,12 @@ class SerializedModbusWorker:
         self._queue: queue.Queue[Optional[ModbusJob]] = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._closed = False
         self._lock = threading.Lock()
 
     def start(self):
         with self._lock:
+            self._closed = False
             if self._running:
                 return
             self._running = True
@@ -98,6 +100,7 @@ class SerializedModbusWorker:
 
     def stop(self, timeout: float = 3.0):
         with self._lock:
+            self._closed = True
             if not self._running:
                 return
             self._running = False
@@ -114,6 +117,8 @@ class SerializedModbusWorker:
 
         if thread and thread.is_alive():
             thread.join(timeout=timeout)
+            if thread.is_alive():
+                logger.warning("Serialized Modbus Worker thread did not exit within %gs", timeout)
         logger.info("Stopped Serialized Modbus Worker thread")
 
     def submit(
@@ -124,10 +129,15 @@ class SerializedModbusWorker:
         backoff_sec: float = 0.25,
     ) -> concurrent.futures.Future[T]:
         """Submit a Modbus operation to the serialized queue."""
-        if not self._running:
+        future: concurrent.futures.Future[T] = concurrent.futures.Future()
+        with self._lock:
+            if self._closed:
+                future.set_exception(RuntimeError("Modbus worker stopped"))
+                return future
+            need_start = not self._running
+        if need_start:
             self.start()
 
-        future: concurrent.futures.Future[T] = concurrent.futures.Future()
         job = ModbusJob(
             func=func,
             future=future,
