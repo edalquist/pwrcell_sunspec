@@ -3514,7 +3514,7 @@ function setupEventListeners() {
         const data = await res.json();
         showToast('Modbus keypad & config sync triggered');
         if (state.selectedDeviceSn) {
-          await fetchDeviceFields(state.selectedDeviceSn);
+          await selectDevice(state.selectedDeviceSn);
         }
       } catch (err) {
         showToast(`Sync failed: ${err}`);
@@ -3751,7 +3751,7 @@ async function ungroupAllAction(deviceSn, conceptKey) {
 
 async function refreshAfterGroupingChange(deviceSn) {
   if (state.activeDevice && state.activeDevice.serial_number === deviceSn) {
-    await fetchDeviceFields(deviceSn);
+    await selectDevice(deviceSn);
   }
   if (el.compareModal && el.compareModal.classList.contains('open')) {
     await fetchAndRenderCompare();
