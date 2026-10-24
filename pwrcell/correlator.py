@@ -88,8 +88,15 @@ def _load_correlator_mappings() -> List[TelemetryMappingDef]:
     return res
 
 
-# Dynamic Mappings between MQTT push telemetry and SunSpec Modbus registers
-KNOWN_TELEMETRY_MAPPINGS: List[TelemetryMappingDef] = _load_correlator_mappings()
+def get_known_telemetry_mappings() -> List[TelemetryMappingDef]:
+    """Return current correlator mappings from MappingRegistry."""
+    return _load_correlator_mappings()
+
+
+def __getattr__(name: str):
+    if name == "KNOWN_TELEMETRY_MAPPINGS":
+        return _load_correlator_mappings()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 

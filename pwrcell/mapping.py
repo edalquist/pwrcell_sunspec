@@ -415,9 +415,12 @@ class MappingRegistry:
 
     def __init__(self, config_path: Optional[str] = None):
         self.config_path = config_path
-        self._mappings: List[TelemetryMappingDef] = load_mappings(config_path)
-        self._by_id: Dict[str, TelemetryMappingDef] = {m.id: m for m in self._mappings}
-        self._by_mqtt: Dict[str, TelemetryMappingDef] = {m.mqtt_field: m for m in self._mappings}
+        self._mappings: List[TelemetryMappingDef] = []
+        self._by_id: Dict[str, TelemetryMappingDef] = {}
+        self._by_mqtt: Dict[str, TelemetryMappingDef] = {}
+        self._modbus_to_mqtt: Dict[str, str] = {}
+        self._raw_to_compound: Dict[str, str] = {}
+        self.reload()
 
     @classmethod
     def get_instance(cls, config_path: Optional[str] = None) -> MappingRegistry:
@@ -429,6 +432,26 @@ class MappingRegistry:
         self._mappings = load_mappings(self.config_path)
         self._by_id = {m.id: m for m in self._mappings}
         self._by_mqtt = {m.mqtt_field: m for m in self._mappings}
+        mb_to_mqtt: Dict[str, str] = {}
+        raw_to_comp: Dict[str, str] = {}
+        for m in self._mappings:
+            c_key = f"{m.device_type}.compound.{m.id}"
+            if m.mqtt_field:
+                raw_to_comp[m.mqtt_field] = c_key
+            if m.modbus_field:
+                mb_to_mqtt[m.modbus_field] = m.mqtt_field
+                raw_to_comp[m.modbus_field] = c_key
+            for alt in m.modbus_candidates:
+                mb_to_mqtt[alt] = m.mqtt_field
+                raw_to_comp[alt] = c_key
+        self._modbus_to_mqtt = mb_to_mqtt
+        self._raw_to_compound = raw_to_comp
+
+    def get_modbus_to_mqtt_map(self) -> Dict[str, str]:
+        return self._modbus_to_mqtt
+
+    def get_raw_to_compound_map(self) -> Dict[str, str]:
+        return self._raw_to_compound
 
     def get_all(self) -> List[TelemetryMappingDef]:
         return list(self._mappings)

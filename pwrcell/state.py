@@ -107,33 +107,13 @@ class FieldSource(str, Enum):
 
 
 def get_active_modbus_to_mqtt_mapping() -> Dict[str, str]:
-    """Dynamically build modbus to mqtt mapping from MappingRegistry."""
-    mapping: Dict[str, str] = {}
-    reg = MappingRegistry.get_instance()
-    for m in reg.get_all():
-        mapping[m.modbus_field] = m.mqtt_field
-        for alt in m.modbus_candidates:
-            mapping[alt] = m.mqtt_field
-    return mapping
+    """Dynamically return modbus to mqtt mapping from MappingRegistry."""
+    return MappingRegistry.get_instance().get_modbus_to_mqtt_map()
 
 
 def get_active_raw_to_compound_mapping() -> Dict[str, str]:
-    """Dynamically build raw field key to compound field key mapping from MappingRegistry."""
-    mapping: Dict[str, str] = {}
-    reg = MappingRegistry.get_instance()
-    for m in reg.get_all():
-        c_key = f"{m.device_type}.compound.{m.id}"
-        if m.mqtt_field:
-            mapping[m.mqtt_field] = c_key
-        if m.modbus_field:
-            mapping[m.modbus_field] = c_key
-        for alt in m.modbus_candidates:
-            mapping[alt] = c_key
-    return mapping
-
-
-MODBUS_TO_MQTT_MAPPING: Dict[str, str] = get_active_modbus_to_mqtt_mapping()
-RAW_TO_COMPOUND_MAPPING: Dict[str, str] = get_active_raw_to_compound_mapping()
+    """Dynamically return raw field key to compound field key mapping from MappingRegistry."""
+    return MappingRegistry.get_instance().get_raw_to_compound_map()
 
 
 @dataclass
@@ -1119,8 +1099,10 @@ class StateStore:
 
             group_prefix = f"{sub_group}." if sub_group else ""
             key = f"{dev.device_type}.{group_prefix}{name}"
-            mqtt_eq = MODBUS_TO_MQTT_MAPPING.get(key)
-            c_key = RAW_TO_COMPOUND_MAPPING.get(key) or (RAW_TO_COMPOUND_MAPPING.get(mqtt_eq) if mqtt_eq else None)
+            mb_to_mqtt = get_active_modbus_to_mqtt_mapping()
+            raw_to_comp = get_active_raw_to_compound_mapping()
+            mqtt_eq = mb_to_mqtt.get(key)
+            c_key = raw_to_comp.get(key) or (raw_to_comp.get(mqtt_eq) if mqtt_eq else None)
             is_comp_raw = bool(c_key)
 
             existing = dev.fields.get(key)
