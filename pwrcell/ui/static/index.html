@@ -55,6 +55,9 @@
 
       <div class="header-status">
         <button class="btn btn-secondary btn-sm" id="btnOpenCompare" title="Compare live push telemetry with Modbus registers">⚡ Compare Telemetry</button>
+        <button class="btn btn-secondary btn-sm suggestion-header-btn" id="btnOpenSuggestions" title="Review suggested field groupings" style="display: none;">
+          💡 Suggestions (<span id="cntHeaderSuggestions">0</span>)
+        </button>
         <button class="btn btn-secondary btn-sm" id="btnSyncModbus" title="Trigger on-demand Modbus sync of keypad configs and setpoints">🔄 Sync Config</button>
         <span class="status-indicator live" id="liveIndicator">
           <span class="pulse-dot"></span>
@@ -329,6 +332,9 @@
             <button class="compare-tab active" data-tab="discrepancies" id="tabCmpDiscrepancies">
               <span class="warning-badge-icon">⚠️</span> Discrepancies (<span id="cntCmpDiscrepancies">0</span>)
             </button>
+            <button class="compare-tab" data-tab="suggestions" id="tabCmpSuggestions">
+              <span class="suggestion-badge-icon">💡</span> Suggestions (<span id="cntCmpSuggestions">0</span>)
+            </button>
             <button class="compare-tab" data-tab="multisource" id="tabCmpMulti">
               Multi-Source (<span id="cntCmpMulti">0</span>)
             </button>
@@ -347,7 +353,7 @@
           </div>
         </div>
 
-        <div class="compare-table-container">
+        <div class="compare-table-container" id="compareTableContainer">
           <table class="field-table compare-table">
             <thead>
               <tr>
@@ -360,6 +366,11 @@
               <tr><td colspan="3" class="empty-state">Loading live comparison telemetry...</td></tr>
             </tbody>
           </table>
+        </div>
+
+        <!-- Suggestions View Container -->
+        <div id="compareSuggestionsContainer" class="compare-suggestions-container" style="display: none;">
+          <div class="suggestions-list" id="suggestionsList"></div>
         </div>
 
         <div id="unrecCompareSection" class="unrec-compare-section" style="display: none;">

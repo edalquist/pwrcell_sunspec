@@ -96,16 +96,23 @@ const el = {
   btnCancelWriteModal: document.getElementById('btnCancelWriteModal'),
   btnConfirmWrite: document.getElementById('btnConfirmWrite'),
   btnOpenCompare: document.getElementById('btnOpenCompare'),
+  btnOpenSuggestions: document.getElementById('btnOpenSuggestions'),
+  cntHeaderSuggestions: document.getElementById('cntHeaderSuggestions'),
   btnSyncModbus: document.getElementById('btnSyncModbus'),
   compareModal: document.getElementById('compareModal'),
   btnCloseCompare: document.getElementById('btnCloseCompare'),
   btnCloseCompareFooter: document.getElementById('btnCloseCompareFooter'),
+  compareTableContainer: document.getElementById('compareTableContainer'),
   compareTableBody: document.getElementById('compareTableBody'),
+  compareSuggestionsContainer: document.getElementById('compareSuggestionsContainer'),
+  suggestionsList: document.getElementById('suggestionsList'),
   tabCmpDiscrepancies: document.getElementById('tabCmpDiscrepancies'),
+  tabCmpSuggestions: document.getElementById('tabCmpSuggestions'),
   tabCmpMulti: document.getElementById('tabCmpMulti'),
   tabCmpMatches: document.getElementById('tabCmpMatches'),
   tabCmpAll: document.getElementById('tabCmpAll'),
   cntCmpDiscrepancies: document.getElementById('cntCmpDiscrepancies'),
+  cntCmpSuggestions: document.getElementById('cntCmpSuggestions'),
   cntCmpMulti: document.getElementById('cntCmpMulti'),
   cntCmpMatches: document.getElementById('cntCmpMatches'),
   cntCmpAll: document.getElementById('cntCmpAll'),
@@ -157,9 +164,30 @@ async function initApp() {
   await Promise.all([
     fetchOverview(),
     fetchHaConfig(),
+    fetchGroupingSuggestions(),
   ]);
   await fetchDevices();
   connectSSE();
+}
+
+// Fetch Grouping Suggestions
+async function fetchGroupingSuggestions() {
+  try {
+    const res = await fetch(apiPath('api/grouping/suggestions'));
+    const data = await res.json();
+    compareState.suggestions = data.suggestions || [];
+    const count = data.count !== undefined ? data.count : compareState.suggestions.length;
+    if (el.cntHeaderSuggestions) el.cntHeaderSuggestions.textContent = count;
+    if (el.cntCmpSuggestions) el.cntCmpSuggestions.textContent = count;
+    if (el.btnOpenSuggestions) {
+      el.btnOpenSuggestions.style.display = count > 0 ? 'inline-flex' : 'none';
+    }
+    if (compareState.activeTab === 'suggestions') {
+      renderCompareSuggestions(compareState.suggestions);
+    }
+  } catch (err) {
+    console.warn('Failed fetching grouping suggestions:', err);
+  }
 }
 
 // Fetch Overview Data
@@ -3455,7 +3483,10 @@ function setupEventListeners() {
 
   // Compare Modal
   if (el.btnOpenCompare) {
-    el.btnOpenCompare.addEventListener('click', openCompareModal);
+    el.btnOpenCompare.addEventListener('click', () => openCompareModal());
+    if (el.btnOpenSuggestions) {
+      el.btnOpenSuggestions.addEventListener('click', () => openCompareModal('suggestions'));
+    }
     el.btnCloseCompare.addEventListener('click', closeCompareModal);
     el.btnCloseCompareFooter.addEventListener('click', closeCompareModal);
 
@@ -3465,7 +3496,9 @@ function setupEventListeners() {
         btn.addEventListener('click', () => {
           compareState.activeTab = tabName;
           updateCompareTabActiveStyles();
-          if (compareState.data) {
+          if (tabName === 'suggestions') {
+            renderCompareSuggestions(compareState.suggestions || []);
+          } else if (compareState.data) {
             const rows = Array.isArray(compareState.data) ? compareState.data : (compareState.data.comparisons || []);
             renderCompareTableRows(rows);
           }
@@ -3473,6 +3506,7 @@ function setupEventListeners() {
       }
     };
     bindTab(el.tabCmpDiscrepancies, 'discrepancies');
+    bindTab(el.tabCmpSuggestions, 'suggestions');
     bindTab(el.tabCmpMulti, 'multisource');
     bindTab(el.tabCmpMatches, 'matches');
     bindTab(el.tabCmpAll, 'all');
@@ -3481,7 +3515,9 @@ function setupEventListeners() {
     if (el.cmpDeviceSelect) {
       el.cmpDeviceSelect.addEventListener('change', (e) => {
         compareState.selectedDevice = e.target.value;
-        if (compareState.data) {
+        if (compareState.activeTab === 'suggestions') {
+          renderCompareSuggestions(compareState.suggestions || []);
+        } else if (compareState.data) {
           const rows = Array.isArray(compareState.data) ? compareState.data : (compareState.data.comparisons || []);
           renderCompareTableRows(rows);
         }
@@ -3492,9 +3528,93 @@ function setupEventListeners() {
     if (el.cmpSearchInput) {
       el.cmpSearchInput.addEventListener('input', (e) => {
         compareState.searchQuery = e.target.value;
-        if (compareState.data) {
+        if (compareState.activeTab === 'suggestions') {
+          renderCompareSuggestions(compareState.suggestions || []);
+        } else if (compareState.data) {
           const rows = Array.isArray(compareState.data) ? compareState.data : (compareState.data.comparisons || []);
           renderCompareTableRows(rows);
+        }
+      });
+    }
+
+    // Suggestions action delegation (Approve, Dismiss, Customize)
+    if (el.suggestionsList) {
+      el.suggestionsList.addEventListener('click', async (e) => {
+        const approveBtn = e.target.closest('[data-action="approve-suggestion"]');
+        if (approveBtn) {
+          const sId = approveBtn.dataset.id;
+          const deviceSn = approveBtn.dataset.sn;
+          const targetConcept = approveBtn.dataset.concept;
+          const customLabel = approveBtn.dataset.label;
+          const fieldKeys = JSON.parse(approveBtn.dataset.fieldKeys || '[]');
+
+          approveBtn.disabled = true;
+          approveBtn.textContent = 'Merging...';
+
+          try {
+            const res = await fetch(apiPath('api/grouping/suggestions/approve'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                device_sn: deviceSn,
+                field_keys: fieldKeys,
+                target_concept: targetConcept,
+                label: customLabel,
+                suggestion_id: sId,
+              }),
+            });
+            const data = await res.json();
+            if (data.status === 'ok') {
+              showToast(`Merged into ${customLabel || targetConcept}!`);
+              await refreshAfterGroupingChange(deviceSn);
+              await fetchGroupingSuggestions();
+              fetchAndRenderCompare();
+            } else {
+              alert(`Error approving suggestion: ${data.error || 'Unknown error'}`);
+            }
+          } catch (err) {
+            alert(`Failed approving suggestion: ${err}`);
+          }
+          return;
+        }
+
+        const dismissBtn = e.target.closest('[data-action="dismiss-suggestion"]');
+        if (dismissBtn) {
+          const sId = dismissBtn.dataset.id;
+          dismissBtn.disabled = true;
+          try {
+            const res = await fetch(apiPath('api/grouping/suggestions/dismiss'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ suggestion_id: sId }),
+            });
+            const data = await res.json();
+            if (data.status === 'ok') {
+              showToast('Suggestion dismissed');
+              await fetchGroupingSuggestions();
+              fetchAndRenderCompare();
+            }
+          } catch (err) {
+            alert(`Failed dismissing suggestion: ${err}`);
+          }
+          return;
+        }
+
+        const customizeBtn = e.target.closest('[data-action="customize-suggestion"]');
+        if (customizeBtn) {
+          const deviceSn = customizeBtn.dataset.sn;
+          const fieldKeys = JSON.parse(customizeBtn.dataset.fieldKeys || '[]');
+          const targetConcept = customizeBtn.dataset.concept;
+          const customLabel = customizeBtn.dataset.label;
+          if (fieldKeys.length > 0) {
+            openGroupingModal(deviceSn, fieldKeys[0], targetConcept);
+            if (el.radioGroupNew) {
+              el.radioGroupNew.checked = true;
+              if (el.groupingNewConceptKey) el.groupingNewConceptKey.value = targetConcept;
+              if (el.groupingNewConceptLabel) el.groupingNewConceptLabel.value = customLabel;
+            }
+          }
+          return;
         }
       });
     }
@@ -3765,6 +3885,7 @@ const compareState = {
   selectedDevice: '',
   searchQuery: '',
   data: null,
+  suggestions: [],
   hasInitializedTab: false,
 };
 
@@ -3797,10 +3918,27 @@ async function fetchAndRenderCompare() {
     if (el.cntCmpMatches) el.cntCmpMatches.textContent = matchCount;
     if (el.cntCmpAll) el.cntCmpAll.textContent = allCount;
 
-    // Default to 'discrepancies' tab if discrepancies exist on first load, otherwise 'multisource'
+    // Fetch and sync grouping suggestions
+    try {
+      const suggRes = await fetch(apiPath('api/grouping/suggestions'));
+      const suggData = await suggRes.json();
+      compareState.suggestions = suggData.suggestions || [];
+      const suggCount = suggData.count !== undefined ? suggData.count : compareState.suggestions.length;
+      if (el.cntCmpSuggestions) el.cntCmpSuggestions.textContent = suggCount;
+      if (el.cntHeaderSuggestions) el.cntHeaderSuggestions.textContent = suggCount;
+      if (el.btnOpenSuggestions) {
+        el.btnOpenSuggestions.style.display = suggCount > 0 ? 'inline-flex' : 'none';
+      }
+    } catch (e) {
+      console.warn('Failed to fetch grouping suggestions:', e);
+    }
+
+    // Default tab on first load
     if (!compareState.hasInitializedTab) {
       if (discrepantCount > 0) {
         compareState.activeTab = 'discrepancies';
+      } else if (compareState.suggestions && compareState.suggestions.length > 0) {
+        compareState.activeTab = 'suggestions';
       } else if (multiCount > 0) {
         compareState.activeTab = 'multisource';
       } else {
@@ -3820,6 +3958,11 @@ async function fetchAndRenderCompare() {
           devicesMap.set(r.device_sn, label);
         }
       });
+      (compareState.suggestions || []).forEach(s => {
+        if (s.device_sn && !devicesMap.has(s.device_sn)) {
+          devicesMap.set(s.device_sn, s.device_name || s.device_type);
+        }
+      });
       if (devicesMap.size > 0 && el.cmpDeviceSelect.options.length <= 1) {
         el.cmpDeviceSelect.innerHTML = '<option value="">All Devices</option>';
         devicesMap.forEach((label, sn) => {
@@ -3832,7 +3975,11 @@ async function fetchAndRenderCompare() {
       }
     }
 
-    renderCompareTableRows(rows);
+    if (compareState.activeTab === 'suggestions') {
+      renderCompareSuggestions(compareState.suggestions);
+    } else {
+      renderCompareTableRows(rows);
+    }
 
     // Render Unrecognized / Unmapped Protobuf Telemetry
     if (el.unrecCompareSection && el.unrecTableBody) {
@@ -3874,6 +4021,7 @@ async function fetchAndRenderCompare() {
 function updateCompareTabActiveStyles() {
   const tabs = [
     { btn: el.tabCmpDiscrepancies, name: 'discrepancies' },
+    { btn: el.tabCmpSuggestions, name: 'suggestions' },
     { btn: el.tabCmpMulti, name: 'multisource' },
     { btn: el.tabCmpMatches, name: 'matches' },
     { btn: el.tabCmpAll, name: 'all' },
@@ -3884,6 +4032,140 @@ function updateCompareTabActiveStyles() {
       else t.btn.classList.remove('active');
     }
   });
+
+  if (compareState.activeTab === 'suggestions') {
+    if (el.compareTableContainer) el.compareTableContainer.style.display = 'none';
+    if (el.compareSuggestionsContainer) el.compareSuggestionsContainer.style.display = 'block';
+  } else {
+    if (el.compareTableContainer) el.compareTableContainer.style.display = 'block';
+    if (el.compareSuggestionsContainer) el.compareSuggestionsContainer.style.display = 'none';
+  }
+}
+
+function renderCompareSuggestions(suggestions) {
+  if (!el.suggestionsList) return;
+  const devFilter = (compareState.selectedDevice || '').trim().toUpperCase();
+  const query = (compareState.searchQuery || '').trim().toLowerCase();
+
+  const filtered = (suggestions || []).filter(s => {
+    if (devFilter) {
+      const sSn = (s.device_sn || '').toUpperCase();
+      const sDev = (s.device_type || '').toUpperCase();
+      if (sSn !== devFilter && sDev !== devFilter) return false;
+    }
+    if (query) {
+      const matchLabel = (s.suggested_label || '').toLowerCase().includes(query);
+      const matchKey = (s.suggested_concept_key || '').toLowerCase().includes(query);
+      const matchDev = (s.device_name || s.device_type || '').toLowerCase().includes(query);
+      const matchSrc = (s.sources || []).some(src =>
+        (src.name || '').toLowerCase().includes(query) ||
+        (src.field_key || '').toLowerCase().includes(query) ||
+        (src.label || '').toLowerCase().includes(query)
+      );
+      if (!matchLabel && !matchKey && !matchDev && !matchSrc) return false;
+    }
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    el.suggestionsList.innerHTML = `
+      <div class="empty-state" style="padding: 30px; text-align: center;">
+        <span style="font-size: 28px; display: block; margin-bottom: 8px;">✨</span>
+        <strong>No Grouping Suggestions Found</strong>
+        <p class="text-muted" style="margin-top: 4px; font-size: 13px;">
+          All compatible telemetry streams with high correlation are already grouped or dismissed.
+        </p>
+      </div>
+    `;
+    return;
+  }
+
+  el.suggestionsList.innerHTML = filtered.map(s => {
+    const confClass = s.confidence_label === 'HIGH' ? 'high' : 'medium';
+    const confPct = Math.round((s.confidence || 0) * 100);
+
+    const sourcesHtml = (s.sources || []).map(src => {
+      let srcClass = 'src-sunspec';
+      if (src.source_type === 'MQTT') srcClass = 'src-mqtt';
+      else if (src.model_id && src.model_id >= 64200) srcClass = 'src-vendor';
+
+      const valDisplay = src.value !== null && src.value !== undefined
+        ? `${formatFieldValue(src.value)} ${escapeHtml(src.units || s.units || '')}`
+        : '<span class="text-muted">--</span>';
+
+      return `
+        <div class="compare-source-card">
+          <div class="compare-source-left">
+            <span class="source-chip ${srcClass}">${escapeHtml(src.source_id || src.source_type)}</span>
+            <div class="compare-source-meta">
+              <span class="compare-source-name">${escapeHtml(src.label || src.name)}</span>
+              <span class="compare-source-key">${escapeHtml(src.field_key)}</span>
+            </div>
+          </div>
+          <div class="compare-source-right">
+            <span class="compare-source-value">${valDisplay}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    const reasonsHtml = (s.reasons || []).map(r => `
+      <div class="suggestion-reason-item">
+        <span>✔</span>
+        <span>${escapeHtml(r)}</span>
+      </div>
+    `).join('');
+
+    const fieldKeysJson = escapeHtml(JSON.stringify((s.sources || []).map(src => src.field_key)));
+
+    return `
+      <div class="suggestion-card" data-suggestion-id="${escapeHtml(s.id)}">
+        <div class="suggestion-card-header">
+          <div class="suggestion-title-group">
+            <span class="compare-device-pill">${escapeHtml(s.device_name || s.device_type)}</span>
+            <span class="suggestion-concept-badge">💡 ${escapeHtml(s.suggested_label)} (${escapeHtml(s.suggested_concept_key)})</span>
+            <span class="suggestion-confidence-badge ${confClass}">${confPct}% ${escapeHtml(s.confidence_label)} Confidence</span>
+          </div>
+          <div class="suggestion-actions">
+            <button class="btn-approve-suggestion"
+                    data-action="approve-suggestion"
+                    data-id="${escapeHtml(s.id)}"
+                    data-sn="${escapeHtml(s.device_sn)}"
+                    data-concept="${escapeHtml(s.suggested_concept_key)}"
+                    data-label="${escapeHtml(s.suggested_label)}"
+                    data-field-keys="${fieldKeysJson}"
+                    title="Merge these fields into a single unified telemetry point">
+              ✅ Approve & Merge
+            </button>
+            <button class="btn-customize-suggestion"
+                    data-action="customize-suggestion"
+                    data-id="${escapeHtml(s.id)}"
+                    data-sn="${escapeHtml(s.device_sn)}"
+                    data-concept="${escapeHtml(s.suggested_concept_key)}"
+                    data-label="${escapeHtml(s.suggested_label)}"
+                    data-field-keys="${fieldKeysJson}"
+                    title="Open grouping modal to customize concept key or label before saving">
+              ✏️ Customize
+            </button>
+            <button class="btn-dismiss-suggestion"
+                    data-action="dismiss-suggestion"
+                    data-id="${escapeHtml(s.id)}"
+                    title="Dismiss this suggestion">
+              ✕ Dismiss
+            </button>
+          </div>
+        </div>
+
+        <div class="compare-sources-list">
+          ${sourcesHtml}
+        </div>
+
+        <div class="suggestion-reasons-list">
+          ${reasonsHtml}
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 function renderCompareTableRows(rows) {
@@ -4091,9 +4373,15 @@ function renderCompareTableRows(rows) {
   });
 }
 
-function openCompareModal() {
+function openCompareModal(initialTab = null) {
   el.compareModal.classList.add('open');
-  compareState.hasInitializedTab = false;
+  if (initialTab) {
+    compareState.activeTab = initialTab;
+    compareState.hasInitializedTab = true;
+    updateCompareTabActiveStyles();
+  } else {
+    compareState.hasInitializedTab = false;
+  }
   fetchAndRenderCompare();
   if (compareTimer) clearInterval(compareTimer);
   compareTimer = setInterval(fetchAndRenderCompare, 2000);
