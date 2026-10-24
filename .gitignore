@@ -8,6 +8,7 @@ config/devices.yaml
 config/ha_config.yaml
 .ha_published_topics.json
 config/.ha_published_topics.json
+known_hosts
 *.tmp
 model_dump/
 model_dump_2/
