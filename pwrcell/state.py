@@ -15,27 +15,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
-# Standard SunSpec unimplemented / null sentinel register values
-SUNSPEC_SENTINELS = {
-    0x8000, -32768,           # int16 / sunssf unimpl
-    0x7FFF, 32767,            # int16 invalid / overflow
-    0x7FFE, 32766,            # int16 out of bounds
-    0xFFFF, 65535,            # uint16 unimpl
-    0xFFFE, 65534,            # uint16 invalid / overflow
-    0x80000000, -2147483648,  # int32 unimpl
-    0x7FFFFFFF, 2147483647,   # int32 invalid / overflow
-    0x7FFFFFFE, 2147483646,   # int32 out of bounds
-    0xFFFFFFFF, 4294967295,   # uint32 unimpl
-    0xFFFFFFFE, 4294967294,   # uint32 invalid / overflow
-}
-
 from .catalog import (
     HomeAssistantHint,
     ModelCatalog,
+    SUNSPEC_SENTINELS_BY_TYPE,
     SunspecPointDef,
     get_catalog,
     get_suggested_precision,
     is_scale_factor_point,
+    is_sunspec_sentinel,
 )
 from .mapping import MappingRegistry, apply_transform
 from .mqtt import LiveTelemetrySnapshot
@@ -49,20 +37,15 @@ def validate_field_value(
     device_class: Optional[str] = None,
     name: Optional[str] = None,
 ) -> Optional[Any]:
-    """Validate a parsed/scaled field value against SunSpec sentinels and physical plausibility bounds.
+    """Validate a parsed/scaled field value against physical plausibility bounds.
 
-    Returns None if the value is invalid, sentinel, or physically implausible for PWRcell systems.
+    Returns None if the value is invalid or physically implausible for PWRcell systems.
     """
     if value is None:
         return None
 
     if isinstance(value, (int, float)):
         if math.isnan(value) or math.isinf(value):
-            return None
-
-        # Check sentinel integer values
-        int_val = int(value) if (-1e15 < value < 1e15) else None
-        if int_val is not None and int_val in SUNSPEC_SENTINELS:
             return None
 
         # Check astronomical scale/overflow
@@ -372,8 +355,8 @@ class StateField:
             "uint32": 0xFFFFFFFF,
             "int32": -0x80000000,
             "sunssf": -0x8000,
-            "acc16": 0x0000,
-            "acc32": 0x00000000,
+            "acc16": 0xFFFF,
+            "acc32": 0xFFFFFFFF,
         }
 
         p_type = self.point_type or "uint16"
@@ -1798,7 +1781,7 @@ class StateStore:
                 explicit=bool(pt_d and pt_d.is_scale_factor),
             )
             if is_sf_point and isinstance(val, (int, float)):
-                if val not in SUNSPEC_SENTINELS and -10 <= val <= 10:
+                if not is_sunspec_sentinel(val, "sunssf") and -10 <= val <= 10:
                     int_val = int(val)
                     scale_factors[pt_name] = int_val
                     scale_factors[pt_name.lower()] = int_val
@@ -1812,17 +1795,18 @@ class StateStore:
             desc = pt_def.desc if pt_def else ""
             units = pt_def.units if pt_def else None
             access = pt_def.access if pt_def else "R"
+            pt_type = pt_def.type if pt_def else None
 
             # Determine final scaled value:
-            # Case 1: Sentinel value or None represents an unimplemented register
-            if raw_val is None or (isinstance(raw_val, (int, float)) and raw_val in SUNSPEC_SENTINELS):
+            # Case 1: Sentinel value or None represents an unimplemented register (checked at raw level by point type)
+            if raw_val is None or is_sunspec_sentinel(raw_val, pt_type):
                 raw_val = None
                 scaled_val = None
             # Case 2: Pre-computed value provided (e.g. from safe_point_cvalue or MockPointValue.scaled_value)
             elif computed_values is not None and pt_name in computed_values:
                 cand = computed_values[pt_name]
                 if cand is not None and isinstance(cand, (int, float)):
-                    if math.isnan(cand) or math.isinf(cand) or abs(cand) > 1e12 or int(cand) in SUNSPEC_SENTINELS:
+                    if math.isnan(cand) or math.isinf(cand) or abs(cand) > 1e12:
                         scaled_val = None
                         raw_val = None
                     else:
@@ -1834,7 +1818,9 @@ class StateStore:
             # Case 3: Defined scale factor from SunSpec model definition (e.g. AMax_SF, VT_sf)
             elif isinstance(raw_val, (int, float)) and pt_def and pt_def.sf:
                 sf_name = pt_def.sf
-                sf = scale_factors.get(sf_name) or scale_factors.get(sf_name.lower()) or scale_factors.get(sf_name.upper())
+                sf = scale_factors.get(sf_name) if sf_name in scale_factors else (
+                    scale_factors.get(sf_name.lower()) if sf_name.lower() in scale_factors else scale_factors.get(sf_name.upper())
+                )
                 if sf is not None and -10 <= sf <= 10:
                     scaled_val = round(raw_val * (10 ** sf), abs(sf) if sf < 0 else 0)
                 else:
@@ -1851,7 +1837,7 @@ class StateStore:
 
             # If enum, lookup against enum symbols:
             # scaled_val becomes the enum symbol name, while raw_val remains the integer register value
-            is_sentinel = isinstance(raw_val, (int, float)) and raw_val in SUNSPEC_SENTINELS
+            is_sentinel = raw_val is None or is_sunspec_sentinel(raw_val, pt_type)
             if pt_def and pt_def.is_enum and not is_sentinel:
                 sym = None
                 if isinstance(raw_val, int):

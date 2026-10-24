@@ -21,7 +21,7 @@ import time
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
-from .state import SUNSPEC_SENTINELS
+from .catalog import is_sunspec_sentinel
 
 if TYPE_CHECKING:
     from .client import PwrcellClient
@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 def safe_point_cvalue(point: Any) -> Any:
     """Safely obtain computed point value from SunSpec point, preventing math range errors and sentinel corruption."""
     try:
+        pt_type = getattr(point, "ptype", None) or getattr(getattr(point, "point_type", None), "type", None)
+        raw_val = getattr(point, "value", None)
+        if raw_val is not None and is_sunspec_sentinel(raw_val, pt_type):
+            return None
+
         # Check scale factor beforehand if point requires one
         if getattr(point, "sf_required", False):
             sf_name = getattr(point, "sf", None)
@@ -44,16 +49,16 @@ def safe_point_cvalue(point: Any) -> Any:
                     sf_pt = point.model.points.get(sf_name)
             if sf_pt is not None:
                 sf_val = getattr(sf_pt, "value", None)
-                if sf_val is None or sf_val in SUNSPEC_SENTINELS or not (-10 <= sf_val <= 10):
+                if sf_val is None or is_sunspec_sentinel(sf_val, "sunssf") or not (-10 <= sf_val <= 10):
                     return None
             elif getattr(point, "sf_value", None) is not None:
                 sf_v = point.sf_value
-                if sf_v in SUNSPEC_SENTINELS or not (-10 <= sf_v <= 10):
+                if is_sunspec_sentinel(sf_v, "sunssf") or not (-10 <= sf_v <= 10):
                     return None
 
         val = point.cvalue
         if val is not None and isinstance(val, (int, float)):
-            if math.isnan(val) or math.isinf(val) or abs(val) > 1e12 or int(val) in SUNSPEC_SENTINELS:
+            if math.isnan(val) or math.isinf(val) or abs(val) > 1e12:
                 return None
         return val
     except (OverflowError, ValueError, Exception):

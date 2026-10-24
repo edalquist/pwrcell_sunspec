@@ -17,6 +17,42 @@ import zipfile
 
 logger = logging.getLogger(__name__)
 
+# Canonical SunSpec unimplemented / null sentinel register values keyed by point type
+SUNSPEC_SENTINELS_BY_TYPE: Dict[str, set[int]] = {
+    "int16": {-0x8000, 0x8000},
+    "sunssf": {-0x8000, 0x8000},
+    "uint16": {0xFFFF},
+    "acc16": {0xFFFF},
+    "count": {0xFFFF},
+    "enum16": {0xFFFF},
+    "bitfield16": {0xFFFF},
+    "int32": {-0x80000000, 0x80000000},
+    "uint32": {0xFFFFFFFF},
+    "acc32": {0xFFFFFFFF},
+    "enum32": {0xFFFFFFFF},
+    "bitfield32": {0xFFFFFFFF},
+    "int64": {-0x8000000000000000, 0x8000000000000000},
+    "uint64": {0xFFFFFFFFFFFFFFFF},
+    "acc64": {0xFFFFFFFFFFFFFFFF},
+}
+
+
+def is_sunspec_sentinel(raw_value: Any, point_type: Optional[str] = None) -> bool:
+    """Return True if raw_value is the SunSpec unimplemented sentinel for point_type."""
+    if raw_value is None or isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+        return False
+    if isinstance(raw_value, float) and (
+        not raw_value.is_integer() or raw_value != raw_value or abs(raw_value) == float("inf")
+    ):
+        return False
+    int_val = int(raw_value)
+    if point_type:
+        pt = point_type.strip().lower()
+        if pt in SUNSPEC_SENTINELS_BY_TYPE:
+            return int_val in SUNSPEC_SENTINELS_BY_TYPE[pt]
+    return int_val in {-0x8000, 0x8000, 0xFFFF, -0x80000000, 0x80000000, 0xFFFFFFFF}
+
+
 
 def is_scale_factor_point(
     name: Optional[str] = None,
@@ -273,8 +309,8 @@ class SunspecPointDef:
             "uint32": 0xFFFFFFFF,
             "int32": -0x80000000,
             "sunssf": -0x8000,
-            "acc16": 0x0000,
-            "acc32": 0x00000000,
+            "acc16": 0xFFFF,
+            "acc32": 0xFFFFFFFF,
         }
 
         # 1. Enums

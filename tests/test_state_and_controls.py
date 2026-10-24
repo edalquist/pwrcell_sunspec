@@ -655,6 +655,43 @@ class TestStateAndControls(unittest.TestCase):
         self.assertEqual(socmax_field.value, 80.0)
         self.assertEqual(socmax_field.raw_value, 800)
 
+    def test_type_aware_sentinels_do_not_drop_valid_uint32_or_scaled_values(self):
+        """A uint32/acc32 register at 32768 or 65535, or a scaled float like 32767.4, must NOT be dropped as a 16-bit sentinel."""
+        from pwrcell.bridge import format_state_value
+        from pwrcell.state import is_sunspec_sentinel
+
+        # 1. Type-aware sentinel helper
+        self.assertTrue(is_sunspec_sentinel(0x8000, "int16"))
+        self.assertTrue(is_sunspec_sentinel(-32768, "int16"))
+        self.assertTrue(is_sunspec_sentinel(0xFFFF, "uint16"))
+        self.assertFalse(is_sunspec_sentinel(0x7FFF, "int16"))  # 32767 is max int16, not sentinel
+        self.assertFalse(is_sunspec_sentinel(0xFFFF, "uint32"))
+        self.assertFalse(is_sunspec_sentinel(0x8000, "acc32"))
+        self.assertTrue(is_sunspec_sentinel(0xFFFFFFFF, "acc32"))
+        self.assertTrue(is_sunspec_sentinel(0x80000000, "int32"))
+
+        # 2. Model 64209 WhIn is uint32/acc32: raw value 65535 or 32768 is a valid cumulative Wh reading
+        self.state.update_from_modbus_points(
+            serial_number=self.bat.serial_number,
+            model_id=64209,
+            raw_values={"WhIn": 65535, "WhOut": 32768},
+            computed_values={"WhIn": 65535, "WhOut": 32768},
+        )
+        self.assertEqual(self.bat.fields["battery.battery_status.WhIn"].value, 65535)
+        self.assertEqual(self.bat.fields["battery.battery_status.WhOut"].value, 32768)
+
+        # 3. Post-scaling values that happen to have int(val) == 32767 or 65535 are NOT dropped
+        f_power = self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="W",
+            value=32767.4,
+            raw_value=327674,
+            units="W",
+        )
+        self.assertEqual(f_power.value, 32767.4)
+        self.assertEqual(format_state_value(32767.4), "32767.4")
+        self.assertEqual(format_state_value(65535), "65535")
+
 
 if __name__ == "__main__":
     unittest.main()
