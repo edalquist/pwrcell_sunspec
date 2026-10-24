@@ -115,6 +115,31 @@ class OptimizationResult:
         }
 
 
+def _load_optimizer_preferences() -> Dict[int, float]:
+    """Load default tie-breaking model weights from optimizer_preferences.yaml."""
+    from pathlib import Path
+    try:
+        import yaml
+        cfg_p = Path(__file__).resolve().parent / "data" / "optimizer_preferences.yaml"
+        if cfg_p.exists():
+            with open(cfg_p, "r", encoding="utf-8") as f:
+                d = yaml.safe_load(f) or {}
+                return {int(k): float(v) for k, v in d.get("favored_models", {}).items()}
+    except Exception:
+        pass
+    return {64208: 0.8, 64252: 0.8, 404: 0.8, 64207: 0.85, 102: 0.9, 802: 0.9}
+
+
+_DEFAULT_FAVORED_MODELS: Optional[Dict[int, float]] = None
+
+
+def get_default_favored_models() -> Dict[int, float]:
+    global _DEFAULT_FAVORED_MODELS
+    if _DEFAULT_FAVORED_MODELS is None:
+        _DEFAULT_FAVORED_MODELS = _load_optimizer_preferences()
+    return _DEFAULT_FAVORED_MODELS
+
+
 def solve_minimal_model_set(
     items: Dict[str, Set[Union[int, str]]],
     pinned_sources: Optional[Dict[str, Union[int, str]]] = None,
@@ -143,7 +168,7 @@ def solve_minimal_model_set(
     weights = model_preferences or {}
 
     # Default weights prioritize rich models like Generac status models
-    default_favored = {64208: 0.8, 64252: 0.8, 404: 0.8, 64207: 0.85, 102: 0.9, 802: 0.9}
+    default_favored = get_default_favored_models()
 
     def get_weight(m: int) -> float:
         return weights.get(m, default_favored.get(m, 1.0))
