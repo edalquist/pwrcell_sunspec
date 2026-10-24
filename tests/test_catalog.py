@@ -101,6 +101,31 @@ class TestModelCatalog(unittest.TestCase):
         self.assertEqual(get_suggested_precision(None, device_class="frequency"), 2)
         self.assertIsNone(get_suggested_precision(None, None))
 
+    def test_sunspec_model_constants_match_catalog(self):
+        from pwrcell.catalog import (
+            MODEL_BATTERY_BASE,
+            MODEL_BATTERY_STATUS,
+            MODEL_BATTERY_WARRANTY,
+            MODEL_COMMON,
+            MODEL_INVERTER_SPLIT_PHASE,
+            MODEL_INVERTER_STATUS,
+            MODEL_PVLINK_STATUS,
+            MODEL_REBUS_DIR,
+            MODEL_REBUS_STATUS,
+            MODEL_STRING_COMBINER,
+        )
+
+        self.assertEqual(MODEL_COMMON, 1)
+        self.assertEqual(MODEL_INVERTER_SPLIT_PHASE, 102)
+        self.assertEqual(MODEL_STRING_COMBINER, 404)
+        self.assertEqual(MODEL_BATTERY_BASE, 802)
+        self.assertEqual(MODEL_REBUS_DIR, 64200)
+        self.assertEqual(MODEL_REBUS_STATUS, 64207)
+        self.assertEqual(MODEL_INVERTER_STATUS, 64208)
+        self.assertEqual(MODEL_BATTERY_STATUS, 64209)
+        self.assertEqual(MODEL_PVLINK_STATUS, 64251)
+        self.assertEqual(MODEL_BATTERY_WARRANTY, 64252)
+
 
 if __name__ == "__main__":
     unittest.main()

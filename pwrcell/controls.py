@@ -10,7 +10,12 @@ import logging
 import time
 from typing import Any, Dict, Optional, Union
 
-from .catalog import ModelCatalog, get_catalog
+from .catalog import (
+    MODEL_INVERTER_STATUS,
+    MODEL_REBUS_DIR,
+    ModelCatalog,
+    get_catalog,
+)
 from .modbus import SerializedModbusClient
 from .state import StateStore
 
@@ -57,7 +62,12 @@ class ControlDispatcher:
 
     def set_system_mode(self, mode: Union[str, int]) -> int:
         """Change system operating mode (e.g., 'CLEAN_BACKUP', 'SELF_SUPPLY', 'GRID_TIE')."""
-        point_def = self.catalog.get_point(64200, "SysMd") or self.catalog.get_point(64208, "SysMd")
+        rebus_dir_model = self.catalog.get_model_by_name("REbus_dir") if self.catalog else None
+        inv_status_model = self.catalog.get_model_by_name("inverter_status") if self.catalog else None
+        rebus_dir_id = rebus_dir_model.model_id if rebus_dir_model else MODEL_REBUS_DIR
+        inv_status_id = inv_status_model.model_id if inv_status_model else MODEL_INVERTER_STATUS
+
+        point_def = self.catalog.get_point(rebus_dir_id, "SysMd") or self.catalog.get_point(inv_status_id, "SysMd")
         int_mode: Optional[int] = None
         mode_name: Optional[str] = None
 
@@ -98,10 +108,10 @@ class ControlDispatcher:
             # Fall back to inverter
             inv = self.state_store.get_inverter()
             target_device = inv
-            model_id = 64208
+            model_id = inv_status_id
         else:
             target_device = beacon
-            model_id = 64200
+            model_id = rebus_dir_id
 
         if not target_device or target_device.slave_id is None:
             raise RuntimeError("No target device (beacon or inverter) discovered for system mode control")
@@ -131,8 +141,8 @@ class ControlDispatcher:
                 else:
                     mode_name = f"MODE_{int_mode}"
 
-        # Update SysMd on target device under both model_64200 and REbus_dir (if model 64200)
-        target_subgroups = ["model_64200", "REbus_dir"] if model_id == 64200 else [f"model_{model_id}"]
+        # Update SysMd on target device under both model_64200 and REbus_dir (if REbus_dir model)
+        target_subgroups = [f"model_{rebus_dir_id}", "REbus_dir"] if model_id == rebus_dir_id else [f"model_{model_id}"]
         for sub_g in target_subgroups:
             self.state_store.set_field(
                 device_sn=target_device.serial_number,
