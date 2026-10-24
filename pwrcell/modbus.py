@@ -262,7 +262,14 @@ class SerializedModbusClient:
         self.worker.stop()
 
     def _get_shared_client(self) -> mb.ModbusClientTCP:
-        current_port = self.tunnel.modbus_port if (self.tunnel and getattr(self.tunnel, "modbus_port", None)) else self.port
+        current_port = self.port
+        if self.tunnel:
+            if hasattr(self.tunnel, "get_config"):
+                cfg = self.tunnel.get_config()
+                if cfg and getattr(cfg, "modbus_port", None):
+                    current_port = cfg.modbus_port
+            elif getattr(self.tunnel, "modbus_port", None):
+                current_port = self.tunnel.modbus_port
         if self._shared_client is not None and self._shared_client.ipport != current_port:
             logger.info("Modbus port updated from tunnel: %s -> %s", self._shared_client.ipport, current_port)
             try:
