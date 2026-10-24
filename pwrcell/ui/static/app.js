@@ -4455,7 +4455,6 @@ function renderCompareSuggestions(suggestions) {
     `;
   }).join('');
 }
-}
 
 function renderCompareTableRows(rows) {
   if (!el.compareTableBody) return;
