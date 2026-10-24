@@ -1,10 +1,10 @@
 """Generac PWRcell SunSpec & MQTT Integration Library (v3)."""
 
+__version__ = "3.0.11"
+
 from .client import PwrcellClient, create_client
 from .config import AppConfig, DeviceConfig
 from .state import FieldSource, StateField, StateStore, UnifiedDevice
-
-__version__ = "3.0.11"
 
 __all__ = [
     "PwrcellClient",

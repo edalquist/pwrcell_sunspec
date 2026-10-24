@@ -65,6 +65,17 @@ class TestClientLifecycle(unittest.TestCase):
                 with self.assertRaises(Exception):
                     AppConfig.read()
 
+    def test_version_consistency(self):
+        """Package __version__, HA ORIGIN_INFO['sw_version'], and add-on config.yaml version must match."""
+        from pathlib import Path
+        import yaml
+        import pwrcell
+        from pwrcell.ha import ORIGIN_INFO
+
+        self.assertEqual(ORIGIN_INFO["sw_version"], pwrcell.__version__)
+        addon_cfg = yaml.safe_load((Path(__file__).resolve().parent.parent / "config.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(addon_cfg.get("version"), pwrcell.__version__)
+
 
 if __name__ == "__main__":
     unittest.main()

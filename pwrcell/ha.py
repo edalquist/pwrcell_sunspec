@@ -20,6 +20,7 @@ try:
 except ImportError:
     yaml = None
 
+from . import __version__
 from .state import FieldSource, StateField, StateStore, UnifiedDevice
 
 logger = logging.getLogger(__name__)
@@ -30,7 +31,7 @@ DEFAULT_HA_DEFAULT_CONFIG_FILE = "ha_default_config.yaml"
 # Home Assistant Integration Provenance metadata (HA 2024+)
 ORIGIN_INFO: Dict[str, str] = {
     "name": "PWRcell SunSpec",
-    "sw_version": "3.0.10",
+    "sw_version": __version__,
     "support_url": "https://github.com/edalquist/pwrcell_sunspec",
 }
 
