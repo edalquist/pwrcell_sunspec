@@ -208,6 +208,66 @@ class TestPwrCellTunnel(unittest.TestCase):
             finally:
                 client.stop()
 
+    def test_generate_config_from_options_handles_special_chars_and_sets_0600(self):
+        """generate_config_from_options must safely serialize passwords with quotes, '$', '#', and newlines via yaml.safe_dump with 0600 permissions."""
+        import json
+        import os
+        import stat
+        import yaml
+        from pwrcell.setup_key import generate_config_from_options
+
+        with tempfile.TemporaryDirectory() as tmp:
+            opts_path = Path(tmp) / "options.json"
+            cfg_path = Path(tmp) / "pwrcell.yaml"
+            tricky_beacon_pass = 'p"a$s#word\nmalicious_key: true\n\\end'
+            tricky_mqtt_pass = 'm"q$t#t\ninjected: 123'
+            tricky_passphrase = 'k"e$y#\npassphrase'
+            opts = {
+                "beacon_host": "192.168.0.73",
+                "beacon_port": 22,
+                "beacon_user": "root",
+                "beacon_password": tricky_beacon_pass,
+                "ssh_key_passphrase": tricky_passphrase,
+                "mqtt_host": "core-mosquitto",
+                "mqtt_port": 1883,
+                "mqtt_username": "ha_user",
+                "mqtt_password": tricky_mqtt_pass,
+                "mqtt_client_name": "pwrcell-ha",
+                "poll_rate": 15,
+                "config_poll_interval": 60,
+                "slow_poll_interval": 300,
+                "log_level": "DEBUG",
+            }
+            opts_path.write_text(json.dumps(opts), encoding="utf-8")
+
+            generate_config_from_options(str(opts_path), str(cfg_path))
+
+            self.assertTrue(cfg_path.exists())
+            self.assertEqual(stat.S_IMODE(cfg_path.stat().st_mode), 0o600)
+
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                raw_yaml = yaml.safe_load(f)
+            self.assertNotIn("malicious_key", raw_yaml)
+            self.assertNotIn("injected", raw_yaml)
+            self.assertEqual(raw_yaml["pwrcell"]["ssh_tunnel"]["password"], tricky_beacon_pass)
+            self.assertEqual(raw_yaml["pwrcell"]["ssh_tunnel"]["key_passphrase"], tricky_passphrase)
+            self.assertEqual(raw_yaml["mqtt"]["password"], tricky_mqtt_pass)
+
+            # Also verify AppConfig.read() loads the generated file intact
+            old_env = os.environ.get("PWRCELL_CONFIG")
+            os.environ["PWRCELL_CONFIG"] = str(cfg_path)
+            try:
+                loaded_cfg = AppConfig.read()
+                self.assertEqual(loaded_cfg.pwrcell.ssh_tunnel.password, tricky_beacon_pass)
+                self.assertEqual(loaded_cfg.pwrcell.ssh_tunnel.key_passphrase, tricky_passphrase)
+                self.assertEqual(loaded_cfg.mqtt.password, tricky_mqtt_pass)
+                self.assertEqual(loaded_cfg.poll_rate, 15)
+            finally:
+                if old_env is None:
+                    os.environ.pop("PWRCELL_CONFIG", None)
+                else:
+                    os.environ["PWRCELL_CONFIG"] = old_env
+
 
 if __name__ == "__main__":
     unittest.main()
