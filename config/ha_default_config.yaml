@@ -64,3 +64,16 @@ selected_fields:
 - pv_link.REbus_status.St
 - pv_link.REbus_status.T
 - pv_link.REbus_status.V
+
+controllable_fields:
+- system_mode
+- SysMd
+- SoCRsvMin
+- SoCRsvMax
+- SoCMax
+- SoCMin
+- WChaRteMax
+- WDisChaRteMax
+
+excluded_select_options:
+- SAFETY_SHUTDOWN
