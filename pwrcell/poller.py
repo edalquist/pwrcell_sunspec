@@ -698,8 +698,8 @@ class TieredModbusPoller:
                     except Exception as e:
                         logger.error("Error during %s tier poll: %s", tier_key, e)
 
-            bridge = getattr(self.client, "bridge", None)
-            if bridge and hasattr(bridge, "check_availability"):
+            bridge = self.client.bridge
+            if bridge:
                 try:
                     bridge.check_availability()
                 except Exception as e:

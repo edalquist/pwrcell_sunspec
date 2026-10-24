@@ -348,6 +348,11 @@ class StateField:
     last_updated: float = field(default_factory=time.time)
 
     @property
+    def is_compound(self) -> bool:
+        """Raw fields are never compound views (CompoundFieldView.is_compound is True)."""
+        return False
+
+    @property
     def is_writable(self) -> bool:
         return self.access == "RW"
 

@@ -147,7 +147,7 @@ class HomeAssistantBridge:
                 logger.info("No ha_config.yaml found, using recommended default entities")
                 self.selected_field_keys = get_recommended_field_keys(self.client.state)
             self._selected_set = set(self.selected_field_keys)
-            if hasattr(self.client, "poller") and self.client.poller:
+            if self.client.poller:
                 self.client.poller.sync_ha_selected_fields(self.selected_field_keys)
 
             if not self.mqtt_config or not self.mqtt_config.host:
@@ -229,7 +229,7 @@ class HomeAssistantBridge:
         raw_keys = load_ha_config()
         self.selected_field_keys = qualify_legacy_ha_config(raw_keys, self.client.state)
         self._selected_set = set(self.selected_field_keys)
-        if hasattr(self.client, "poller") and self.client.poller:
+        if self.client.poller:
             self.client.poller.sync_ha_selected_fields(self.selected_field_keys)
         self.publish_discovery()
 

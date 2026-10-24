@@ -56,7 +56,7 @@ def is_ha_writable_allowed(field: Any) -> bool:
     """Return True if the field is both writable and in the Home Assistant writable allow-list."""
     if not getattr(field, "is_writable", False):
         return False
-    if getattr(field, "is_compound", False):
+    if field.is_compound:
         mapping_id = getattr(field, "mapping_id", None) or getattr(field, "name", "")
         return mapping_id in HA_WRITABLE_ALLOWLIST
     pt_name = getattr(field, "name", "") or str(getattr(field, "key", "")).split(".")[-1]
@@ -337,7 +337,7 @@ def generate_discovery_payload(
     ha_prefix: str = "homeassistant",
 ) -> Dict[str, Any]:
     """Generate modern Home Assistant MQTT Discovery configuration dictionary and topics."""
-    is_compound = getattr(field, "is_compound", False)
+    is_compound = field.is_compound
     is_writable = is_ha_writable_allowed(field)
 
     if is_compound:
