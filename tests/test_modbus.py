@@ -139,11 +139,12 @@ class TestModbusScanRange(unittest.TestCase):
 
         mgr.scan_device = MagicMock(side_effect=mock_scan_device)
 
-        discovered = mgr.scan_range(start_id=1, end_id=10, stop_on_duplicate_serial=True)
+        with self.assertLogs("pwrcell.modbus", level="WARNING") as cm:
+            discovered = mgr.scan_range(start_id=1, end_id=10, stop_on_duplicate_serial=True)
 
         # None, "None", and "" must NOT trigger duplicate stop.
         # Slave 4 is discovered.
-        # Slave 5 has duplicate "PWR-1001", which triggers stop.
+        # Slave 5 has duplicate "PWR-1001", which triggers warning and stop.
         # Discovered should contain slaves 1, 2, 3, 4.
         self.assertIn(1, discovered)
         self.assertIn(2, discovered)
@@ -151,6 +152,7 @@ class TestModbusScanRange(unittest.TestCase):
         self.assertIn(4, discovered)
         self.assertNotIn(5, discovered)
         self.assertEqual(len(discovered), 4)
+        self.assertTrue(any("duplicate serial" in line.lower() for line in cm.output))
 
     def test_write_point_value_warns_on_readback_mismatch(self):
         from unittest.mock import MagicMock

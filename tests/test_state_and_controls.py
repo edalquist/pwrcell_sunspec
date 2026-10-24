@@ -700,6 +700,14 @@ class TestStateAndControls(unittest.TestCase):
         self.assertEqual(format_state_value(32767.4), "32767.4")
         self.assertEqual(format_state_value(65535), "65535")
 
+    def test_register_device_blank_serials_do_not_collide(self):
+        """Two devices with empty/blank serial numbers on different slave IDs must be assigned distinct synthetic serials."""
+        d1 = self.state.register_device(serial_number="", slave_id=11, device_type="pv_link", model_name="PV Link")
+        d2 = self.state.register_device(serial_number="0", slave_id=12, device_type="pv_link", model_name="PV Link")
+        self.assertNotEqual(d1.serial_number, d2.serial_number)
+        self.assertIn(d1.serial_number, self.state.devices)
+        self.assertIn(d2.serial_number, self.state.devices)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -404,7 +404,13 @@ class SerializedModbusClient:
                 ids = found_serials.setdefault(sn, [])
                 ids.append(slave_id)
                 if len(ids) > 1 and stop_on_duplicate_serial:
-                    logger.info("Found duplicate serial %s at ID %d, stopping scan", sn, slave_id)
+                    logger.warning(
+                        "Found duplicate serial %s at slave ID %d (already seen at %s); stopping scan (discovered IDs: %s)",
+                        sn,
+                        slave_id,
+                        ids[:-1],
+                        sorted(list(discovered.keys())),
+                    )
                     break
 
             discovered[slave_id] = dev

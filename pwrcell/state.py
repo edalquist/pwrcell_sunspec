@@ -683,6 +683,11 @@ class StateStore:
     ) -> UnifiedDevice:
         """Register or retrieve a unified device."""
         with self._lock:
+            clean_sn = (serial_number or "").strip()
+            if not clean_sn or clean_sn in ("0", "None"):
+                clean_sn = f"SLAVE_{slave_id}" if slave_id is not None else f"UNKNOWN_{len(self.devices) + 1}"
+            serial_number = clean_sn
+
             if serial_number in self.devices:
                 dev = self.devices[serial_number]
                 if slave_id is not None:
