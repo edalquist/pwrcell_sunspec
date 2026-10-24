@@ -41,6 +41,9 @@ from .tunnel import TunnelConfig, pwrcell_tunnel
 
 logger = logging.getLogger(__name__)
 
+# Simulated telemetry tick; the generator advance and the loop wait must stay in lockstep
+MOCK_TICK_SECONDS = 1.5
+
 
 class PwrcellClient:
     """Master Generac PWRcell client instance."""
@@ -70,34 +73,10 @@ class PwrcellClient:
         config_paths: Optional[List[str]] = None
         slow_paths: Optional[List[str]] = None
 
-        if self.config.polling_tiers:
-            pt = self.config.polling_tiers
-            fast_cfg = pt.get("fast")
-            if isinstance(fast_cfg, dict):
-                if "interval" in fast_cfg:
-                    fast_interval = float(fast_cfg["interval"])
-                if "paths" in fast_cfg and isinstance(fast_cfg["paths"], list):
-                    fast_paths = fast_cfg["paths"]
-            elif isinstance(fast_cfg, list):
-                fast_paths = fast_cfg
-
-            config_cfg = pt.get("config")
-            if isinstance(config_cfg, dict):
-                if "interval" in config_cfg:
-                    config_interval = float(config_cfg["interval"])
-                if "paths" in config_cfg and isinstance(config_cfg["paths"], list):
-                    config_paths = config_cfg["paths"]
-            elif isinstance(config_cfg, list):
-                config_paths = config_cfg
-
-            slow_cfg = pt.get("slow")
-            if isinstance(slow_cfg, dict):
-                if "interval" in slow_cfg:
-                    slow_interval = float(slow_cfg["interval"])
-                if "paths" in slow_cfg and isinstance(slow_cfg["paths"], list):
-                    slow_paths = slow_cfg["paths"]
-            elif isinstance(slow_cfg, list):
-                slow_paths = slow_cfg
+        tiers = self.config.polling_tiers or {}
+        fast_interval, fast_paths = self._parse_tier_config(tiers.get("fast"), fast_interval)
+        config_interval, config_paths = self._parse_tier_config(tiers.get("config"), config_interval)
+        slow_interval, slow_paths = self._parse_tier_config(tiers.get("slow"), slow_interval)
 
         self.poller = TieredModbusPoller(
             client=self,
@@ -113,6 +92,17 @@ class PwrcellClient:
         self._init_poll_thread: Optional[threading.Thread] = None
         self._running = False
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _parse_tier_config(cfg, default_interval: float):
+        """Parse a polling tier entry: either a list of paths or {interval, paths}."""
+        if isinstance(cfg, dict):
+            interval = float(cfg["interval"]) if "interval" in cfg else default_interval
+            paths = cfg["paths"] if isinstance(cfg.get("paths"), list) else None
+            return interval, paths
+        if isinstance(cfg, list):
+            return default_interval, cfg
+        return default_interval, None
 
     @property
     def is_initial_poll_running(self) -> bool:
@@ -218,7 +208,7 @@ class PwrcellClient:
         logger.debug("Mock simulation telemetry loop running")
         while self._running and not self._sim_stop.is_set():
             if self._mock_generator:
-                rec_set = self._mock_generator.tick(elapsed_seconds=1.5)
+                rec_set = self._mock_generator.tick(elapsed_seconds=MOCK_TICK_SECONDS)
                 snapshot = MqttClient._parse_snapshot(rec_set)
                 self.state.update_from_telemetry_snapshot(snapshot)
 
@@ -290,13 +280,13 @@ class PwrcellClient:
                         sub_group="REbus_dir",
                     )
 
-            self._sim_stop.wait(1.5)
+            self._sim_stop.wait(MOCK_TICK_SECONDS)
 
     def _start_live_mode(self):
         """Connect Modbus and MQTT and load discovered devices."""
         # Sync models from unit over SCP if possible, fallback to cached
         try:
-            from .models import load_models_dir
+            from .model_sync import load_models_dir
             sunspec_dir = load_models_dir(self.config)
             from .modbus import configure_sunspec_model_paths
             configure_sunspec_model_paths(sunspec_dir)
