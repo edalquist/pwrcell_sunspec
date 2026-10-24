@@ -165,334 +165,17 @@ def clean_unit(unit: Optional[str]) -> str:
 
 
 def get_default_mappings() -> List[TelemetryMappingDef]:
-    """Default configurable mappings between MQTT push telemetry and Modbus registers."""
-    return [
-        TelemetryMappingDef(
-            id="grid_power",
-            label="Grid Net Power",
-            device_type="inverter",
-            unit="W",
-            mqtt_field="inverter.live.grid_power_w",
-            modbus_field="inverter.model_64208.CTPow",
-            modbus_candidates=[
-                "inverter.model_64208.CTPow",
-            ],
-            synonyms=["ctpow", "grid_power_w", "grid_power", "ct_power"],
-            transform="negate",
-            transform_desc="-1 * CTPow (CT meter polarity inverted: positive = grid import)",
-            description="Net power imported (+) or exported (-) to the utility grid",
-            ha_platform="sensor",
-            ha_device_class="power",
-            ha_state_class="measurement",
-        ),
-        TelemetryMappingDef(
-            id="system_mode",
-            label="System Operating Mode",
-            device_type="inverter",
-            unit="",
-            mqtt_field="inverter.live.system_mode",
-            modbus_field="rebus_beacon.model_64200.SysMd",
-            modbus_candidates=[
-                "rebus_beacon.model_64200.SysMd",
-                "inverter.model_64208.SysMd",
-                "inverter.model_64202.SysMd",
-            ],
-            synonyms=["sysmd", "system_mode", "operating_mode"],
-            transform="none",
-            transform_desc="",
-            description="PWRcell operating mode (Grid Tie, Self Supply, Clean Backup, Priority Backup, Sell)",
-            ha_platform="select",
-            ha_device_class=None,
-            ha_state_class=None,
-        ),
-        TelemetryMappingDef(
-            id="ac_frequency",
-            label="AC Frequency",
-            device_type="inverter",
-            unit="Hz",
-            mqtt_field="inverter.live.ac_frequency_hz",
-            modbus_field="inverter.model_102.Hz",
-            modbus_candidates=[
-                "inverter.model_102.Hz",
-                "inverter.model_101.Hz",
-                "inverter.model_103.Hz",
-                "inverter.model_64208.Hz",
-            ],
-            synonyms=["hz", "ac_frequency_hz", "ac_freq", "freq"],
-            transform="none",
-            description="AC line grid frequency",
-            ha_platform="sensor",
-            ha_device_class="frequency",
-            ha_state_class="measurement",
-        ),
-        TelemetryMappingDef(
-            id="phase_a_voltage",
-            label="Phase A Voltage",
-            device_type="inverter",
-            unit="V",
-            mqtt_field="inverter.live.ac_voltage_v",
-            modbus_field="inverter.model_102.PhVphA",
-            modbus_candidates=[
-                "inverter.model_102.PhVphA",
-                "inverter.model_101.PhV",
-            ],
-            synonyms=["phvpha", "ac_voltage_v", "phv"],
-            transform="none",
-            description="AC voltage on Phase A",
-            ha_platform="sensor",
-            ha_device_class="voltage",
-            ha_state_class="measurement",
-        ),
-        TelemetryMappingDef(
-            id="phase_b_voltage",
-            label="Phase B Voltage",
-            device_type="inverter",
-            unit="V",
-            mqtt_field="",
-            modbus_field="inverter.model_102.PhVphB",
-            modbus_candidates=["inverter.model_102.PhVphB"],
-            synonyms=["phvphb"],
-            transform="none",
-            description="AC voltage on Phase B",
-            ha_platform="sensor",
-            ha_device_class="voltage",
-            ha_state_class="measurement",
-        ),
-        TelemetryMappingDef(
-            id="phase_a_current",
-            label="Phase A Current",
-            device_type="inverter",
-            unit="A",
-            mqtt_field="inverter.live.ac_current_a",
-            modbus_field="inverter.model_102.AphA",
-            modbus_candidates=["inverter.model_102.AphA"],
-            synonyms=["apha", "ac_current_a"],
-            transform="none",
-            description="AC current on Phase A",
-            ha_platform="sensor",
-            ha_device_class="current",
-            ha_state_class="measurement",
-        ),
-        TelemetryMappingDef(
-            id="phase_b_current",
-            label="Phase B Current",
-            device_type="inverter",
-            unit="A",
-            mqtt_field="",
-            modbus_field="inverter.model_102.AphB",
-            modbus_candidates=["inverter.model_102.AphB"],
-            synonyms=["aphb"],
-            transform="none",
-            description="AC current on Phase B",
-            ha_platform="sensor",
-            ha_device_class="current",
-            ha_state_class="measurement",
-        ),
-        TelemetryMappingDef(
-            id="battery_power",
-            label="Battery Real Power",
-            device_type="battery",
-            unit="W",
-            mqtt_field="battery.live.battery_power_w",
-            modbus_field="battery.model_64252.W",
-            modbus_candidates=[
-                "battery.model_64252.W",
-                "battery.model_802.W",
-            ],
-            synonyms=["w", "battery_power_w", "real_power", "battery_power"],
-            transform="negate",
-            transform_desc="-1 * W (SunSpec Modbus polarity inverted: positive = battery discharge)",
-            description="Battery discharge (+) or charge (-) real power",
-            ha_platform="sensor",
-            ha_device_class="power",
-            ha_state_class="measurement",
-        ),
-        TelemetryMappingDef(
-            id="battery_soc",
-            label="Battery State of Charge",
-            device_type="battery",
-            unit="%",
-            mqtt_field="battery.live.state_of_charge",
-            modbus_field="battery.model_802.SoC",
-            modbus_candidates=[
-                "battery.model_802.SoC",
-                "battery.model_804.SoC",
-            ],
-            synonyms=["soc", "state_of_charge"],
-            transform="none",
-            transform_desc="",
-            description="Battery state of charge percentage",
-            ha_platform="sensor",
-            ha_device_class="battery",
-            ha_state_class="measurement",
-        ),
-        TelemetryMappingDef(
-            id="battery_soh",
-            label="Battery State of Health",
-            device_type="battery",
-            unit="%",
-            mqtt_field="battery.live.state_of_health",
-            modbus_field="battery.model_802.SoH",
-            modbus_candidates=[
-                "battery.model_802.SoH",
-                "battery.model_804.SoH",
-            ],
-            synonyms=["soh", "state_of_health"],
-            transform="none",
-            transform_desc="",
-            description="Battery health percentage",
-            ha_platform="sensor",
-            ha_device_class="battery",
-            ha_state_class="measurement",
-        ),
-        TelemetryMappingDef(
-            id="solar_power",
-            label="Solar Generation Power",
-            device_type="inverter",
-            unit="W",
-            mqtt_field="inverter.live.solar_power_w",
-            modbus_field="pv_link.model_64207.P",
-            modbus_candidates=[
-                "pv_link.model_64207.P",
-                "pv_link.model_404.DCW",
-            ],
-            synonyms=["solar_power_w", "p", "dcw"],
-            transform="sum",
-            transform_desc="Sum across all PV Link devices",
-            description="Real-time solar PV generation power across all strings",
-            ha_platform="sensor",
-            ha_device_class="power",
-            ha_state_class="measurement",
-        ),
-        TelemetryMappingDef(
-            id="inverter_output_power",
-            label="Inverter AC Output Power",
-            device_type="inverter",
-            unit="W",
-            mqtt_field="inverter.live.inverter_output_power_w",
-            modbus_field="inverter.model_102.W",
-            modbus_candidates=[
-                "inverter.model_102.W",
-                "inverter.model_101.W",
-                "inverter.model_103.W",
-            ],
-            synonyms=["w", "inverter_power_w", "inverter_output_power_w", "inverter_output_power", "inverter_power", "real_power"],
-            transform="none",
-            transform_desc="",
-            description="Real-time AC output power of the inverter",
-            ha_platform="sensor",
-            ha_device_class="power",
-            ha_state_class="measurement",
-        ),
-        TelemetryMappingDef(
-            id="inverter_output_energy",
-            label="Inverter Output Energy",
-            device_type="inverter",
-            unit="Wh",
-            mqtt_field="inverter.live.inverter_output_exported_energy_wh",
-            modbus_field="inverter.model_102.WH",
-            modbus_candidates=[
-                "inverter.model_102.WH",
-                "inverter.model_64207.E",
-            ],
-            synonyms=["wh", "e", "inverter_output_exported_energy_wh", "inverter_output_energy_wh"],
-            transform="none",
-            transform_desc="",
-            description="Cumulative electrical energy produced/exported by the inverter",
-            ha_platform="sensor",
-            ha_device_class="energy",
-            ha_state_class="total_increasing",
-        ),
-        TelemetryMappingDef(
-            id="grid_imported_energy",
-            label="Grid Imported Energy",
-            device_type="inverter",
-            unit="Wh",
-            mqtt_field="inverter.live.grid_imported_energy_wh",
-            modbus_field="inverter.model_64208.WhIn",
-            modbus_candidates=["inverter.model_64208.WhIn"],
-            synonyms=["whin", "grid_imported_energy_wh", "totwhimp"],
-            transform="none",
-            transform_desc="",
-            description="Total electrical energy imported from utility grid",
-            ha_platform="sensor",
-            ha_device_class="energy",
-            ha_state_class="total_increasing",
-        ),
-        TelemetryMappingDef(
-            id="grid_exported_energy",
-            label="Grid Exported Energy",
-            device_type="inverter",
-            unit="Wh",
-            mqtt_field="inverter.live.grid_exported_energy_wh",
-            modbus_field="inverter.model_64208.WhOut",
-            modbus_candidates=["inverter.model_64208.WhOut"],
-            synonyms=["whout", "grid_exported_energy_wh", "totwhexp"],
-            transform="none",
-            transform_desc="",
-            description="Total electrical energy exported to utility grid",
-            ha_platform="sensor",
-            ha_device_class="energy",
-            ha_state_class="total_increasing",
-        ),
-        TelemetryMappingDef(
-            id="battery_imported_energy",
-            label="Battery Stored / Charged Energy",
-            device_type="battery",
-            unit="Wh",
-            mqtt_field="battery.live.battery_imported_energy_wh",
-            modbus_field="battery.model_64209.WhIn",
-            modbus_candidates=[
-                "battery.model_64209.WhIn",
-                "battery.model_64252.WhIn",
-            ],
-            synonyms=["whin", "battery_imported_energy_wh"],
-            transform="none",
-            transform_desc="",
-            description="Cumulative energy charged into battery storage",
-            ha_platform="sensor",
-            ha_device_class="energy",
-            ha_state_class="total_increasing",
-        ),
-        TelemetryMappingDef(
-            id="battery_exported_energy",
-            label="Battery Discharged Energy",
-            device_type="battery",
-            unit="Wh",
-            mqtt_field="battery.live.battery_exported_energy_wh",
-            modbus_field="battery.model_64209.WhOut",
-            modbus_candidates=[
-                "battery.model_64209.WhOut",
-                "battery.model_64252.WhOut",
-            ],
-            synonyms=["whout", "battery_exported_energy_wh"],
-            transform="none",
-            transform_desc="",
-            description="Cumulative energy discharged from battery storage",
-            ha_platform="sensor",
-            ha_device_class="energy",
-            ha_state_class="total_increasing",
-        ),
-        TelemetryMappingDef(
-            id="battery_voltage",
-            label="Battery DC Voltage",
-            device_type="battery",
-            unit="V",
-            mqtt_field="battery.live.battery_voltage_v",
-            modbus_field="battery.model_802.V",
-            modbus_candidates=[
-                "battery.model_802.V",
-                "battery.model_64252.V",
-            ],
-            synonyms=["v", "battery_voltage_v", "dcv"],
-            transform="none",
-            transform_desc="",
-            description="Real-time DC battery pack terminal voltage",
-            ha_platform="sensor",
-            ha_device_class="voltage",
-            ha_state_class="measurement",
-        ),
-    ]
+    """Default configurable mappings loaded directly from package data telemetry_mappings.yaml."""
+    pkg_data_path = Path(__file__).resolve().parent / "data" / DEFAULT_MAPPINGS_FILE
+    if pkg_data_path.exists():
+        try:
+            with open(pkg_data_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+                items = data.get("mappings", [])
+                return [TelemetryMappingDef.from_dict(d) for d in items]
+        except Exception as e:
+            logger.error("Failed to load package telemetry_mappings.yaml from %s: %s", pkg_data_path, e)
+    return []
 
 
 def _resolve_mappings_path(config_path: Optional[Path | str] = None) -> Path:
@@ -651,7 +334,15 @@ class MappingRegistry:
         """Construct canonical synonyms dictionary dynamically from loaded mappings."""
         result: Dict[str, Dict[str, Dict[str, Any]]] = {}
         for m in self._mappings:
-            d_type = m.device_type.lower()
+            target_types = {m.device_type.lower()}
+            if m.mqtt_field and "." in m.mqtt_field:
+                target_types.add(m.mqtt_field.split(".")[0].lower())
+            if m.modbus_field and "." in m.modbus_field:
+                target_types.add(m.modbus_field.split(".")[0].lower())
+            for alt in m.modbus_candidates:
+                if "." in alt:
+                    target_types.add(alt.split(".")[0].lower())
+
             syn_names = set(s.lower() for s in m.synonyms)
             syn_names.add(m.id.lower())
             if m.mqtt_field:
@@ -661,7 +352,7 @@ class MappingRegistry:
             for alt in m.modbus_candidates:
                 syn_names.add(alt.split(".")[-1].lower())
 
-            result.setdefault(d_type, {})[m.id] = {
+            info = {
                 "names": syn_names,
                 "units": m.unit,
                 "label": m.label,
@@ -670,6 +361,8 @@ class MappingRegistry:
                 "ha_state_class": m.ha_state_class,
                 "desc": m.description,
             }
+            for dt in target_types:
+                result.setdefault(dt, {})[m.id] = info
         return result
 
     def find_mapping_for_modbus(self, modbus_key: str) -> Optional[TelemetryMappingDef]:

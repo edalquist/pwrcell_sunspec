@@ -1,12 +1,3 @@
-# Telemetry to SunSpec Modbus Mappings Configuration for Generac PWRcell
-#
-# Configures the links between internal MQTT push protobuf metrics and SunSpec Modbus registers.
-# Supported transforms:
-#   - 'negate': Inverts sign (-1 * val), e.g. for CT meters where grid import is negative in Modbus
-#   - 'wh_to_kwh': Divides by 1000.0
-#   - 'kwh_to_wh': Multiplies by 1000.0
-#   - 'none': Direct value passthrough
-
 version: '1.0'
 mappings:
 - id: grid_power
@@ -23,7 +14,11 @@ mappings:
   ha_platform: sensor
   ha_device_class: power
   ha_state_class: measurement
-
+  synonyms:
+  - ctpow
+  - grid_power_w
+  - grid_power
+  - ct_power
 - id: system_mode
   label: System Operating Mode
   device_type: inverter
@@ -36,11 +31,15 @@ mappings:
   - inverter.model_64202.SysMd
   transform: none
   transform_desc: ''
-  description: PWRcell operating mode (Grid Tie, Self Supply, Clean Backup, Priority Backup, Sell)
+  description: PWRcell operating mode (Grid Tie, Self Supply, Clean Backup, Priority
+    Backup, Sell)
   ha_platform: select
   ha_device_class: null
   ha_state_class: null
-
+  synonyms:
+  - sysmd
+  - system_mode
+  - operating_mode
 - id: battery_power
   label: Battery Real Power
   device_type: battery
@@ -56,7 +55,11 @@ mappings:
   ha_platform: sensor
   ha_device_class: power
   ha_state_class: measurement
-
+  synonyms:
+  - w
+  - battery_power_w
+  - real_power
+  - battery_power
 - id: battery_soc
   label: Battery State of Charge
   device_type: battery
@@ -72,7 +75,9 @@ mappings:
   ha_platform: sensor
   ha_device_class: battery
   ha_state_class: measurement
-
+  synonyms:
+  - soc
+  - state_of_charge
 - id: battery_soh
   label: Battery State of Health
   device_type: battery
@@ -88,7 +93,9 @@ mappings:
   ha_platform: sensor
   ha_device_class: battery
   ha_state_class: measurement
-
+  synonyms:
+  - soh
+  - state_of_health
 - id: solar_power
   label: Solar Generation Power
   device_type: pv_link
@@ -99,12 +106,15 @@ mappings:
   - pv_link.model_64207.P
   - pv_link.model_404.DCW
   transform: sum
-  transform_desc: 'Sum across all PV Link devices'
+  transform_desc: Sum across all PV Link devices
   description: Real-time solar PV generation DC power across all PV Link strings
   ha_platform: sensor
   ha_device_class: power
   ha_state_class: measurement
-
+  synonyms:
+  - solar_power_w
+  - p
+  - dcw
 - id: inverter_output_power
   label: Inverter AC Output Power
   device_type: inverter
@@ -121,7 +131,13 @@ mappings:
   ha_platform: sensor
   ha_device_class: power
   ha_state_class: measurement
-
+  synonyms:
+  - w
+  - inverter_power_w
+  - inverter_output_power_w
+  - inverter_output_power
+  - inverter_power
+  - real_power
 - id: inverter_state
   label: Inverter Operational State
   device_type: inverter
@@ -137,7 +153,11 @@ mappings:
   ha_platform: sensor
   ha_device_class: enum
   ha_state_class: null
-
+  synonyms:
+  - st
+  - stvnd
+  - inverter_state
+  - state
 - id: grid_imported_energy
   label: Grid Imported Energy
   device_type: inverter
@@ -152,7 +172,10 @@ mappings:
   ha_platform: sensor
   ha_device_class: energy
   ha_state_class: total_increasing
-
+  synonyms:
+  - whin
+  - grid_imported_energy_wh
+  - totwhimp
 - id: grid_exported_energy
   label: Grid Exported Energy
   device_type: inverter
@@ -168,7 +191,10 @@ mappings:
   ha_platform: sensor
   ha_device_class: energy
   ha_state_class: total_increasing
-
+  synonyms:
+  - whout
+  - grid_exported_energy_wh
+  - totwhexp
 - id: inverter_output_energy
   label: Inverter Output Energy
   device_type: inverter
@@ -184,7 +210,11 @@ mappings:
   ha_platform: sensor
   ha_device_class: energy
   ha_state_class: total_increasing
-
+  synonyms:
+  - wh
+  - e
+  - inverter_output_exported_energy_wh
+  - inverter_output_energy_wh
 - id: battery_imported_energy
   label: Battery Stored / Charged Energy
   device_type: battery
@@ -200,7 +230,9 @@ mappings:
   ha_platform: sensor
   ha_device_class: energy
   ha_state_class: total_increasing
-
+  synonyms:
+  - whin
+  - battery_imported_energy_wh
 - id: battery_exported_energy
   label: Battery Discharged Energy
   device_type: battery
@@ -216,7 +248,9 @@ mappings:
   ha_platform: sensor
   ha_device_class: energy
   ha_state_class: total_increasing
-
+  synonyms:
+  - whout
+  - battery_exported_energy_wh
 - id: battery_voltage
   label: Battery DC Voltage
   device_type: battery
@@ -233,7 +267,10 @@ mappings:
   ha_platform: sensor
   ha_device_class: voltage
   ha_state_class: measurement
-
+  synonyms:
+  - v
+  - battery_voltage_v
+  - dcv
 - id: inverter_serial
   label: Inverter Serial Number
   device_type: inverter
@@ -248,7 +285,10 @@ mappings:
   ha_platform: sensor
   ha_device_class: null
   ha_state_class: null
-
+  synonyms:
+  - sn
+  - inverter_id
+  - serial_number
 - id: gateway_serial
   label: Gateway Serial Number
   device_type: rebus_beacon
@@ -263,5 +303,97 @@ mappings:
   ha_platform: sensor
   ha_device_class: null
   ha_state_class: null
-
-
+  synonyms:
+  - sn
+  - gateway_id
+  - serial_number
+- id: ac_frequency
+  label: AC Frequency
+  device_type: inverter
+  unit: Hz
+  mqtt_field: inverter.live.ac_frequency_hz
+  modbus_field: inverter.model_102.Hz
+  modbus_candidates:
+  - inverter.model_102.Hz
+  - inverter.model_101.Hz
+  - inverter.model_103.Hz
+  - inverter.model_64208.Hz
+  synonyms:
+  - hz
+  - ac_frequency_hz
+  - ac_freq
+  - freq
+  transform: none
+  transform_desc: ''
+  description: AC line grid frequency
+  ha_platform: sensor
+  ha_device_class: frequency
+  ha_state_class: measurement
+- id: phase_a_voltage
+  label: Phase A Voltage
+  device_type: inverter
+  unit: V
+  mqtt_field: inverter.live.ac_voltage_v
+  modbus_field: inverter.model_102.PhVphA
+  modbus_candidates:
+  - inverter.model_102.PhVphA
+  - inverter.model_101.PhV
+  synonyms:
+  - phvpha
+  - ac_voltage_v
+  - phv
+  transform: none
+  transform_desc: ''
+  description: AC voltage on Phase A
+  ha_platform: sensor
+  ha_device_class: voltage
+  ha_state_class: measurement
+- id: phase_b_voltage
+  label: Phase B Voltage
+  device_type: inverter
+  unit: V
+  mqtt_field: ''
+  modbus_field: inverter.model_102.PhVphB
+  modbus_candidates:
+  - inverter.model_102.PhVphB
+  synonyms:
+  - phvphb
+  transform: none
+  transform_desc: ''
+  description: AC voltage on Phase B
+  ha_platform: sensor
+  ha_device_class: voltage
+  ha_state_class: measurement
+- id: phase_a_current
+  label: Phase A Current
+  device_type: inverter
+  unit: A
+  mqtt_field: inverter.live.ac_current_a
+  modbus_field: inverter.model_102.AphA
+  modbus_candidates:
+  - inverter.model_102.AphA
+  synonyms:
+  - apha
+  - ac_current_a
+  transform: none
+  transform_desc: ''
+  description: AC current on Phase A
+  ha_platform: sensor
+  ha_device_class: current
+  ha_state_class: measurement
+- id: phase_b_current
+  label: Phase B Current
+  device_type: inverter
+  unit: A
+  mqtt_field: ''
+  modbus_field: inverter.model_102.AphB
+  modbus_candidates:
+  - inverter.model_102.AphB
+  synonyms:
+  - aphb
+  transform: none
+  transform_desc: ''
+  description: AC current on Phase B
+  ha_platform: sensor
+  ha_device_class: current
+  ha_state_class: measurement
