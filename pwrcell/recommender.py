@@ -158,11 +158,22 @@ def find_suggested_groupings(
         # Evaluate existing unified groups for this device
         groups = group_device_fields(dev)
 
-        # Collect candidate sources that currently sit in single-source groups and have live values
+        # Collect candidate sources that currently sit in single-source groups and have live values.
+        # Exclude scale factor registers from merging candidates.
         single_source_candidates: List[Tuple[Any, Any]] = []  # (group, source)
         for g in groups:
+            if getattr(g, "is_scale_factor", False):
+                continue
             if len(g.sources) == 1:
                 s = g.sources[0]
+                if getattr(s, "is_scale_factor", False):
+                    continue
+                if s.name.endswith(("_SF", "_sf")) or s.name.startswith(("sf_", "SF_", "sunssf_")):
+                    continue
+                if getattr(s, "point_type", None) == "sunssf":
+                    continue
+                if s.label and "scale factor" in s.label.lower():
+                    continue
                 if s.value is not None:
                     single_source_candidates.append((g, s))
 

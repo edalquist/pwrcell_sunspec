@@ -182,6 +182,39 @@ class TestRecommenderEngine(unittest.TestCase):
         approve_data = resp_approve.get_json()
         self.assertEqual(approve_data.get("status"), "ok")
 
+    def test_scale_factors_excluded_from_suggestions(self):
+        # Add two scale factor fields with identical values
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="W_SF",
+            label="Scale Factor: Power",
+            value=0,
+            raw_value=0,
+            units=None,
+            model_id=102,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inverter_test",
+        )
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="V_SF",
+            label="Scale Factor: Voltage",
+            value=0,
+            raw_value=0,
+            units=None,
+            model_id=102,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inverter_test",
+        )
+
+        suggestions = find_suggested_groupings(self.client.state, dismissed_ids=set())
+        # Assert neither W_SF nor V_SF appears in any suggestion
+        for s in suggestions:
+            for src in s.sources:
+                self.assertNotIn("W_SF", src.name)
+                self.assertNotIn("V_SF", src.name)
+                self.assertFalse(src.name.endswith("_SF"))
+
 
 if __name__ == "__main__":
     unittest.main()

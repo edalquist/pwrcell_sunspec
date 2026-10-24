@@ -1311,10 +1311,12 @@ function renderFieldTable() {
               <button class="action-menu-item item-details" data-key="${targetFieldRef.key}">📋 Modbus Details</button>
               ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${targetFieldRef.key}">✏️ Edit Value</button>` : ''}
               <button class="action-menu-item item-copy" data-key="${targetFieldRef.key}">📄 Copy Key</button>
-              <button class="action-menu-item item-group-with" data-key="${targetFieldRef.key}">🔗 Group with Concept...</button>
-              ${(f.sources && f.sources.length > 1) ? `<button class="action-menu-item item-ungroup" data-key="${targetFieldRef.key}">✂️ Ungroup Field</button>` : ''}
-              ${(f.sources && f.sources.length > 1) ? `<button class="action-menu-item item-ungroup-all" data-concept="${f.concept_key}">✂️ Ungroup All Sources</button>` : ''}
-              ${f.is_custom_override ? `<button class="action-menu-item item-reset-group" data-key="${targetFieldRef.key}">↩️ Reset Grouping</button>` : ''}
+              ${!isScaleFactorField(f) && !isScaleFactorField(targetFieldRef) ? `
+                <button class="action-menu-item item-group-with" data-key="${targetFieldRef.key}">🔗 Group with Concept...</button>
+                ${(f.sources && f.sources.length > 1) ? `<button class="action-menu-item item-ungroup" data-key="${targetFieldRef.key}">✂️ Ungroup Field</button>` : ''}
+                ${(f.sources && f.sources.length > 1) ? `<button class="action-menu-item item-ungroup-all" data-concept="${f.concept_key}">✂️ Ungroup All Sources</button>` : ''}
+                ${f.is_custom_override ? `<button class="action-menu-item item-reset-group" data-key="${targetFieldRef.key}">↩️ Reset Grouping</button>` : ''}
+              ` : ''}
             </div>
           </div>
         </div>
@@ -1530,8 +1532,10 @@ function renderFieldTable() {
                 <button class="action-menu-item item-details" data-key="${f.key}">📋 Modbus Details</button>
                 ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${f.key}">✏️ Edit Value</button>` : ''}
                 <button class="action-menu-item item-copy" data-key="${f.key}">📄 Copy Key</button>
-                <button class="action-menu-item item-group-with" data-key="${f.key}">🔗 Group with Concept...</button>
-                ${f.is_custom_override ? `<button class="action-menu-item item-reset-group" data-key="${f.key}">↩️ Reset Grouping</button>` : ''}
+                ${!isScaleFactorField(f) ? `
+                  <button class="action-menu-item item-group-with" data-key="${f.key}">🔗 Group with Concept...</button>
+                  ${f.is_custom_override ? `<button class="action-menu-item item-reset-group" data-key="${f.key}">↩️ Reset Grouping</button>` : ''}
+                ` : ''}
               </div>
             </div>
           </div>
@@ -1583,8 +1587,10 @@ function renderFieldTable() {
                 <button class="action-menu-item item-details" data-key="${f.key}">📋 Modbus Details</button>
                 ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${f.key}">✏️ Edit Value</button>` : ''}
                 <button class="action-menu-item item-copy" data-key="${f.key}">📄 Copy Key</button>
-                <button class="action-menu-item item-group-with" data-key="${f.key}">🔗 Group with Concept...</button>
-                ${f.is_custom_override ? `<button class="action-menu-item item-reset-group" data-key="${f.key}">↩️ Reset Grouping</button>` : ''}
+                ${!isScaleFactorField(f) ? `
+                  <button class="action-menu-item item-group-with" data-key="${f.key}">🔗 Group with Concept...</button>
+                  ${f.is_custom_override ? `<button class="action-menu-item item-reset-group" data-key="${f.key}">↩️ Reset Grouping</button>` : ''}
+                ` : ''}
               </div>
             </div>
           </div>
@@ -3724,6 +3730,7 @@ async function openGroupingModal(deviceSn, fieldKey, currentConceptKey, currentC
 
     el.groupingTargetConceptSelect.innerHTML = '<option value="">-- Choose an existing concept --</option>';
     groups.forEach(g => {
+      if (isScaleFactorField(g)) return;
       const isCurrent = g.concept_key === currentConceptKey;
       const opt = document.createElement('option');
       opt.value = g.concept_key;
@@ -4176,6 +4183,9 @@ function renderCompareTableRows(rows) {
   const query = compareState.searchQuery.trim().toLowerCase();
 
   const filtered = rows.filter(r => {
+    // Exclude scale factor registers from comparison & merging rows
+    if (r.is_scale_factor || isScaleFactorField(r)) return false;
+
     // 1. Tab filter
     if (tab === 'discrepancies') {
       const isDisc = r.is_discrepant || ['DIVERGENT', 'UNIT_MISMATCH', 'POLARITY_MISMATCH', 'SCALE_MISMATCH'].includes(r.status);
@@ -4295,13 +4305,13 @@ function renderCompareTableRows(rows) {
           ? `<span class="badge-custom-override" title="Custom grouping override active">Custom</span>`
           : '';
 
-        const actionButtons = `
+        const actionButtons = (!s.is_scale_factor && !isScaleFactorField(s)) ? `
           <div class="compare-source-actions">
             ${sources.length > 1 ? `<button class="btn-group-action btn-ungroup-action" data-action="ungroup" data-sn="${escapeHtml(r.device_sn)}" data-field-key="${escapeHtml(s.field_key)}" title="Ungroup this field from '${escapeHtml(r.label || r.concept_key)}'">✂️ Ungroup</button>` : ''}
             <button class="btn-group-action btn-group-with-action" data-action="group-with" data-sn="${escapeHtml(r.device_sn)}" data-field-key="${escapeHtml(s.field_key)}" data-concept-key="${escapeHtml(r.concept_key)}" data-concept-label="${escapeHtml(r.label || r.concept_key)}" title="Group this field with an existing or new concept...">🔗 Group...</button>
             ${s.is_custom_override ? `<button class="btn-group-action btn-reset-action" data-action="reset-group" data-sn="${escapeHtml(r.device_sn)}" data-field-key="${escapeHtml(s.field_key)}" title="Reset to default automatic grouping">↩️ Reset</button>` : ''}
           </div>
-        `;
+        ` : '';
 
         return `
           <div class="compare-source-card ${isDivergent ? 'is-divergent' : ''}">

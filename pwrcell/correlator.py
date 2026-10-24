@@ -118,6 +118,7 @@ class ComparisonResultRow:
     status_label: str = ""
     is_discrepant: bool = False
     is_custom_override: bool = False
+    is_scale_factor: bool = False
     discrepancy_reason: str = ""
     source_count: int = 0
     polled_count: int = 0
@@ -143,6 +144,7 @@ class ComparisonResultRow:
             "status_label": self.status_label or self.status,
             "is_discrepant": self.is_discrepant,
             "is_custom_override": self.is_custom_override,
+            "is_scale_factor": self.is_scale_factor,
             "match_pct": round(self.match_pct, 1) if self.match_pct is not None else None,
             "delta": round(self.delta, 2) if self.delta is not None else None,
             "notes": self.notes,
@@ -196,6 +198,10 @@ def evaluate_comparisons(
         for dev in state_store.devices.values():
             groups = group_device_fields(dev)
             for g in groups:
+                # Exclude raw scale factor registers from telemetry comparison & merging UI
+                if getattr(g, "is_scale_factor", False):
+                    continue
+
                 # If this concept is already a top-level telemetry mapping, give the device-level
                 # row a qualified mapping_id so it doesn't overwrite the global mapping in legacy maps
                 is_telemetry = g.concept_key in telemetry_ids
@@ -417,6 +423,7 @@ def _build_group_comparison_row(dev, g, mapping_id: Optional[str] = None) -> Com
         status_label=status_label,
         is_discrepant=is_discrepant,
         is_custom_override=getattr(g, "is_custom_override", False),
+        is_scale_factor=getattr(g, "is_scale_factor", False),
         match_pct=match_pct,
         delta=delta,
         notes=discrepancy_reason,
