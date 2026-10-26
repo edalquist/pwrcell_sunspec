@@ -5,8 +5,13 @@ PWRcell devices (Inverter, Battery, PV Link) with concurrent MQTT push
 telemetry and Modbus SunSpec registers.
 """
 
+import tempfile
 import time
 import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from pwrcell.grouping import clear_custom_groupings_cache
 from pwrcell.mapping import MappingRegistry
 from pwrcell.optimizer import group_device_fields, solve_minimal_model_set
 from pwrcell.state import FieldSource, StateField, StateStore, UnifiedDevice
@@ -15,6 +20,14 @@ from pwrcell.state import FieldSource, StateField, StateStore, UnifiedDevice
 class TestGoldenGrouping(unittest.TestCase):
 
     def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self._grouping_patch = patch(
+            "pwrcell.grouping.get_default_grouping_config_path",
+            return_value=Path(self.tmp_dir.name) / "custom_groupings.yaml",
+        )
+        self._grouping_patch.start()
+        clear_custom_groupings_cache()
+
         self.state = StateStore()
         self.inv = self.state.register_device(
             serial_number="0001000714E9",
@@ -28,6 +41,11 @@ class TestGoldenGrouping(unittest.TestCase):
             device_type="battery",
             model_name="PWRcell Battery",
         )
+
+    def tearDown(self):
+        self._grouping_patch.stop()
+        clear_custom_groupings_cache()
+        self.tmp_dir.cleanup()
 
     def _populate_inverter_telemetry(self):
         """Populate realistic dual-source telemetry on inverter."""

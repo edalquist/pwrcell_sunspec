@@ -13,7 +13,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from .catalog import is_scale_factor_point
+from .catalog import infer_ha_classes, is_scale_factor_point
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +368,7 @@ def group_device_fields(
 
     dev_type = getattr(dev, "device_type", "inverter")
     dev_sn = getattr(dev, "serial_number", "")
-    all_fields = getattr(dev, "fields", {})
+    all_fields = dict(getattr(dev, "fields", {}))
 
     # 1. Bucket fields by concept ID
     # Bucket format: concept_id -> list of (field_key, field_obj, transform)
@@ -398,12 +398,40 @@ def group_device_fields(
         # Check user custom grouping overrides first
         qual_key = f"{dev_sn}:{f_key}" if dev_sn else f_key
         has_override = qual_key in overrides or f_key in overrides
+        target_concept = overrides.get(qual_key, overrides.get(f_key)) if has_override else None
+
+        if not has_override and overrides:
+            fk_parts = f_key.split(".")
+            fk_dev = fk_parts[0] if fk_parts else ""
+            fk_point = fk_parts[-1] if fk_parts else ""
+            for k, v in overrides.items():
+                k_sn = k.split(":", 1)[0] if ":" in k else ""
+                k_part = k.split(":", 1)[1] if ":" in k else k
+                if k_sn and dev_sn and k_sn.strip().upper() != dev_sn.strip().upper():
+                    continue
+                kp_parts = k_part.split(".")
+                kp_dev = kp_parts[0] if kp_parts else ""
+                kp_point = kp_parts[-1] if kp_parts else ""
+                if (
+                    fk_dev
+                    and kp_dev
+                    and fk_dev.lower() == kp_dev.lower()
+                    and fk_point
+                    and kp_point
+                    and fk_point.lower() == kp_point.lower()
+                ):
+                    has_override = True
+                    target_concept = v
+                    break
 
         if has_override:
-            target_concept = overrides.get(qual_key, overrides.get(f_key))
             if target_concept is None or str(target_concept).strip().lower() in ("", "null", "none", "standalone", "ungrouped"):
                 c_id = f"{dev_type}.standalone.{f.name.lower()}_{getattr(f, 'model_id', 'raw')}"
                 if c_id not in concept_metadata:
+                    u_d_class = f.ha_hint.device_class if f.ha_hint else None
+                    u_s_class = f.ha_hint.state_class if f.ha_hint else None
+                    if not u_d_class and not u_s_class:
+                        u_d_class, u_s_class = infer_ha_classes(units=f.units, name=f.name)
                     concept_metadata[c_id] = {
                         "id": c_id,
                         "concept_key": f"{f.name.lower()}_{getattr(f, 'model_id', 'raw')}",
@@ -412,8 +440,8 @@ def group_device_fields(
                         "description": f.description,
                         "units": f.units,
                         "ha_platform": f.ha_hint.platform if f.ha_hint else ("sensor" if not f.is_writable else "number"),
-                        "ha_device_class": f.ha_hint.device_class if f.ha_hint else None,
-                        "ha_state_class": f.ha_hint.state_class if f.ha_hint else None,
+                        "ha_device_class": u_d_class,
+                        "ha_state_class": u_s_class,
                         "is_custom_override": True,
                     }
                 concept_buckets.setdefault(c_id, []).append((f_key, f, None))
@@ -423,6 +451,11 @@ def group_device_fields(
                 target_key = str(target_concept).strip()
                 c_id = f"{dev_type}.concept.{target_key}"
                 c_meta = custom_concepts.get(target_key, {})
+                c_units = c_meta.get("units", f.units)
+                c_d_class = c_meta.get("ha_device_class")
+                c_s_class = c_meta.get("ha_state_class")
+                if not c_d_class and not c_s_class:
+                    c_d_class, c_s_class = infer_ha_classes(units=c_units, name=target_key)
                 if c_id not in concept_metadata:
                     concept_metadata[c_id] = {
                         "id": c_id,
@@ -430,15 +463,41 @@ def group_device_fields(
                         "name": target_key,
                         "label": c_meta.get("label") or target_key.replace("_", " ").title(),
                         "description": c_meta.get("description", f.description),
-                        "units": c_meta.get("units", f.units),
+                        "units": c_units,
                         "ha_platform": c_meta.get("ha_platform", f.ha_hint.platform if f.ha_hint else "sensor"),
-                        "ha_device_class": c_meta.get("ha_device_class"),
-                        "ha_state_class": c_meta.get("ha_state_class"),
+                        "ha_device_class": c_d_class,
+                        "ha_state_class": c_s_class,
                         "is_custom_override": True,
                     }
-                concept_buckets.setdefault(c_id, []).append((f_key, f, None))
+                c_trans = c_meta.get("transform")
+                concept_buckets.setdefault(c_id, []).append((f_key, f, c_trans))
                 assigned_field_keys.add(f_key)
                 continue
+
+        # Check if explicitly ungrouped in telemetry_mappings.yaml
+        is_reg_ungrouped = bool(getattr(reg, "is_field_ungrouped", lambda *a, **kw: False)(f_key, f, dev_type))
+        if is_reg_ungrouped:
+            c_id = f"{dev_type}.standalone.{f.name.lower()}_{getattr(f, 'model_id', 'raw')}"
+            if c_id not in concept_metadata:
+                u_d_class = f.ha_hint.device_class if f.ha_hint else None
+                u_s_class = f.ha_hint.state_class if f.ha_hint else None
+                if not u_d_class and not u_s_class:
+                    u_d_class, u_s_class = infer_ha_classes(units=f.units, name=f.name)
+                concept_metadata[c_id] = {
+                    "id": c_id,
+                    "concept_key": f"{f.name.lower()}_{getattr(f, 'model_id', 'raw')}",
+                    "name": f.name,
+                    "label": f"{f.label} (Ungrouped)",
+                    "description": f.description,
+                    "units": f.units,
+                    "ha_platform": f.ha_hint.platform if f.ha_hint else ("sensor" if not f.is_writable else "number"),
+                    "ha_device_class": u_d_class,
+                    "ha_state_class": u_s_class,
+                    "is_custom_override": False,
+                }
+            concept_buckets.setdefault(c_id, []).append((f_key, f, None))
+            assigned_field_keys.add(f_key)
+            continue
 
         # Check if mapped to a TelemetryMappingDef
         assigned = False
@@ -446,12 +505,9 @@ def group_device_fields(
             if m.device_type == dev_type:
                 is_match = False
                 transform = None
-                if f_key == m.mqtt_field or f.name == m.mqtt_field.split(".")[-1]:
+                if any(f_key == mf or f.name == mf.split(".")[-1] for mf in m.mqtt_fields):
                     is_match = True
-                elif f_key == m.modbus_field or _field_matches_modbus_target(f, m.modbus_field):
-                    is_match = True
-                    transform = m.transform
-                elif any(f_key == alt or _field_matches_modbus_target(f, alt) for alt in m.modbus_candidates):
+                elif any(f_key == mbf or _field_matches_modbus_target(f, mbf) for mbf in m.modbus_fields):
                     is_match = True
                     transform = m.transform
 
@@ -463,6 +519,30 @@ def group_device_fields(
                     break
 
         if assigned:
+            continue
+
+        # If auto-grouping heuristics are disabled, every unmapped field is strictly standalone
+        if not getattr(reg, "auto_group_heuristics", True):
+            c_id = f"{dev_type}.standalone.{f.name.lower()}_{getattr(f, 'model_id', 'raw')}"
+            if c_id not in concept_metadata:
+                u_d_class = f.ha_hint.device_class if f.ha_hint else None
+                u_s_class = f.ha_hint.state_class if f.ha_hint else None
+                if not u_d_class and not u_s_class:
+                    u_d_class, u_s_class = infer_ha_classes(units=f.units, name=f.name)
+                concept_metadata[c_id] = {
+                    "id": c_id,
+                    "concept_key": f"{f.name.lower()}_{getattr(f, 'model_id', 'raw')}",
+                    "name": f.name,
+                    "label": f.label or f.name,
+                    "description": f.description,
+                    "units": f.units,
+                    "ha_platform": f.ha_hint.platform if f.ha_hint else ("sensor" if not f.is_writable else "number"),
+                    "ha_device_class": u_d_class,
+                    "ha_state_class": u_s_class,
+                    "is_custom_override": False,
+                }
+            concept_buckets.setdefault(c_id, []).append((f_key, f, None))
+            assigned_field_keys.add(f_key)
             continue
 
         # Check canonical synonyms
@@ -498,6 +578,7 @@ def group_device_fields(
         )
         is_model_specific = (
             is_sf
+            or not getattr(reg, "auto_group_heuristics", True)
             or norm_name in {
                 "modena", "actcrv", "ncrv", "wintms", "rmptms", "rvrttms", "crvnum",
                 "readonly", "subgroup", "npts",
@@ -514,6 +595,10 @@ def group_device_fields(
             c_label = f.label
 
         if auto_c_id not in concept_metadata:
+            f_d_class = f.ha_hint.device_class if f.ha_hint else None
+            f_s_class = f.ha_hint.state_class if f.ha_hint else None
+            if not f_d_class and not f_s_class:
+                f_d_class, f_s_class = infer_ha_classes(units=f.units, name=f.name)
             concept_metadata[auto_c_id] = {
                 "id": auto_c_id,
                 "concept_key": c_key,
@@ -522,8 +607,8 @@ def group_device_fields(
                 "description": f.description,
                 "units": f.units,
                 "ha_platform": f.ha_hint.platform if f.ha_hint else ("sensor" if not f.is_writable else "number"),
-                "ha_device_class": f.ha_hint.device_class if f.ha_hint else None,
-                "ha_state_class": f.ha_hint.state_class if f.ha_hint else None,
+                "ha_device_class": f_d_class,
+                "ha_state_class": f_s_class,
             }
         concept_buckets.setdefault(auto_c_id, []).append((f_key, f, None))
         assigned_field_keys.add(f_key)
@@ -607,6 +692,7 @@ def group_device_fields(
                     bitmask_flags=bm_flags,
                     is_scale_factor=is_sf,
                     is_custom_override=(qual_key in overrides or f_key in overrides),
+                    device_sn=dev_sn,
                 )
             )
 
@@ -647,8 +733,8 @@ def group_device_fields(
             preferred_source_key=pref_key,
             is_writable=is_grp_writable,
             ha_platform=meta.get("ha_platform", "sensor"),
-            ha_device_class=meta.get("ha_device_class"),
-            ha_state_class=meta.get("ha_state_class"),
+            ha_device_class=meta.get("ha_device_class") or infer_ha_classes(units=meta.get("units"), name=meta.get("name", c_id.split(".")[-1]), platform=meta.get("ha_platform", "sensor"))[0],
+            ha_state_class=meta.get("ha_state_class") or infer_ha_classes(units=meta.get("units"), name=meta.get("name", c_id.split(".")[-1]), platform=meta.get("ha_platform", "sensor"))[1],
             is_selected=grp_selected,
             bounds=grp_bounds,
             point_type=next((s.point_type for s in sources if s.point_type), None),
@@ -847,7 +933,7 @@ def resolve_minimal_models_for_paths(
 
                 m_def = reg.get_by_id(c_id)
                 if m_def:
-                    for cand_key in [m_def.modbus_field] + list(m_def.modbus_candidates):
+                    for cand_key in m_def.modbus_fields:
                         if cand_key:
                             c_parts = cand_key.split(".")
                             if len(c_parts) >= 2:

@@ -1,4 +1,5 @@
 version: '1.0'
+auto_group_heuristics: false
 mappings:
 - id: grid_power
   label: Grid Net Power
@@ -8,6 +9,7 @@ mappings:
   modbus_field: inverter.model_64208.CTPow
   modbus_candidates:
   - inverter.model_64208.CTPow
+  - inverter.model_64202.CTPow
   transform: negate
   transform_desc: '-1 * CTPow (CT meter polarity inverted: positive = grid import)'
   description: Net power imported (+) or exported (-) to the utility grid

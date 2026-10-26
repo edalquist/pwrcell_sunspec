@@ -1,7 +1,12 @@
 """Unit tests for Set-Cover Optimization & Unified Field Grouping."""
 
+import tempfile
 import time
 import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from pwrcell.grouping import clear_custom_groupings_cache
 from pwrcell.mapping import MappingRegistry
 from pwrcell.optimizer import (
     CANONICAL_SYNONYMS,
@@ -96,6 +101,14 @@ class TestSetCoverOptimizer(unittest.TestCase):
 
 class TestDeviceFieldGrouping(unittest.TestCase):
     def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self._grouping_patch = patch(
+            "pwrcell.grouping.get_default_grouping_config_path",
+            return_value=Path(self.tmp_dir.name) / "custom_groupings.yaml",
+        )
+        self._grouping_patch.start()
+        clear_custom_groupings_cache()
+
         self.dev = UnifiedDevice(
             serial_number="2000000001",
             slave_id=8,
@@ -208,6 +221,11 @@ class TestDeviceFieldGrouping(unittest.TestCase):
             model_id=None,
             source=FieldSource.MQTT_PUSH,
         )
+
+    def tearDown(self):
+        self._grouping_patch.stop()
+        clear_custom_groupings_cache()
+        self.tmp_dir.cleanup()
 
     def test_group_device_fields_collapses_duplicates(self):
         groups = group_device_fields(self.dev)

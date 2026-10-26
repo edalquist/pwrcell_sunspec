@@ -124,6 +124,48 @@ def get_suggested_precision(
     return None
 
 
+def infer_ha_classes(
+    units: Optional[str] = None,
+    name: Optional[str] = None,
+    platform: Optional[str] = "sensor",
+) -> tuple[Optional[str], Optional[str]]:
+    """Infer Home Assistant (device_class, state_class) from physical units and point name.
+
+    Returns (None, None) for non-sensor platforms (e.g. select, binary_sensor) or text/status fields.
+    """
+    if platform and platform not in ("sensor", "number"):
+        return None, None
+
+    u = (units or "").strip()
+    if u in ("%WHRtg", "%WH", "%Pct"):
+        u = "%"
+    elif u == "Secs":
+        u = "s"
+
+    u_lower = u.lower()
+    n_lower = (name or "").lower()
+
+    if u in ("Wh", "kWh") or u_lower in ("wh", "kwh") or n_lower.endswith("_wh") or "energy" in n_lower or n_lower.endswith("_e"):
+        return "energy", "total_increasing"
+    if u in ("W", "kW") or u_lower in ("w", "kw") or n_lower.endswith("_w") or "power" in n_lower or n_lower.endswith("_power") or n_lower.endswith("_p"):
+        return "power", "measurement"
+    if u in ("V", "mV", "kV") or u_lower in ("v", "mv", "kv") or n_lower.endswith("_v") or "voltage" in n_lower or n_lower.endswith("_dcv"):
+        return "voltage", "measurement"
+    if u in ("A", "mA") or u_lower in ("a", "ma") or n_lower.endswith("_a") or "current" in n_lower or n_lower.endswith("_dca"):
+        return "current", "measurement"
+    if u in ("Hz", "kHz") or u_lower in ("hz", "khz") or n_lower.endswith("_hz") or "frequency" in n_lower:
+        return "frequency", "measurement"
+    if u in ("C", "°C", "F", "°F") or u_lower in ("c", "°c", "f", "°f", "deg_c") or n_lower.endswith(("_deg_c", "_c", "_temp", "_tmpsnk", "_tmpcab")):
+        return "temperature", "measurement"
+    if u == "%" or u_lower in ("%", "pct", "percent"):
+        dev_class = "battery" if any(k in n_lower for k in ("soc", "soh", "charge", "health", "battery")) else None
+        return dev_class, "measurement"
+    if u in ("s", "sec", "seconds", "min", "minutes", "h", "hours"):
+        return "duration", "measurement"
+
+    return None, None
+
+
 
 
 @dataclass(frozen=True)
@@ -979,35 +1021,12 @@ class ModelCatalog:
             )
 
         # 5. Numeric measurement sensors
-        device_class = None
-        state_class = None
+        device_class, state_class = infer_ha_classes(units=canonical_units, name=point.name, platform="sensor")
+        if not state_class and point.is_accumulator:
+            state_class = "total_increasing"
+        elif not state_class and point.is_numeric and not point.is_scale_factor:
+            state_class = "measurement"
         icon = None
-
-        if canonical_units in ("W", "kW"):
-            device_class = "power"
-            state_class = "measurement"
-        elif canonical_units in ("Wh", "kWh"):
-            device_class = "energy"
-            state_class = "total_increasing"
-        elif canonical_units in ("V",):
-            device_class = "voltage"
-            state_class = "measurement"
-        elif canonical_units in ("A",):
-            device_class = "current"
-            state_class = "measurement"
-        elif canonical_units in ("Hz",):
-            device_class = "frequency"
-            state_class = "measurement"
-        elif canonical_units == "%":
-            device_class = "battery" if "soc" in point.name.lower() or "soh" in point.name.lower() or "whrtg" in raw_units.lower() else None
-            state_class = "measurement"
-        elif canonical_units in ("C", "°C"):
-            device_class = "temperature"
-            state_class = "measurement"
-        elif point.is_accumulator:
-            state_class = "total_increasing"
-        elif point.is_numeric and not point.is_scale_factor:
-            state_class = "measurement"
 
         # Determine suggested display precision
         precision = get_suggested_precision(

@@ -42,6 +42,7 @@ class ConceptSource:
     is_scale_factor: bool = False
     is_custom_override: bool = False
     is_divergent: bool = False
+    device_sn: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)

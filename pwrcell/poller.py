@@ -279,9 +279,7 @@ def resolve_paths_to_models(
             reg = MappingRegistry.get_instance()
             mapping = reg.get_by_id(comp_id)
             if mapping:
-                candidates = list(mapping.modbus_candidates)
-                if mapping.modbus_field:
-                    candidates.append(mapping.modbus_field)
+                candidates = list(mapping.modbus_fields)
                 if candidates:
                     sub_resolved = resolve_paths_to_models(candidates, catalog, state_store)
                     for d_t, mids in sub_resolved.items():

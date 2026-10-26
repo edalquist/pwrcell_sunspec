@@ -20,6 +20,11 @@ class TestRecommenderEngine(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.config_path = Path(self.temp_dir.name) / "custom_groupings.yaml"
 
+        self._orig_config = None
+        orig_p = Path("config/custom_groupings.yaml")
+        if orig_p.exists():
+            self._orig_config = orig_p.read_text(encoding="utf-8")
+
         self.client = PwrcellClient(is_mock=True)
         self.client.start()
         self.inv = self.client.state.get_inverter()
@@ -52,7 +57,15 @@ class TestRecommenderEngine(unittest.TestCase):
     def tearDown(self):
         self.client.stop()
         self.temp_dir.cleanup()
-        for p in [Path("config/custom_groupings.yaml"), Path("custom_groupings.yaml")]:
+        orig_p = Path("config/custom_groupings.yaml")
+        if self._orig_config is not None:
+            orig_p.write_text(self._orig_config, encoding="utf-8")
+        elif orig_p.exists():
+            try:
+                orig_p.unlink()
+            except Exception:
+                pass
+        for p in [Path("custom_groupings.yaml")]:
             if p.exists():
                 try:
                     p.unlink()
@@ -359,6 +372,201 @@ class TestRecommenderEngine(unittest.TestCase):
         )
         self.assertEqual(resp_approve.status_code, 200)
         self.assertEqual(resp_approve.get_json()["count"], len(items_to_approve))
+
+    def test_distinct_concepts_for_different_energy_pairs(self):
+        """Ensure distinct energy register pairs receive unique, specific concepts instead of all collapsing into 'energy'."""
+        # Pair A: Exported energy (WhOut vs Whx) at 30,000,000 Wh
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="WhOut_A",
+            label="Total AC Energy Exported",
+            value=31963504.0,
+            raw_value=31963504,
+            units="Wh",
+            model_id=64208,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inverter_status_test",
+        )
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="Whx_A",
+            label="Accumulated Export Energy",
+            value=31963504.0,
+            raw_value=31963504,
+            units="Wh",
+            model_id=64204,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="REbus_exp_test",
+        )
+
+        # Pair B: Output energy (WH vs E) at 1,120,750,000 Wh
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="WH_B",
+            label="Inverter Output AC Energy",
+            value=1120750797.0,
+            raw_value=1120750797,
+            units="Wh",
+            model_id=102,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inverter_test",
+        )
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="E_B",
+            label="Accumulated Output Energy",
+            value=1120750797.0,
+            raw_value=1120750797,
+            units="Wh",
+            model_id=64207,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="REbus_status_test",
+        )
+
+        suggestions = find_suggested_groupings(self.client.state, dismissed_ids=set())
+
+        # Find suggestion for Pair A
+        sugg_a = next(
+            (s for s in suggestions if {"WhOut_A", "Whx_A"}.issubset({src.name for src in s.sources})),
+            None,
+        )
+        # Find suggestion for Pair B
+        sugg_b = next(
+            (s for s in suggestions if {"WH_B", "E_B"}.issubset({src.name for src in s.sources})),
+            None,
+        )
+
+        self.assertIsNotNone(sugg_a, "Pair A (WhOut_A/Whx_A) should have a suggestion")
+        self.assertIsNotNone(sugg_b, "Pair B (WH_B/E_B) should have a suggestion")
+
+        # Crucial checks:
+        # 1. Neither pair should be assigned generic "energy"
+        self.assertNotEqual(sugg_a.suggested_concept_key, "energy")
+        self.assertNotEqual(sugg_b.suggested_concept_key, "energy")
+
+        # 2. The two distinct pairs MUST receive different concept keys so they do NOT merge into each other
+        self.assertNotEqual(
+            sugg_a.suggested_concept_key,
+            sugg_b.suggested_concept_key,
+            f"Distinct pairs should not share concept key: {sugg_a.suggested_concept_key}",
+        )
+
+    def test_find_suggested_groupings_inverted_polarity(self):
+        # Add two power fields on the inverter with opposite signs:
+        # e.g., grid_power (+2800 W) vs CTPow (-2800 W)
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="grid_power_live",
+            label="Grid Power",
+            value=2800.0,
+            raw_value=2800.0,
+            units="W",
+            model_id=None,
+            source=FieldSource.MQTT_PUSH,
+            sub_group="live",
+        )
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="CTPow_raw",
+            label="Current Transformer Power",
+            value=-2800.0,
+            raw_value=-2800.0,
+            units="W",
+            model_id=64208,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inverter_ct",
+        )
+
+        suggestions = find_suggested_groupings(self.client.state, dismissed_ids=set())
+        inv_sugg = next(
+            (
+                s for s in suggestions
+                if any(src.name == "grid_power_live" for src in s.sources)
+                and any(src.name == "CTPow_raw" for src in s.sources)
+            ),
+            None,
+        )
+        self.assertIsNotNone(inv_sugg, "Should generate grouping suggestion for opposite-polarity pair")
+        self.assertTrue(inv_sugg.inverted_pair)
+        self.assertEqual(inv_sugg.suggested_transform, "negate")
+        self.assertTrue(any("Inverted polarity live match" in r for r in inv_sugg.reasons))
+        self.assertEqual(inv_sugg.units, "W")
+
+    def test_never_merge_across_fields_from_same_model(self):
+        """Fields belonging to the same model (e.g. M802 CellVMax vs CellVMin) must NEVER be merged or suggested."""
+        bat = next((d for d in self.client.state.devices.values() if d.device_type == "battery"), None)
+        if not bat:
+            bat = self.client.state.get_or_create_device("TEST_BAT_01", "battery")
+
+        # 1. Add CellVMax and CellVMin on M802 with nearly identical live voltages
+        self.client.state.set_field(
+            device_sn=bat.serial_number,
+            name="CellVMax",
+            label="Max Cell Voltage (M802)",
+            value=3.85,
+            raw_value=3852,
+            units="V",
+            model_id=802,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="battery",
+        )
+        self.client.state.set_field(
+            device_sn=bat.serial_number,
+            name="CellVMin",
+            label="Min Cell Voltage (M802)",
+            value=3.83,
+            raw_value=3825,
+            units="V",
+            model_id=802,
+            source=FieldSource.MODBUS_POLL,
+            sub_group="battery",
+        )
+
+        suggestions = find_suggested_groupings(self.client.state, dismissed_ids=set())
+        
+        # Verify NO suggestion merges CellVMax and CellVMin
+        bad_sugg = next(
+            (
+                s for s in suggestions
+                if any(src.name == "CellVMax" for src in s.sources)
+                and any(src.name == "CellVMin" for src in s.sources)
+            ),
+            None,
+        )
+        self.assertIsNone(bad_sugg, "CellVMax and CellVMin from the same model M802 must NEVER be suggested for merging")
+
+        # 2. Add two fields from MQTT push on the same device with identical values
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="val_a",
+            label="Metric A",
+            value=120.0,
+            units="V",
+            model_id=None,
+            source=FieldSource.MQTT_PUSH,
+            sub_group="live",
+        )
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="val_b",
+            label="Metric B",
+            value=120.0,
+            units="V",
+            model_id=None,
+            source=FieldSource.MQTT_PUSH,
+            sub_group="live",
+        )
+
+        suggestions_after = find_suggested_groupings(self.client.state, dismissed_ids=set())
+        bad_mqtt = next(
+            (
+                s for s in suggestions_after
+                if any(src.name == "val_a" for src in s.sources)
+                and any(src.name == "val_b" for src in s.sources)
+            ),
+            None,
+        )
+        self.assertIsNone(bad_mqtt, "Two MQTT fields from the same device must NEVER be suggested for merging")
 
 
 if __name__ == "__main__":

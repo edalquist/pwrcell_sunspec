@@ -4,11 +4,12 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from pwrcell.bridge import HomeAssistantBridge, format_state_value
 from pwrcell.client import PwrcellClient
 from pwrcell.ha import generate_discovery_payload
+from pwrcell.grouping import clear_custom_groupings_cache
 
 
 class TestHomeAssistantBridge(unittest.TestCase):
@@ -16,6 +17,13 @@ class TestHomeAssistantBridge(unittest.TestCase):
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.topics_file = Path(self.tmp_dir.name) / ".ha_published_topics.json"
+        self._grouping_patch = patch(
+            "pwrcell.grouping.get_default_grouping_config_path",
+            return_value=Path(self.tmp_dir.name) / "custom_groupings.yaml",
+        )
+        self._grouping_patch.start()
+        clear_custom_groupings_cache()
+
         self.client = PwrcellClient(is_mock=True)
         self.client.start()
         self.bridge = HomeAssistantBridge(client=self.client, published_topics_path=self.topics_file)
@@ -24,6 +32,8 @@ class TestHomeAssistantBridge(unittest.TestCase):
 
     def tearDown(self):
         self.client.stop()
+        self._grouping_patch.stop()
+        clear_custom_groupings_cache()
         self.tmp_dir.cleanup()
 
     def test_publish_discovery_pre_populates_unpolled_devices(self):
@@ -344,6 +354,10 @@ class TestHomeAssistantBridge(unittest.TestCase):
 
     def test_device_availability_staleness_and_ha_birth_republish(self):
         """Entities must include per-device availability, transition to offline when stale (injected clock), and republish on HA birth."""
+        if hasattr(self.client, "_sim_stop"):
+            self.client._sim_stop.set()
+        if getattr(self.client, "_sim_thread", None):
+            self.client._sim_thread.join(timeout=1.0)
         fake_now = [1000.0]
         inv = self.client.state.get_inverter()
         sn = inv.serial_number

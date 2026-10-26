@@ -21,6 +21,11 @@ class TestGroupingOverrides(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.config_path = Path(self.temp_dir.name) / "custom_groupings.yaml"
 
+        self._orig_config = None
+        orig_p = Path("config/custom_groupings.yaml")
+        if orig_p.exists():
+            self._orig_config = orig_p.read_text(encoding="utf-8")
+
         self.client = PwrcellClient(is_mock=True)
         self.client.start()
         self.inv = self.client.state.get_inverter()
@@ -52,7 +57,15 @@ class TestGroupingOverrides(unittest.TestCase):
     def tearDown(self):
         self.client.stop()
         self.temp_dir.cleanup()
-        for p in [Path("config/custom_groupings.yaml"), Path("custom_groupings.yaml")]:
+        orig_p = Path("config/custom_groupings.yaml")
+        if self._orig_config is not None:
+            orig_p.write_text(self._orig_config, encoding="utf-8")
+        elif orig_p.exists():
+            try:
+                orig_p.unlink()
+            except Exception:
+                pass
+        for p in [Path("custom_groupings.yaml")]:
             if p.exists():
                 try:
                     p.unlink()
@@ -163,6 +176,47 @@ class TestGroupingOverrides(unittest.TestCase):
         data = resp.get_json()
         self.assertEqual(data.get("status"), "ok")
 
+        # 4. POST override (ungroup) without device_sn (inferred from field_key)
+        resp = test_client.post(
+            "/api/grouping/override",
+            json={
+                "device_sn": "",
+                "field_key": "inverter.inverter.W",
+                "target_concept": None,
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data.get("status"), "ok")
+        qual_key = f"{self.inv.serial_number}:inverter.inverter.W"
+        self.assertIn(qual_key, data["overrides"]["field_overrides"])
+        self.assertIsNone(data["overrides"]["field_overrides"][qual_key])
+
+        # 5. POST reset without device_sn (inferred from field_key)
+        resp = test_client.post(
+            "/api/grouping/reset",
+            json={
+                "device_sn": "",
+                "field_key": "inverter.inverter.W",
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data.get("status"), "ok")
+        self.assertNotIn(qual_key, data["overrides"]["field_overrides"])
+
+        # 6. POST ungroup_all without device_sn (inferred from concept_key)
+        resp = test_client.post(
+            "/api/grouping/ungroup_all",
+            json={
+                "device_sn": "",
+                "concept_key": "inverter_output_power",
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data.get("status"), "ok")
+
     def test_export_generalized_and_telemetry_mappings(self):
         from pwrcell.grouping import export_generalized_groupings, export_as_telemetry_mappings
         # Add an override with device serial prefix
@@ -195,6 +249,9 @@ class TestGroupingOverrides(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(match["device_type"], "inverter")
         self.assertEqual(match["label"], "Custom Inverter Power")
+        # Inferred Home Assistant metadata from unit "W"
+        self.assertEqual(match["ha_device_class"], "power")
+        self.assertEqual(match["ha_state_class"], "measurement")
 
         # 3. Test API export routes
         app = create_app(self.client)
@@ -218,6 +275,42 @@ class TestGroupingOverrides(unittest.TestCase):
         self.assertEqual(resp_dl.status_code, 200)
         self.assertEqual(resp_dl.mimetype, "text/yaml")
         self.assertIn("attachment; filename=custom_groupings.yaml", resp_dl.headers.get("Content-Disposition", ""))
+
+    def test_infer_ha_classes_and_export_inference(self):
+        """Verify that infer_ha_classes correctly maps units and names to Home Assistant classes."""
+        from pwrcell.catalog import infer_ha_classes
+        from pwrcell.grouping import export_as_telemetry_mappings
+
+        # Unit-based inference tests
+        self.assertEqual(infer_ha_classes(units="Wh", name="accumulated_energy"), ("energy", "total_increasing"))
+        self.assertEqual(infer_ha_classes(units="kWh", name="tot_energy"), ("energy", "total_increasing"))
+        self.assertEqual(infer_ha_classes(units="W", name="rebus_power"), ("power", "measurement"))
+        self.assertEqual(infer_ha_classes(units="kW", name="inverter_power"), ("power", "measurement"))
+        self.assertEqual(infer_ha_classes(units="V", name="rebus_voltage"), ("voltage", "measurement"))
+        self.assertEqual(infer_ha_classes(units="A", name="rebus_current"), ("current", "measurement"))
+        self.assertEqual(infer_ha_classes(units="Hz", name="grid_freq"), ("frequency", "measurement"))
+        self.assertEqual(infer_ha_classes(units="°C", name="cabinet_temp"), ("temperature", "measurement"))
+        self.assertEqual(infer_ha_classes(units="C", name="ambient_temp"), ("temperature", "measurement"))
+        self.assertEqual(infer_ha_classes(units="%", name="state_of_charge"), ("battery", "measurement"))
+
+        # Non-sensor / enum / text entities remain None
+        self.assertEqual(infer_ha_classes(units="", name="system_mode", platform="select"), (None, None))
+        self.assertEqual(infer_ha_classes(units="", name="inverter_serial", platform="sensor"), (None, None))
+
+        # Register live push telemetry with unit Wh but without explicit ha_hint
+        self.client.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="accumulated_energy",
+            label="Inverter Output Accumulated Energy",
+            value=999999.0,
+            units="Wh",
+            sub_group="live",
+        )
+        field = self.inv.fields.get("inverter.live.accumulated_energy")
+        self.assertIsNotNone(field)
+        self.assertIsNotNone(field.ha_hint)
+        self.assertEqual(field.ha_hint.device_class, "energy")
+        self.assertEqual(field.ha_hint.state_class, "total_increasing")
 
 
 if __name__ == "__main__":

@@ -170,6 +170,10 @@ class GroupingSuggestion:
     confidence_label: str  # HIGH, MEDIUM
     reasons: List[str]
     sources: List[GroupingCandidateSource] = field(default_factory=list)
+    suggested_transform: Optional[str] = None
+    inverted_pair: bool = False
+    positive_field_key: Optional[str] = None
+    negative_field_key: Optional[str] = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -291,6 +295,166 @@ def extract_count_type(name: str, label: str) -> str:
     return ""
 
 
+def extract_extremum(name: str, label: str) -> Optional[str]:
+    """Distinguish minimum vs maximum extremum points (e.g. CellVMax vs CellVMin, SoCMax vs SoCMin)."""
+    cleaned = re.sub(r"[_\W]+", " ", f"{name} {label}").lower()
+    is_max = bool(re.search(r"\b(?:max|maximum)\b", cleaned) or re.search(r"cellvmax|socmax|tmpmax|vmax", cleaned))
+    is_min = bool(re.search(r"\b(?:min|minimum)\b", cleaned) or re.search(r"cellvmin|socmin|tmpmin|vmin", cleaned))
+    if is_max and not is_min:
+        return "MAX"
+    if is_min and not is_max:
+        return "MIN"
+    return None
+
+
+def get_source_model_key(s: Any) -> str:
+    """Return a normalized model/stream key identifying the source model.
+    
+    Fields from the same model key must never be merged or suggested together.
+    """
+    m_id = getattr(s, "model_id", None)
+    if m_id is not None:
+        return f"model_{m_id}"
+    
+    src_id = (getattr(s, "source_id", "") or "").strip().upper()
+    if src_id.startswith("M") and src_id[1:].isdigit():
+        return f"model_{src_id[1:]}"
+    if src_id == "MQTT":
+        return "mqtt"
+        
+    src_type = (getattr(s, "source_type", "") or "").strip().upper()
+    if src_type == "MQTT":
+        return "mqtt"
+
+    f_key = (getattr(s, "field_key", "") or "").strip()
+    if f_key:
+        parts = f_key.split(".")
+        if len(parts) >= 2:
+            middle = parts[1].lower()
+            if middle == "live":
+                return "mqtt"
+            if middle.startswith("model_"):
+                return middle
+            m_name = (getattr(s, "model_name", "") or "").strip().lower()
+            if m_name:
+                return f"model_{m_name}"
+            return f"model_{middle}"
+            
+    m_name = (getattr(s, "model_name", "") or "").strip().lower()
+    if m_name:
+        return f"model_{m_name}"
+
+    return ""
+
+
+def are_from_same_model(s_a: Any, s_b: Any) -> bool:
+    """Return True if two fields belong to the same SunSpec model or telemetry stream.
+    
+    Merging should NEVER happen across fields from the same model.
+    """
+    # 1. Both SunSpec with same model_id
+    if getattr(s_a, "model_id", None) is not None and getattr(s_b, "model_id", None) is not None:
+        if s_a.model_id == s_b.model_id:
+            return True
+            
+    # 2. Both MQTT push streams on the same device
+    src_type_a = getattr(s_a, "source_type", "")
+    src_type_b = getattr(s_b, "source_type", "")
+    if src_type_a == "MQTT" and src_type_b == "MQTT":
+        return True
+
+    # 3. Source IDs match (e.g. both 'M802' or both 'M102')
+    sid_a = getattr(s_a, "source_id", "")
+    sid_b = getattr(s_b, "source_id", "")
+    if sid_a and sid_b and sid_a.upper() == sid_b.upper():
+        return True
+
+    # 4. Normalized model keys
+    m_a = get_source_model_key(s_a)
+    m_b = get_source_model_key(s_b)
+    if m_a and m_b and m_a == m_b:
+        return True
+
+    return False
+
+
+GENERIC_CLUSTER_CONCEPTS = {
+    "energy", "power", "voltage", "current", "frequency", "temperature",
+    "state", "status", "standalone", "null", "none"
+}
+STOP_TOKENS = {
+    "wh", "w", "v", "a", "hz", "c", "f", "pct", "percent", "inverter", "battery",
+    "rebus", "live", "raw", "model", "push", "status", "dir", "exp", "tot",
+    "meter", "phase", "ph", "device"
+}
+
+
+def clean_label(label: str) -> str:
+    cleaned = re.sub(r"\(.*?\)", "", label).strip()
+    return cleaned if cleaned else label.strip()
+
+
+def synthesize_concept_for_pair(
+    s_a: Any,
+    s_b: Any,
+    g_a: Any,
+    g_b: Any,
+    tok_a: Set[str],
+    tok_b: Set[str],
+    unit: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Synthesize a unique, specific concept key and human label for a suggested pair.
+
+    Ensures each distinct telemetry pair forms its own concept group rather than
+    collapsing into generic domain categories like 'energy', 'power', or 'voltage'.
+    """
+    from ..mapping import MappingRegistry
+    reg = MappingRegistry.get_instance()
+
+    # 1. Check if either field matches a specific non-generic mapping in the registry
+    for s in (s_a, s_b):
+        m = reg.get_by_mqtt(s.field_key) or reg.find_mapping_for_modbus(s.field_key)
+        if m and m.id and m.id.lower() not in GENERIC_CLUSTER_CONCEPTS:
+            return m.id, m.label
+
+    cl_a = clean_label(s_a.label)
+    cl_b = clean_label(s_b.label)
+
+    # 2. Extract meaningful shared descriptors (excluding generic unit words)
+    shared = (tok_a & tok_b) - STOP_TOKENS
+    primary_descriptors = [t for t in shared if t not in GENERIC_CLUSTER_CONCEPTS]
+
+    if primary_descriptors:
+        shared_lower = {t.lower() for t in primary_descriptors}
+        words_a = [w for w in re.split(r"[\W_]+", cl_a) if w]
+        words_b = [w for w in re.split(r"[\W_]+", cl_b) if w]
+
+        # Prefer a clean existing label that contains the specific descriptor
+        if any(w.lower() in shared_lower for w in words_b) and cl_b.lower() not in GENERIC_CLUSTER_CONCEPTS:
+            key = re.sub(r"[\W_]+", "_", cl_b).lower().strip("_")
+            return key, cl_b
+        if any(w.lower() in shared_lower for w in words_a) and cl_a.lower() not in GENERIC_CLUSTER_CONCEPTS:
+            key = re.sub(r"[\W_]+", "_", cl_a).lower().strip("_")
+            return key, cl_a
+
+        unit_suffix = [u for u in ("energy", "power", "voltage", "current") if u in tok_a | tok_b]
+        ordered = sorted(primary_descriptors) + (unit_suffix[:1] if unit_suffix and unit_suffix[0] not in primary_descriptors else [])
+        key = "_".join(ordered)
+        label = " ".join(t.capitalize() for t in ordered)
+        return key, label
+
+    # 3. Use the most descriptive clean label between s_a and s_b
+    candidates = [c for c in (cl_a, cl_b) if c.lower() not in GENERIC_CLUSTER_CONCEPTS]
+    if candidates:
+        best_label = max(candidates, key=len)
+        key = re.sub(r"[\W_]+", "_", best_label).lower().strip("_")
+        return key, best_label
+
+    # 4. Fallback to point names
+    key = f"{s_a.name.lower()}_{s_b.name.lower()}"
+    return key, f"{cl_a or s_a.name} ({s_a.name}/{s_b.name})"
+
+
 def find_suggested_groupings(
     state_store: StateStore,
     dismissed_ids: Optional[Set[str]] = None,
@@ -338,13 +502,23 @@ def find_suggested_groupings(
                     continue
                 evaluated_pairs.add(pair_key)
 
-                # 1. Units must be non-empty and compatible
+                # 0. NEVER merge across fields from the same model or telemetry stream
+                if are_from_same_model(s_a, s_b):
+                    continue
+
+                # 1. Extremum isolation: Min != Max (e.g. CellVMin != CellVMax)
+                ext_a = extract_extremum(s_a.name, s_a.label)
+                ext_b = extract_extremum(s_b.name, s_b.label)
+                if ext_a and ext_b and ext_a != ext_b:
+                    continue
+
+                # 2. Units must be non-empty and compatible
                 u_a = clean_unit(s_a.units or g_a.units)
                 u_b = clean_unit(s_b.units or g_b.units)
                 if not u_a or not u_b or u_a != u_b:
                     continue
 
-                # 2. Phase isolation: Phase A != Phase B, and single phase != aggregate phase
+                # 3. Phase isolation: Phase A != Phase B, and single phase != aggregate phase
                 ph_a = extract_phase(s_a.name, s_a.label)
                 ph_b = extract_phase(s_b.name, s_b.label)
                 if (ph_a or ph_b) and ph_a != ph_b:
@@ -356,10 +530,10 @@ def find_suggested_groupings(
                 if ts_a and ts_b and ts_a != ts_b:
                     continue
 
-                # 4. Flow direction isolation: Import != Export, Charge != Discharge
+                # 4. Flow direction isolation: Import != Export, Charge != Discharge (except signed power/current)
                 dir_a = extract_direction(s_a.name, s_a.label)
                 dir_b = extract_direction(s_b.name, s_b.label)
-                if dir_a and dir_b and dir_a != dir_b:
+                if dir_a and dir_b and dir_a != dir_b and u_a not in ("W", "kW", "VA", "VAr", "A"):
                     continue
 
                 # 5. Count type isolation: Detected != Installed
@@ -404,6 +578,11 @@ def find_suggested_groupings(
                     and not isinstance(val_b, bool)
                 )
 
+                is_inverted = False
+                suggested_transform = None
+                pos_key = None
+                neg_key = None
+
                 if is_numeric:
                     f_a = float(val_a)
                     f_b = float(val_b)
@@ -412,7 +591,18 @@ def find_suggested_groupings(
                     denom = max(abs(f_a), abs(f_b), 1.0)
                     pct_diff = (delta / denom) * 100.0
 
-                    if both_zero:
+                    abs_delta = abs(abs(f_a) - abs(f_b))
+                    abs_pct_diff = (abs_delta / denom) * 100.0
+
+                    # Check for opposite polarity match (e.g. +2800 vs -2800)
+                    if not both_zero and (f_a * f_b < -0.25) and (abs_delta <= 0.05 or (abs_pct_diff <= 5.0 and denom >= 5.0)):
+                        is_inverted = True
+                        suggested_transform = "negate"
+                        pos_key = s_a.field_key if f_a > 0 else s_b.field_key
+                        neg_key = s_b.field_key if f_a > 0 else s_a.field_key
+                        score += 55
+                        reasons.append(f"Inverted polarity live match (|{f_a:.1f}| ≈ |{f_b:.1f}| {u_a}) — suggests grouping with negation")
+                    elif both_zero:
                         # Zero matching requires high semantic concept agreement and topology match
                         if not (same_concept and (shared_tokens or is_topo_match)):
                             continue
@@ -459,13 +649,16 @@ def find_suggested_groupings(
                     confidence = min(0.99, round(score / 100.0, 2))
                     conf_label = "HIGH" if confidence >= 0.85 else "MEDIUM"
 
-                    # Synthesize clean concept key and display label
-                    if same_concept and cluster_a:
-                        suggested_key = cluster_a["concept"]
-                        suggested_label = cluster_a["label"]
-                    else:
-                        suggested_key = g_a.concept_key if len(g_a.concept_key) <= len(g_b.concept_key) else g_b.concept_key
-                        suggested_label = g_a.label if g_a.label else g_b.label
+                    # Synthesize distinct concept key and display label per pair
+                    suggested_key, suggested_label = synthesize_concept_for_pair(
+                        s_a=s_a,
+                        s_b=s_b,
+                        g_a=g_a,
+                        g_b=g_b,
+                        tok_a=tok_a,
+                        tok_b=tok_b,
+                        unit=u_a,
+                    )
 
                     sugg_id = f"sugg_{dev_sn}_{pair_key[0]}_{pair_key[1]}".replace(".", "_").replace(":", "_")
 
@@ -510,6 +703,10 @@ def find_suggested_groupings(
                             confidence_label=conf_label,
                             reasons=reasons,
                             sources=candidate_sources,
+                            suggested_transform=suggested_transform,
+                            inverted_pair=is_inverted,
+                            positive_field_key=pos_key,
+                            negative_field_key=neg_key,
                         )
                     )
 

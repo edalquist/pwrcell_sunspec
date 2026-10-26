@@ -229,12 +229,23 @@ def export_default_config(
     raw_keys = load_ha_config(config_path=src, allow_default_seed=False)
     generic_keys = unqualify_ha_config(raw_keys)
 
+    existing_data: Dict[str, Any] = {}
+    if dst.exists():
+        try:
+            with open(dst, "r", encoding="utf-8") as f_cur:
+                existing_data = yaml.safe_load(f_cur) or {}
+        except Exception:
+            existing_data = {}
+
+    out_dict = dict(existing_data)
+    out_dict["selected_fields"] = generic_keys
+
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp_dst = dst.with_suffix(".tmp")
     with open(tmp_dst, "w", encoding="utf-8") as f:
         f.write("# PWRcell Default Home Assistant Entity Configuration\n")
         f.write("# Generated from existing ha_config.yaml (hardware serial numbers stripped)\n\n")
-        yaml.dump({"selected_fields": generic_keys}, f, default_flow_style=False, sort_keys=False)
+        yaml.dump(out_dict, f, default_flow_style=False, sort_keys=False)
     tmp_dst.replace(dst)
 
     logger.info("Exported %d generic default field IDs from %s to %s", len(generic_keys), src, dst)

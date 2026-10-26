@@ -1,9 +1,14 @@
 """Unit tests for pwrcell.correlator."""
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
+
 from pwrcell.catalog import get_catalog
 from pwrcell.correlator import evaluate_comparisons, format_comparison_table
 from pwrcell.fixtures import MockTelemetryGenerator
+from pwrcell.grouping import clear_custom_groupings_cache
 from pwrcell.mqtt import MqttClient
 from pwrcell.state import StateStore
 
@@ -11,6 +16,14 @@ from pwrcell.state import StateStore
 class TestCorrelator(unittest.TestCase):
 
     def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self._grouping_patch = patch(
+            "pwrcell.grouping.get_default_grouping_config_path",
+            return_value=Path(self.tmp_dir.name) / "custom_groupings.yaml",
+        )
+        self._grouping_patch.start()
+        clear_custom_groupings_cache()
+
         self.catalog = get_catalog()
         self.state = StateStore(catalog=self.catalog)
 
@@ -21,6 +34,23 @@ class TestCorrelator(unittest.TestCase):
             device_type="inverter",
             model_name="PWRcell Inverter",
         )
+        self.bat = self.state.register_device(
+            serial_number="000100082128",
+            slave_id=9,
+            device_type="battery",
+            model_name="PWRcell Battery",
+        )
+        self.beacon = self.state.register_device(
+            serial_number="0001001206E8",
+            slave_id=1,
+            device_type="rebus_beacon",
+            model_name="REbus Beacon",
+        )
+
+    def tearDown(self):
+        self._grouping_patch.stop()
+        clear_custom_groupings_cache()
+        self.tmp_dir.cleanup()
         self.bat = self.state.register_device(
             serial_number="000100082128",
             slave_id=9,
@@ -304,6 +334,202 @@ class TestCorrelator(unittest.TestCase):
         )
         self.assertEqual(row.modbus_value, "SAFETY_SHUTDOWN")
         self.assertEqual(row.status, "EXACT")
+
+    def test_comparison_row_has_device_sn(self):
+        """Telemetry comparison rows and sources must contain device_sn for grouping actions."""
+        self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="CTPow",
+            label="Current Transformer Power",
+            description="Grid CT power",
+            value=-1500.0,
+            raw_value=-1500.0,
+            units="W",
+            sub_group="inverter_status",
+        )
+        self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="grid_power_w",
+            value=1500.0,
+            raw_value=1500.0,
+            sub_group="live",
+        )
+        results = evaluate_comparisons(self.state)
+        grid_row = next((r for r in results if r.mapping_id == "grid_power"), None)
+        self.assertIsNotNone(grid_row)
+        self.assertEqual(grid_row.device_sn, self.inv.serial_number)
+        self.assertGreaterEqual(len(grid_row.sources), 1)
+        for s in grid_row.sources:
+            self.assertEqual(s.get("device_sn"), self.inv.serial_number)
+
+    def test_is_field_excluded_from_mapping_helper(self):
+        """is_field_excluded_from_mapping accurately identifies ungrouped and reassigned fields."""
+        from pwrcell.grouping import is_field_excluded_from_mapping
+        overrides = {
+            "field_overrides": {
+                "000100082128:battery.live.battery_voltage_v": None,
+                "000100082128:battery.REbus_status.V": None,
+                "0001000714E9:inverter.inverter_status.CTPow": "inverter_output_power",
+            }
+        }
+        # Ungrouped via exact match
+        self.assertTrue(is_field_excluded_from_mapping("000100082128", "battery.live.battery_voltage_v", "battery_voltage", overrides))
+        # Ungrouped via model suffix fallback (REbus_status.V matching model_64252.V)
+        self.assertTrue(is_field_excluded_from_mapping("000100082128", "battery.model_64252.V", "battery_voltage", overrides))
+        # Reassigned away from grid_power
+        self.assertTrue(is_field_excluded_from_mapping("0001000714E9", "inverter.inverter_status.CTPow", "grid_power", overrides))
+        # Not excluded from the reassigned concept
+        self.assertFalse(is_field_excluded_from_mapping("0001000714E9", "inverter.inverter_status.CTPow", "inverter_output_power", overrides))
+        # Unaffected field
+        self.assertFalse(is_field_excluded_from_mapping("0001000714E9", "inverter.model_102.W", "inverter_output_power", overrides))
+
+    def test_ungrouped_field_excluded_from_baseline_telemetry_comparison(self):
+        """Ungrouping a field prevents it from being grouped with baseline Modbus candidates."""
+        self.state.set_field(
+            device_sn=self.bat.serial_number,
+            name="battery_voltage_v",
+            label="Battery Voltage",
+            value=380.0,
+            raw_value=380.0,
+            sub_group="live",
+        )
+        self.state.set_field(
+            device_sn=self.bat.serial_number,
+            name="V",
+            label="DC Voltage",
+            value=380.0,
+            raw_value=380.0,
+            sub_group="model_64252",
+            model_id=64252,
+        )
+
+        custom_groupings = {
+            "field_overrides": {
+                f"{self.bat.serial_number}:battery.live.battery_voltage_v": None,
+            }
+        }
+        results = evaluate_comparisons(self.state, custom_groupings=custom_groupings)
+
+        # Baseline battery_voltage row should NOT pair them as an EXACT match
+        exact_paired = next((r for r in results if r.mapping_id == "battery_voltage" and r.status == "EXACT"), None)
+        self.assertIsNone(exact_paired, "Ungrouped field should not appear in EXACT match pair")
+
+        # An ungrouped standalone row should be created for the ungrouped field
+        ungrouped_row = next((r for r in results if "battery_voltage_v" in r.mapping_id or "Ungrouped" in r.label), None)
+        self.assertIsNotNone(ungrouped_row)
+        self.assertEqual(ungrouped_row.status, "SINGLE_SOURCE")
+
+    def test_all_ungrouped_sources_suppress_baseline_mapping_row(self):
+        """When all sources for a baseline mapping are ungrouped, the baseline row is suppressed."""
+        self.state.set_field(
+            device_sn=self.bat.serial_number,
+            name="battery_voltage_v",
+            label="Battery Voltage",
+            value=380.0,
+            raw_value=380.0,
+            sub_group="live",
+        )
+        self.state.set_field(
+            device_sn=self.bat.serial_number,
+            name="V",
+            label="DC Voltage",
+            value=380.0,
+            raw_value=380.0,
+            sub_group="model_64252",
+            model_id=64252,
+        )
+
+        custom_groupings = {
+            "field_overrides": {
+                f"{self.bat.serial_number}:battery.live.battery_voltage_v": None,
+                f"{self.bat.serial_number}:battery.model_64252.V": None,
+            }
+        }
+        results = evaluate_comparisons(self.state, custom_groupings=custom_groupings)
+
+        # Baseline battery_voltage mapping row must be suppressed entirely
+        base_row = next((r for r in results if r.mapping_id == "battery_voltage"), None)
+        self.assertIsNone(base_row, "Baseline row must be suppressed when all sources are ungrouped")
+
+        # Both fields exist as standalone ungrouped rows
+        ungrouped_rows = [r for r in results if "Ungrouped" in r.label]
+        self.assertGreaterEqual(len(ungrouped_rows), 2)
+
+    def test_ungrouped_field_suppressed_from_compound_view(self):
+        """get_compound_view excludes ungrouped fields and returns None when all sources are ungrouped."""
+        import tempfile
+        from pathlib import Path
+        import pwrcell.grouping
+
+        self.state.set_field(
+            device_sn=self.bat.serial_number,
+            name="battery_voltage_v",
+            label="Battery Voltage",
+            value=380.0,
+            raw_value=380.0,
+            sub_group="live",
+        )
+        self.state.set_field(
+            device_sn=self.bat.serial_number,
+            name="V",
+            label="DC Voltage",
+            value=380.0,
+            raw_value=380.0,
+            sub_group="model_64252",
+            model_id=64252,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = Path(tmpdir) / "custom_groupings.yaml"
+            pwrcell.grouping.set_field_grouping_override(self.bat.serial_number, "battery.live.battery_voltage_v", None, config_path=cfg)
+            orig_path_fn = pwrcell.grouping.get_default_grouping_config_path
+            pwrcell.grouping.get_default_grouping_config_path = lambda: cfg
+            pwrcell.grouping.clear_custom_groupings_cache()
+            try:
+                # 1. Only MQTT ungrouped: compound view has only SUNSPEC source
+                cv = self.state.get_compound_view("battery_voltage")
+                self.assertIsNotNone(cv)
+                self.assertEqual(len(cv.sources), 1)
+                self.assertEqual(cv.sources[0].source_type, "SUNSPEC")
+
+                # 2. Both ungrouped: compound view returns None
+                pwrcell.grouping.set_field_grouping_override(self.bat.serial_number, "battery.model_64252.V", None, config_path=cfg)
+                pwrcell.grouping.clear_custom_groupings_cache()
+                cv_both = self.state.get_compound_view("battery_voltage")
+                self.assertIsNone(cv_both)
+            finally:
+                pwrcell.grouping.get_default_grouping_config_path = orig_path_fn
+                pwrcell.grouping.clear_custom_groupings_cache()
+
+    def test_evaluate_comparisons_with_empty_candidates_no_index_error(self):
+        """Mappings with empty modbus_fields or empty candidate lists should not raise IndexError."""
+        from pwrcell.mapping import MappingRegistry, TelemetryMappingDef
+        from pwrcell.tools.correlator import _load_correlator_mappings
+
+        empty_mapping = TelemetryMappingDef(
+            id="empty_modbus_test",
+            label="Empty Modbus Test",
+            device_type="inverter",
+            mqtt_fields=["inverter.live.test"],
+            modbus_fields=[],
+        )
+        reg = MappingRegistry.get_instance()
+        reg._mappings.append(empty_mapping)
+        reg._by_id["empty_modbus_test"] = empty_mapping
+        try:
+            # Must not raise IndexError
+            correlator_mappings = _load_correlator_mappings()
+            found = [m for m in correlator_mappings if m.mapping_id == "empty_modbus_test"]
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0].primary_candidate.field_key, "")
+
+            # Full evaluate_comparisons should also run without error
+            results = evaluate_comparisons(self.state)
+            empty_result = [r for r in results if r.mapping_id == "empty_modbus_test"]
+            self.assertEqual(len(empty_result), 1)
+        finally:
+            reg._mappings.remove(empty_mapping)
+            reg._by_id.pop("empty_modbus_test", None)
 
 
 if __name__ == "__main__":

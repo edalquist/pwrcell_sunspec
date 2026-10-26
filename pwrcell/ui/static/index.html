@@ -357,9 +357,9 @@
           <table class="field-table compare-table">
             <thead>
               <tr>
-                <th style="width: 25%;">Device & Concept</th>
-                <th style="width: 22%;">Agreement / Status</th>
-                <th style="width: 53%;">Grouped Register Sources & Live Values</th>
+                <th style="width: 20%;">Device & Concept</th>
+                <th style="width: 18%;">Agreement / Status</th>
+                <th style="width: 62%;">Grouped Register Sources & Live Values</th>
               </tr>
             </thead>
             <tbody id="compareTableBody">
@@ -474,6 +474,20 @@
             </label>
           </div>
         </div>
+
+        <div class="grouping-form-section" id="groupingTransformSection">
+          <label class="grouping-section-title">Value Polarity / Transform:</label>
+          <div class="grouping-options-list">
+            <label class="grouping-radio-label">
+              <input type="radio" name="groupingTransformType" value="none" checked id="radioTransformNone" />
+              <span><strong>Direct (No Transform)</strong> &mdash; preserve raw values as reported</span>
+            </label>
+            <label class="grouping-radio-label" style="margin-top: 8px;">
+              <input type="radio" name="groupingTransformType" value="negate" id="radioTransformNegate" />
+              <span><strong>Invert / Negate (&times; -1)</strong> &mdash; invert sign (e.g. CTPow vs grid_power_w)</span>
+            </label>
+          </div>
+        </div>
       </div>
       <div class="modal-footer">
         <div class="details-footer-left">
@@ -532,7 +546,58 @@
       <div class="modal-footer">
         <button class="btn btn-secondary" id="btnCopyExportYaml">📋 Copy YAML</button>
         <button class="btn btn-primary" id="btnDownloadExportYaml">⬇️ Download File</button>
+        <button class="btn btn-warning" id="btnApplyCleanSlate" title="Save this configuration directly to telemetry_mappings.yaml and reset custom_groupings.yaml to start fresh">💾 Save to Mappings &amp; Clean Slate</button>
         <button class="btn btn-secondary" id="btnCloseExportFooter">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Polarity Confirmation Modal -->
+  <div class="modal-backdrop" id="polarityModal">
+    <div class="modal modal-md polarity-modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-tag">POLARITY CONVENTION</span>
+          <h3>⚡ Choose Grouped Polarity</h3>
+        </div>
+        <button class="modal-close" id="btnClosePolarityModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc" id="polarityModalDesc">
+          These fields report values with opposite signs. Choose the desired polarity convention for the grouped concept:
+        </p>
+        <div class="polarity-options-list">
+          <button class="polarity-choice-card" id="btnPolarityPositive">
+            <div class="polarity-choice-header">
+              <span class="polarity-badge pos">+ Positive Convention</span>
+              <strong id="polarityPositiveLabel">Make Grouped Value Positive</strong>
+            </div>
+            <div class="polarity-choice-desc" id="polarityPositiveDesc">
+              Inverts the negative register so both streams match as positive.
+            </div>
+          </button>
+          <button class="polarity-choice-card" id="btnPolarityNegative" style="margin-top: 12px;">
+            <div class="polarity-choice-header">
+              <span class="polarity-badge neg">&minus; Negative Convention</span>
+              <strong id="polarityNegativeLabel">Make Grouped Value Negative</strong>
+            </div>
+            <div class="polarity-choice-desc" id="polarityNegativeDesc">
+              Inverts the positive register so both streams match as negative.
+            </div>
+          </button>
+          <button class="polarity-choice-card" id="btnPolarityDirect" style="margin-top: 12px;">
+            <div class="polarity-choice-header">
+              <span class="polarity-badge muted">&sim; Keep Raw</span>
+              <strong>No Negation (Raw / Direct)</strong>
+            </div>
+            <div class="polarity-choice-desc">
+              Group without modifying sign (may show as polarity mismatch).
+            </div>
+          </button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btnCancelPolarityModal">Cancel</button>
       </div>
     </div>
   </div>

@@ -36,19 +36,27 @@ selected_fields:
 - inverter.compound.grid_exported_energy
 - inverter.compound.grid_imported_energy
 - inverter.compound.inverter_output_power
+- inverter.concept.ac_frequency
+- inverter.concept.inverter_output_power
+- inverter.concept.inverter_state
+- inverter.concept.linestatus
 - inverter.inverter.A
 - inverter.inverter.AphA
 - inverter.inverter.AphB
 - inverter.inverter.DCV
+- inverter.inverter.Hz
 - inverter.inverter.PF
 - inverter.inverter.PhVphA
 - inverter.inverter.PhVphB
+- inverter.inverter.StVnd
 - inverter.inverter.TmpCab
 - inverter.inverter.TmpOt
 - inverter.inverter.TmpSnk
 - inverter.inverter.TmpTrns
 - inverter.inverter.VA
 - inverter.inverter.VAr
+- inverter.inverter.W
+- inverter.inverter_status.LineStatus
 - inverter.live.grid_power_w
 - inverter.live.inverter_max_power_w
 - inverter.live.inverter_output_exported_energy_wh
@@ -64,7 +72,6 @@ selected_fields:
 - pv_link.REbus_status.St
 - pv_link.REbus_status.T
 - pv_link.REbus_status.V
-
 controllable_fields:
 - system_mode
 - SysMd
@@ -74,6 +81,5 @@ controllable_fields:
 - SoCMin
 - WChaRteMax
 - WDisChaRteMax
-
 excluded_select_options:
 - SAFETY_SHUTDOWN

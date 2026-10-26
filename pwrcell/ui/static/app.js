@@ -149,6 +149,19 @@ const el = {
   radioGroupExisting: document.getElementById('radioGroupExisting'),
   radioGroupNew: document.getElementById('radioGroupNew'),
   radioGroupUngroup: document.getElementById('radioGroupUngroup'),
+  radioTransformNone: document.getElementById('radioTransformNone'),
+  radioTransformNegate: document.getElementById('radioTransformNegate'),
+  polarityModal: document.getElementById('polarityModal'),
+  btnClosePolarityModal: document.getElementById('btnClosePolarityModal'),
+  btnCancelPolarityModal: document.getElementById('btnCancelPolarityModal'),
+  btnPolarityPositive: document.getElementById('btnPolarityPositive'),
+  btnPolarityNegative: document.getElementById('btnPolarityNegative'),
+  btnPolarityDirect: document.getElementById('btnPolarityDirect'),
+  polarityModalDesc: document.getElementById('polarityModalDesc'),
+  polarityPositiveLabel: document.getElementById('polarityPositiveLabel'),
+  polarityNegativeLabel: document.getElementById('polarityNegativeLabel'),
+  polarityPositiveDesc: document.getElementById('polarityPositiveDesc'),
+  polarityNegativeDesc: document.getElementById('polarityNegativeDesc'),
   btnOpenExportMappings: document.getElementById('btnOpenExportMappings'),
   exportMappingsModal: document.getElementById('exportMappingsModal'),
   btnCloseExportModal: document.getElementById('btnCloseExportModal'),
@@ -160,6 +173,7 @@ const el = {
   exportYamlCode: document.getElementById('exportYamlCode'),
   btnCopyExportYaml: document.getElementById('btnCopyExportYaml'),
   btnDownloadExportYaml: document.getElementById('btnDownloadExportYaml'),
+  btnApplyCleanSlate: document.getElementById('btnApplyCleanSlate'),
   toast: document.getElementById('toast'),
   counts: {
     all: document.getElementById('countAll'),
@@ -1437,7 +1451,9 @@ function renderFieldTable() {
         menuGroupWith.addEventListener('click', (e) => {
           e.stopPropagation();
           dropdownMenu.classList.remove('show');
-          openGroupingModal(f.device_sn, targetFieldRef.key, f.concept_key, f.label);
+          const devSn = f.device_sn || (state.activeDevice ? state.activeDevice.serial_number : '');
+          const fKey = targetFieldRef.key || targetFieldRef.field_key || f.active_source_key || (f.sources && f.sources[0] ? f.sources[0].field_key : '');
+          openGroupingModal(devSn, fKey, f.concept_key, f.label);
         });
       }
 
@@ -1446,7 +1462,9 @@ function renderFieldTable() {
         menuUngroup.addEventListener('click', async (e) => {
           e.stopPropagation();
           dropdownMenu.classList.remove('show');
-          await ungroupFieldAction(f.device_sn, targetFieldRef.key);
+          const devSn = f.device_sn || (state.activeDevice ? state.activeDevice.serial_number : '');
+          const fKey = targetFieldRef.key || targetFieldRef.field_key || f.active_source_key || (f.sources && f.sources[0] ? f.sources[0].field_key : '');
+          await ungroupFieldAction(devSn, fKey);
         });
       }
 
@@ -1455,7 +1473,8 @@ function renderFieldTable() {
         menuUngroupAll.addEventListener('click', async (e) => {
           e.stopPropagation();
           dropdownMenu.classList.remove('show');
-          await ungroupAllAction(f.device_sn, f.concept_key);
+          const devSn = f.device_sn || (state.activeDevice ? state.activeDevice.serial_number : '');
+          await ungroupAllAction(devSn, f.concept_key);
         });
       }
 
@@ -1464,7 +1483,9 @@ function renderFieldTable() {
         menuResetGroup.addEventListener('click', async (e) => {
           e.stopPropagation();
           dropdownMenu.classList.remove('show');
-          await resetGroupingAction(f.device_sn, targetFieldRef.key);
+          const devSn = f.device_sn || (state.activeDevice ? state.activeDevice.serial_number : '');
+          const fKey = targetFieldRef.key || targetFieldRef.field_key || f.active_source_key || (f.sources && f.sources[0] ? f.sources[0].field_key : '');
+          await resetGroupingAction(devSn, fKey);
         });
       }
     }
@@ -3569,34 +3590,58 @@ function setupEventListeners() {
           const targetConcept = approveBtn.dataset.concept;
           const customLabel = approveBtn.dataset.label;
           const fieldKeys = JSON.parse(approveBtn.dataset.fieldKeys || '[]');
+          const isInverted = approveBtn.dataset.inverted === 'true';
+          const suggestedTransform = approveBtn.dataset.suggestedTransform || null;
 
-          approveBtn.disabled = true;
-          approveBtn.textContent = 'Merging...';
+          const executeApprove = async (chosenTransform) => {
+            approveBtn.disabled = true;
+            approveBtn.textContent = 'Merging...';
 
-          try {
-            const res = await fetch(apiPath('api/grouping/suggestions/approve'), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                device_sn: deviceSn,
-                field_keys: fieldKeys,
-                target_concept: targetConcept,
-                label: customLabel,
-                suggestion_id: sId,
-              }),
-            });
-            const data = await res.json();
-            if (data.status === 'ok') {
-              showToast(`Merged into ${customLabel || targetConcept}!`);
-              await refreshAfterGroupingChange(deviceSn);
-              await fetchGroupingSuggestions();
-              fetchAndRenderCompare();
-            } else {
-              alert(`Error approving suggestion: ${data.error || 'Unknown error'}`);
+            try {
+              const res = await fetch(apiPath('api/grouping/suggestions/approve'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  device_sn: deviceSn,
+                  field_keys: fieldKeys,
+                  target_concept: targetConcept,
+                  label: customLabel,
+                  suggestion_id: sId,
+                  transform: chosenTransform,
+                }),
+              });
+              const data = await res.json();
+              if (data.status === 'ok') {
+                showToast(`Merged into ${customLabel || targetConcept}!`);
+                await refreshAfterGroupingChange(deviceSn);
+                await fetchGroupingSuggestions();
+                fetchAndRenderCompare();
+              } else {
+                alert(`Error approving suggestion: ${data.error || 'Unknown error'}`);
+              }
+            } catch (err) {
+              alert(`Failed approving suggestion: ${err}`);
+            } finally {
+              approveBtn.disabled = false;
+              approveBtn.textContent = '✅ Approve & Merge';
             }
-          } catch (err) {
-            alert(`Failed approving suggestion: ${err}`);
+          };
+
+          if (isInverted || suggestedTransform === 'negate') {
+            const currentSug = (compareState.suggestions || []).find(s => s.id === sId) || {
+              suggested_label: customLabel,
+              suggested_concept_key: targetConcept,
+              positive_field_key: approveBtn.dataset.posKey,
+              negative_field_key: approveBtn.dataset.negKey,
+            };
+            promptPolaritySelection({
+              suggestion: currentSug,
+              onSelect: (transform) => executeApprove(transform),
+            });
+            return;
           }
+
+          await executeApprove(suggestedTransform);
           return;
         }
 
@@ -3628,12 +3673,16 @@ function setupEventListeners() {
           const fieldKeys = JSON.parse(customizeBtn.dataset.fieldKeys || '[]');
           const targetConcept = customizeBtn.dataset.concept;
           const customLabel = customizeBtn.dataset.label;
+          const isInverted = customizeBtn.dataset.inverted === 'true' || customizeBtn.dataset.suggestedTransform === 'negate';
           if (fieldKeys.length > 0) {
             openGroupingModal(deviceSn, fieldKeys[0], targetConcept);
             if (el.radioGroupNew) {
               el.radioGroupNew.checked = true;
               if (el.groupingNewConceptKey) el.groupingNewConceptKey.value = targetConcept;
               if (el.groupingNewConceptLabel) el.groupingNewConceptLabel.value = customLabel;
+            }
+            if (isInverted && el.radioTransformNegate) {
+              el.radioTransformNegate.checked = true;
             }
           }
           return;
@@ -3667,6 +3716,35 @@ function setupEventListeners() {
           }
           return;
         }
+
+        // Copy key inside suggestion
+        const copyBtn = e.target.closest('.btn-copy-key');
+        if (copyBtn) {
+          e.stopPropagation();
+          const keyToCopy = copyBtn.dataset.copyKey;
+          if (keyToCopy) {
+            copyToClipboard(keyToCopy);
+            showToast(`Copied ${keyToCopy} to clipboard`);
+          }
+          return;
+        }
+
+        // Toggle expand suggestion card
+        if (e.target.closest('.compare-source-key.selectable')) {
+          return;
+        }
+
+        const card = e.target.closest('.suggestion-card');
+        if (card && card.dataset.suggestionId) {
+          const sId = card.dataset.suggestionId;
+          if (compareState.expandedSuggestions.has(sId)) {
+            compareState.expandedSuggestions.delete(sId);
+          } else {
+            compareState.expandedSuggestions.add(sId);
+          }
+          renderCompareSuggestions(compareState.suggestions || []);
+          return;
+        }
       });
     }
 
@@ -3694,6 +3772,7 @@ function setupEventListeners() {
             target_concept: s.suggested_concept_key,
             label: s.suggested_label,
             suggestion_id: s.id,
+            transform: s.suggested_transform,
           }));
           const res = await fetch(apiPath('api/grouping/suggestions/batch-approve'), {
             method: 'POST',
@@ -3841,55 +3920,199 @@ function setupEventListeners() {
       window.location.href = apiPath(`api/grouping/export?format=${encodeURIComponent(currentExportFormat)}&download=true`);
     });
   }
+  if (el.btnApplyCleanSlate) {
+    el.btnApplyCleanSlate.addEventListener('click', async () => {
+      if (!confirm('This will update telemetry_mappings.yaml with all current mappings and ungrouped fields, and clear local overrides in custom_groupings.yaml so you start fresh. Proceed?')) {
+        return;
+      }
+      try {
+        el.btnApplyCleanSlate.disabled = true;
+        el.btnApplyCleanSlate.textContent = 'Saving...';
+        const res = await fetch(apiPath('api/grouping/save-to-mappings'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ clear_custom_overrides: true, only_custom: false }),
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          showToast(`Saved ${data.mappings_count} mappings (${data.ungrouped_count} ungrouped) to telemetry_mappings.yaml! Clean slate active.`);
+          closeExportModal();
+          await fetchExportYaml();
+          if (typeof fetchCompareData === 'function') {
+            await fetchCompareData();
+          }
+        } else {
+          alert('Failed to save mappings: ' + (data.error || 'Unknown error'));
+        }
+      } catch (err) {
+        alert('Failed to save mappings: ' + err);
+      } finally {
+        el.btnApplyCleanSlate.disabled = false;
+        el.btnApplyCleanSlate.textContent = '💾 Save to Mappings & Clean Slate';
+      }
+    });
+  }
 
   // Compare Table Event Delegation for Grouping Actions
   if (el.compareTableBody) {
     el.compareTableBody.addEventListener('click', async (e) => {
       const btn = e.target.closest('.btn-group-action');
-      if (!btn) return;
-      e.stopPropagation();
-      const action = btn.dataset.action;
-      const sn = btn.dataset.sn;
-      const fieldKey = btn.dataset.fieldKey;
-      const conceptKey = btn.dataset.conceptKey;
-      const conceptLabel = btn.dataset.conceptLabel;
+      if (btn) {
+        e.stopPropagation();
+        const action = btn.dataset.action;
+        let sn = btn.dataset.sn || (state.activeDevice ? state.activeDevice.serial_number : '') || compareState.selectedDevice || '';
+        const fieldKey = btn.dataset.fieldKey;
+        const conceptKey = btn.dataset.conceptKey;
+        const conceptLabel = btn.dataset.conceptLabel;
 
-      if (action === 'ungroup') {
-        await ungroupFieldAction(sn, fieldKey);
-      } else if (action === 'group-with') {
-        openGroupingModal(sn, fieldKey, conceptKey, conceptLabel);
-      } else if (action === 'reset-group') {
-        await resetGroupingAction(sn, fieldKey);
-      } else if (action === 'ungroup-all') {
-        await ungroupAllAction(sn, conceptKey);
+        if (action === 'ungroup') {
+          await ungroupFieldAction(sn, fieldKey);
+        } else if (action === 'group-with') {
+          openGroupingModal(sn, fieldKey, conceptKey, conceptLabel);
+        } else if (action === 'reset-group') {
+          await resetGroupingAction(sn, fieldKey);
+        } else if (action === 'ungroup-all') {
+          await ungroupAllAction(sn, conceptKey);
+        }
+        return;
+      }
+
+      const copyBtn = e.target.closest('.btn-copy-key');
+      if (copyBtn) {
+        e.stopPropagation();
+        const keyToCopy = copyBtn.dataset.copyKey;
+        if (keyToCopy) {
+          copyToClipboard(keyToCopy);
+          showToast(`Copied ${keyToCopy} to clipboard`);
+        }
+        return;
+      }
+
+      if (e.target.closest('.compare-source-key.selectable') || e.target.closest('input') || e.target.closest('select')) {
+        return;
+      }
+
+      const row = e.target.closest('tr.compare-row');
+      if (row && row.dataset.rowId) {
+        const rowId = row.dataset.rowId;
+        if (compareState.expandedRows.has(rowId)) {
+          compareState.expandedRows.delete(rowId);
+        } else {
+          compareState.expandedRows.add(rowId);
+        }
+        if (compareState.data) {
+          const rows = Array.isArray(compareState.data) ? compareState.data : (compareState.data.comparisons || []);
+          renderCompareTableRows(rows);
+        }
       }
     });
   }
 }
 
+// Polarity Selection Helper for Inverted Telemetry Pairs
+function promptPolaritySelection({ suggestion, onSelect }) {
+  if (!el.polarityModal) {
+    onSelect('negate');
+    return;
+  }
+  const posKey = suggestion.positive_field_key || 'Positive Register';
+  const negKey = suggestion.negative_field_key || 'Negative Register';
+
+  if (el.polarityModalDesc) {
+    el.polarityModalDesc.textContent = `The suggested registers for "${suggestion.suggested_label || suggestion.suggested_concept_key}" report values with opposite signs. Choose whether the combined concept should be positive or negative:`;
+  }
+  if (el.polarityPositiveDesc) {
+    el.polarityPositiveDesc.textContent = `Align to positive (+): inverts ${negKey} so both streams match as positive.`;
+  }
+  if (el.polarityNegativeDesc) {
+    el.polarityNegativeDesc.textContent = `Align to negative (-): inverts ${posKey} so both streams match as negative.`;
+  }
+
+  const cleanup = () => {
+    el.polarityModal.classList.remove('open');
+    if (el.btnPolarityPositive) el.btnPolarityPositive.onclick = null;
+    if (el.btnPolarityNegative) el.btnPolarityNegative.onclick = null;
+    if (el.btnPolarityDirect) el.btnPolarityDirect.onclick = null;
+    if (el.btnClosePolarityModal) el.btnClosePolarityModal.onclick = null;
+    if (el.btnCancelPolarityModal) el.btnCancelPolarityModal.onclick = null;
+  };
+
+  if (el.btnPolarityPositive) {
+    el.btnPolarityPositive.onclick = () => {
+      cleanup();
+      onSelect('negate');
+    };
+  }
+  if (el.btnPolarityNegative) {
+    el.btnPolarityNegative.onclick = () => {
+      cleanup();
+      onSelect('negate');
+    };
+  }
+  if (el.btnPolarityDirect) {
+    el.btnPolarityDirect.onclick = () => {
+      cleanup();
+      onSelect('none');
+    };
+  }
+  if (el.btnClosePolarityModal) el.btnClosePolarityModal.onclick = cleanup;
+  if (el.btnCancelPolarityModal) el.btnCancelPolarityModal.onclick = cleanup;
+
+  el.polarityModal.classList.add('open');
+}
+
 // Field Grouping & Ungrouping Modal Logic
+const GENERIC_CONCEPTS = new Set(['energy', 'power', 'voltage', 'current', 'frequency', 'temperature', 'status', 'state', 'standalone', 'null', 'none', '']);
+
 async function openGroupingModal(deviceSn, fieldKey, currentConceptKey, currentConceptLabel) {
   if (!el.groupingModal) return;
+  const sn = deviceSn || (state.activeDevice ? state.activeDevice.serial_number : '') || compareState.selectedDevice || '';
+  const cleanConceptKey = (currentConceptKey || '').trim();
+  const isGenericOrStandalone = !cleanConceptKey || GENERIC_CONCEPTS.has(cleanConceptKey.toLowerCase());
+
   state.groupingModalData = {
-    deviceSn,
+    deviceSn: sn,
     fieldKey,
-    currentConceptKey: currentConceptKey || '',
-    currentConceptLabel: currentConceptLabel || currentConceptKey || '(Standalone)',
+    currentConceptKey: cleanConceptKey,
+    currentConceptLabel: currentConceptLabel || cleanConceptKey || '(Standalone)',
   };
 
   el.groupingFieldKeyBadge.textContent = fieldKey;
-  el.groupingDeviceLabel.textContent = deviceSn;
+  el.groupingDeviceLabel.textContent = sn || '(All Devices)';
   el.groupingCurrentConceptLabel.textContent = state.groupingModalData.currentConceptLabel;
 
-  el.radioGroupExisting.checked = true;
-  el.groupingNewConceptKey.value = '';
-  el.groupingNewConceptLabel.value = '';
-  el.groupingTargetConceptSelect.innerHTML = '<option value="">-- Loading concepts... --</option>';
+  if (el.radioTransformNone) el.radioTransformNone.checked = true;
 
+  // Derive suggested new concept key and label from fieldKey and label
+  const pointName = (fieldKey || '').split('.').pop() || 'field';
+  let suggestedNewKey = '';
+  let suggestedNewLabel = '';
+
+  if (currentConceptLabel && !GENERIC_CONCEPTS.has(currentConceptLabel.toLowerCase()) && currentConceptLabel !== '(Standalone)') {
+    suggestedNewLabel = currentConceptLabel.replace(/\(.*?\)/g, '').trim();
+    suggestedNewKey = suggestedNewLabel.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  } else {
+    suggestedNewLabel = pointName;
+    suggestedNewKey = pointName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  }
+
+  el.groupingNewConceptKey.value = suggestedNewKey;
+  el.groupingNewConceptLabel.value = suggestedNewLabel;
+
+  // Default to 'Create a new custom concept' when field is standalone or in a generic pool
+  // This prevents accidental merging into large existing groups.
+  if (isGenericOrStandalone) {
+    if (el.radioGroupNew) el.radioGroupNew.checked = true;
+  } else {
+    if (el.radioGroupExisting) el.radioGroupExisting.checked = true;
+  }
+
+  el.groupingTargetConceptSelect.innerHTML = '<option value="">-- Loading concepts... --</option>';
   el.groupingModal.classList.add('open');
 
   try {
-    const res = await fetch(apiPath(`api/devices/${encodeURIComponent(deviceSn)}/unified_fields`));
+    const fetchUrl = sn ? `api/devices/${encodeURIComponent(sn)}/unified_fields` : 'api/overview';
+    const res = await fetch(apiPath(fetchUrl));
     const data = await res.json();
     const groups = data.unified_fields || [];
     
@@ -3899,7 +4122,7 @@ async function openGroupingModal(deviceSn, fieldKey, currentConceptKey, currentC
     el.groupingTargetConceptSelect.innerHTML = '<option value="">-- Choose an existing concept --</option>';
     groups.forEach(g => {
       if (isScaleFactorField(g)) return;
-      const isCurrent = g.concept_key === currentConceptKey;
+      const isCurrent = !isGenericOrStandalone && g.concept_key === cleanConceptKey;
       const opt = document.createElement('option');
       opt.value = g.concept_key;
       opt.textContent = `${g.label || g.concept_key} (${g.concept_key})${isCurrent ? ' [Current]' : ''}`;
@@ -3920,7 +4143,10 @@ function closeGroupingModal() {
 
 async function saveGroupingAction() {
   if (!state.groupingModalData) return;
-  const { deviceSn, fieldKey } = state.groupingModalData;
+  let { deviceSn, fieldKey } = state.groupingModalData;
+  if (!deviceSn) {
+    deviceSn = (state.activeDevice ? state.activeDevice.serial_number : '') || compareState.selectedDevice || '';
+  }
 
   let targetConcept = null;
   let customLabel = null;
@@ -3942,6 +4168,11 @@ async function saveGroupingAction() {
     targetConcept = null;
   }
 
+  let transform = null;
+  if (el.radioTransformNegate && el.radioTransformNegate.checked) {
+    transform = 'negate';
+  }
+
   try {
     el.btnSaveGroupingModal.disabled = true;
     el.btnSaveGroupingModal.textContent = 'Saving...';
@@ -3954,6 +4185,7 @@ async function saveGroupingAction() {
         field_key: fieldKey,
         target_concept: targetConcept,
         custom_label: customLabel,
+        transform: transform,
       }),
     });
     const data = await res.json();
@@ -3975,12 +4207,17 @@ async function saveGroupingAction() {
 }
 
 async function ungroupFieldAction(deviceSn, fieldKey) {
+  const sn = deviceSn || (state.activeDevice ? state.activeDevice.serial_number : '') || compareState.selectedDevice || '';
+  if (!fieldKey) {
+    alert('Error: field_key is required to ungroup field');
+    return;
+  }
   try {
     const res = await fetch(apiPath('api/grouping/override'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        device_sn: deviceSn,
+        device_sn: sn,
         field_key: fieldKey,
         target_concept: null,
       }),
@@ -3988,7 +4225,7 @@ async function ungroupFieldAction(deviceSn, fieldKey) {
     const data = await res.json();
     if (data.status === 'ok') {
       showToast(`Ungrouped ${fieldKey}`);
-      await refreshAfterGroupingChange(deviceSn);
+      await refreshAfterGroupingChange(sn);
     } else {
       alert(`Error ungrouping field: ${data.error || 'Unknown error'}`);
     }
@@ -3998,19 +4235,24 @@ async function ungroupFieldAction(deviceSn, fieldKey) {
 }
 
 async function resetGroupingAction(deviceSn, fieldKey) {
+  const sn = deviceSn || (state.activeDevice ? state.activeDevice.serial_number : '') || compareState.selectedDevice || '';
+  if (!fieldKey) {
+    alert('Error: field_key is required to reset grouping');
+    return;
+  }
   try {
     const res = await fetch(apiPath('api/grouping/reset'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        device_sn: deviceSn,
+        device_sn: sn,
         field_key: fieldKey,
       }),
     });
     const data = await res.json();
     if (data.status === 'ok') {
       showToast(`Reset ${fieldKey} to default grouping`);
-      await refreshAfterGroupingChange(deviceSn);
+      await refreshAfterGroupingChange(sn);
     } else {
       alert(`Error resetting grouping: ${data.error || 'Unknown error'}`);
     }
@@ -4020,6 +4262,11 @@ async function resetGroupingAction(deviceSn, fieldKey) {
 }
 
 async function ungroupAllAction(deviceSn, conceptKey) {
+  const sn = deviceSn || (state.activeDevice ? state.activeDevice.serial_number : '') || compareState.selectedDevice || '';
+  if (!conceptKey) {
+    alert('Error: concept_key is required to ungroup all');
+    return;
+  }
   if (!confirm(`Are you sure you want to ungroup all sources in '${conceptKey}'? Each register will become an independent standalone field.`)) {
     return;
   }
@@ -4028,14 +4275,14 @@ async function ungroupAllAction(deviceSn, conceptKey) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        device_sn: deviceSn,
+        device_sn: sn,
         concept_key: conceptKey,
       }),
     });
     const data = await res.json();
     if (data.status === 'ok') {
       showToast(`Ungrouped all sources in ${conceptKey}`);
-      await refreshAfterGroupingChange(deviceSn);
+      await refreshAfterGroupingChange(sn);
     } else {
       alert(`Error ungrouping concept: ${data.error || 'Unknown error'}`);
     }
@@ -4119,6 +4366,8 @@ const compareState = {
   suggestionConfidence: 'high',
   visibleSuggestions: [],
   hasInitializedTab: false,
+  expandedRows: new Set(),
+  expandedSuggestions: new Set(),
 };
 
 async function fetchAndRenderCompare(forceSuggestions = false) {
@@ -4346,6 +4595,8 @@ function renderCompareSuggestions(suggestions) {
 
   el.suggestionsList.innerHTML = Object.values(deviceGroups).map(dg => {
     const cardsHtml = dg.items.map(s => {
+      const sId = s.id;
+      const isExpanded = compareState.expandedSuggestions.has(sId);
       const confClass = s.confidence_label === 'HIGH' ? 'high' : 'medium';
       const confPct = Math.round((s.confidence || 0) * 100);
 
@@ -4358,17 +4609,56 @@ function renderCompareSuggestions(suggestions) {
           ? `${formatFieldValue(src.value)} ${escapeHtml(src.units || s.units || '')}`
           : '<span class="text-muted">--</span>';
 
+        const rawDisplay = (src.raw_value !== null && src.raw_value !== undefined && src.raw_value !== src.value)
+          ? `<span class="compare-source-raw" title="Raw unscaled value">raw: ${formatFieldValue(src.raw_value)}</span>`
+          : '';
+
+        if (isExpanded) {
+          return `
+            <div class="compare-source-card is-expanded">
+              <div class="compare-source-card-main">
+                <div class="compare-source-left">
+                  <span class="source-chip ${srcClass}">${escapeHtml(src.source_id || src.source_type)}</span>
+                  <div class="compare-source-meta expanded">
+                    <span class="compare-source-name" title="${escapeHtml(src.label || src.name)}">${escapeHtml(src.label || src.name)}</span>
+                    <div class="compare-source-key-row">
+                      <span class="compare-source-key selectable" title="${escapeHtml(src.field_key)}">${escapeHtml(src.field_key)}</span>
+                      <button class="btn-copy-key" data-copy-key="${escapeHtml(src.field_key)}" title="Copy register key">📋</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="compare-source-right">
+                  <div class="compare-source-value-group">
+                    <span class="compare-source-value">${valDisplay}</span>
+                    ${rawDisplay}
+                  </div>
+                </div>
+              </div>
+              <div class="compare-source-expanded-meta">
+                <span class="expanded-meta-item"><strong>Source Type:</strong> ${escapeHtml(src.source_type || 'SUNSPEC')}</span>
+                ${src.model_id ? `<span class="expanded-meta-item"><strong>Model ID:</strong> ${escapeHtml(String(src.model_id))}</span>` : ''}
+                ${src.units || s.units ? `<span class="expanded-meta-item"><strong>Units:</strong> ${escapeHtml(src.units || s.units)}</span>` : ''}
+                ${src.raw_value !== null && src.raw_value !== undefined ? `<span class="expanded-meta-item"><strong>Raw Reg Value:</strong> ${formatFieldValue(src.raw_value)}</span>` : ''}
+                <span class="expanded-meta-item"><strong>Device:</strong> ${escapeHtml(dg.name || s.device_sn || '')}</span>
+              </div>
+            </div>
+          `;
+        }
+
         return `
           <div class="compare-source-card">
             <div class="compare-source-left">
               <span class="source-chip ${srcClass}">${escapeHtml(src.source_id || src.source_type)}</span>
               <div class="compare-source-meta">
-                <span class="compare-source-name">${escapeHtml(src.label || src.name)}</span>
-                <span class="compare-source-key">${escapeHtml(src.field_key)}</span>
+                <span class="compare-source-name" title="${escapeHtml(src.label || src.name)}">${escapeHtml(src.label || src.name)}</span>
+                <span class="compare-source-key" title="${escapeHtml(src.field_key)}">${escapeHtml(src.field_key)}</span>
               </div>
             </div>
             <div class="compare-source-right">
-              <span class="compare-source-value">${valDisplay}</span>
+              <div class="compare-source-value-group">
+                <span class="compare-source-value">${valDisplay}</span>
+                ${rawDisplay}
+              </div>
             </div>
           </div>
         `;
@@ -4382,13 +4672,24 @@ function renderCompareSuggestions(suggestions) {
       `).join('');
 
       const fieldKeysJson = escapeHtml(JSON.stringify((s.sources || []).map(src => src.field_key)));
+      const isInverted = s.inverted_pair || s.suggested_transform === 'negate';
+      const polarityBadge = isInverted ? `
+        <span class="suggestion-polarity-badge" title="Registers report opposite signs. Polarity negation is recommended.">
+          ⚡ Opposite Polarity (Needs Negation)
+        </span>
+      ` : '';
 
       return `
-        <div class="suggestion-card" data-suggestion-id="${escapeHtml(s.id)}">
+        <div class="suggestion-card ${isExpanded ? 'is-expanded' : ''}" data-suggestion-id="${escapeHtml(s.id)}">
           <div class="suggestion-card-header">
             <div class="suggestion-title-group">
               <span class="suggestion-concept-badge">💡 ${escapeHtml(s.suggested_label)} (${escapeHtml(s.suggested_concept_key)})</span>
               <span class="suggestion-confidence-badge ${confClass}">${confPct}% ${escapeHtml(s.confidence_label)} Confidence</span>
+              ${polarityBadge}
+              <button class="btn-toggle-suggestion-expand" data-id="${escapeHtml(s.id)}" title="Click to ${isExpanded ? 'collapse' : 'expand'} full field details">
+                <span>${isExpanded ? '▲' : '▼'}</span>
+                <span>${isExpanded ? 'Collapse' : 'Details'}</span>
+              </button>
             </div>
             <div class="suggestion-actions">
               <button class="btn-approve-suggestion"
@@ -4398,6 +4699,10 @@ function renderCompareSuggestions(suggestions) {
                       data-concept="${escapeHtml(s.suggested_concept_key)}"
                       data-label="${escapeHtml(s.suggested_label)}"
                       data-field-keys="${fieldKeysJson}"
+                      data-inverted="${isInverted ? 'true' : 'false'}"
+                      data-suggested-transform="${escapeHtml(s.suggested_transform || '')}"
+                      data-pos-key="${escapeHtml(s.positive_field_key || '')}"
+                      data-neg-key="${escapeHtml(s.negative_field_key || '')}"
                       title="Merge these fields into a single unified telemetry point">
                 ✅ Approve &amp; Merge
               </button>
@@ -4408,6 +4713,8 @@ function renderCompareSuggestions(suggestions) {
                       data-concept="${escapeHtml(s.suggested_concept_key)}"
                       data-label="${escapeHtml(s.suggested_label)}"
                       data-field-keys="${fieldKeysJson}"
+                      data-inverted="${isInverted ? 'true' : 'false'}"
+                      data-suggested-transform="${escapeHtml(s.suggested_transform || '')}"
                       title="Open grouping modal to customize concept key or label before saving">
                 ✏️ Customize
               </button>
@@ -4437,6 +4744,7 @@ function renderCompareSuggestions(suggestions) {
       target_concept: s.suggested_concept_key,
       label: s.suggested_label,
       suggestion_id: s.id,
+      transform: s.suggested_transform,
     }))));
 
     return `
@@ -4477,6 +4785,11 @@ function renderCompareTableRows(rows) {
 
     // 1. Tab filter
     if (tab === 'discrepancies') {
+      const isExplicit = r.is_explicitly_grouped || (
+        ((r.sources && r.sources.length > 1) || (r.source_count && r.source_count > 1) || (r.mqtt_value !== null && r.mqtt_value !== undefined && r.modbus_value !== null && r.modbus_value !== undefined)) &&
+        !((r.id || '').includes('.standalone.') || (r.concept_key || '').startsWith('standalone_') || (r.label || '').includes('(Ungrouped)'))
+      );
+      if (!isExplicit) return false;
       const isDisc = r.is_discrepant || ['DIVERGENT', 'UNIT_MISMATCH', 'POLARITY_MISMATCH', 'SCALE_MISMATCH'].includes(r.status);
       if (!isDisc) return false;
     } else if (tab === 'multisource') {
@@ -4521,6 +4834,11 @@ function renderCompareTableRows(rows) {
   el.compareTableBody.innerHTML = '';
   filtered.forEach(r => {
     const tr = document.createElement('tr');
+    const rowId = r.id || `${r.device_sn || ''}:${r.concept_key || r.mapping_id || ''}`;
+    const isExpanded = compareState.expandedRows.has(rowId);
+
+    tr.className = `compare-row ${isExpanded ? 'is-expanded' : ''} ${r.is_discrepant ? 'has-divergence' : ''}`;
+    tr.dataset.rowId = rowId;
 
     // Status Badge
     let statusClass = 'missing';
@@ -4553,14 +4871,20 @@ function renderCompareTableRows(rows) {
     const sources = r.sources || [];
     const devBadge = r.device_name ? `<span class="compare-device-pill">${escapeHtml(r.device_name)}</span>` : '';
     const ungroupAllBtn = (sources.length > 1)
-      ? `<button class="btn-group-action btn-ungroup-action" data-action="ungroup-all" data-sn="${escapeHtml(r.device_sn)}" data-concept-key="${escapeHtml(r.concept_key)}" style="margin-top: 5px; width: fit-content;" title="Ungroup all sources in this concept into standalone fields">✂️ Ungroup All</button>`
+      ? `<button class="btn-group-action btn-ungroup-action" data-action="ungroup-all" data-sn="${escapeHtml(r.device_sn || '')}" data-concept-key="${escapeHtml(r.concept_key)}" style="margin-top: 5px; width: fit-content;" title="Ungroup all sources in this concept into standalone fields">✂️ Ungroup All</button>`
       : '';
+    const expandToggleBtn = `<button class="btn-expand-compare" data-action="toggle-expand" data-row-id="${escapeHtml(rowId)}" title="Click to ${isExpanded ? 'collapse' : 'expand'} full details">
+      <span>${isExpanded ? '▼' : '▶'}</span>
+      <span>${isExpanded ? 'Collapse' : 'Details'}</span>
+    </button>`;
+
     const conceptCol = `
       <div class="field-cell-main">
         ${devBadge}
         <strong>${escapeHtml(r.label || r.concept_key)}</strong>
         <span class="field-key">${escapeHtml(r.concept_key || r.mapping_id || '')}</span>
         ${ungroupAllBtn}
+        ${expandToggleBtn}
       </div>
     `;
 
@@ -4583,7 +4907,7 @@ function renderCompareTableRows(rows) {
           : '';
 
         const optDisplay = s.is_optimal
-          ? `<span class="compare-source-tag optimal" title="Selected optimal source">★ Optimal</span>`
+          ? `<span class="compare-source-tag optimal" title="Selected optimal source in polling plan">★ Optimal</span>`
           : '';
 
         const pinDisplay = s.is_pinned
@@ -4596,24 +4920,67 @@ function renderCompareTableRows(rows) {
 
         const actionButtons = (!s.is_scale_factor && !isScaleFactorField(s)) ? `
           <div class="compare-source-actions">
-            ${sources.length > 1 ? `<button class="btn-group-action btn-ungroup-action" data-action="ungroup" data-sn="${escapeHtml(r.device_sn)}" data-field-key="${escapeHtml(s.field_key)}" title="Ungroup this field from '${escapeHtml(r.label || r.concept_key)}'">✂️ Ungroup</button>` : ''}
-            <button class="btn-group-action btn-group-with-action" data-action="group-with" data-sn="${escapeHtml(r.device_sn)}" data-field-key="${escapeHtml(s.field_key)}" data-concept-key="${escapeHtml(r.concept_key)}" data-concept-label="${escapeHtml(r.label || r.concept_key)}" title="Group this field with an existing or new concept...">🔗 Group...</button>
-            ${s.is_custom_override ? `<button class="btn-group-action btn-reset-action" data-action="reset-group" data-sn="${escapeHtml(r.device_sn)}" data-field-key="${escapeHtml(s.field_key)}" title="Reset to default automatic grouping">↩️ Reset</button>` : ''}
+            ${sources.length > 1 ? `<button class="btn-group-action btn-ungroup-action" data-action="ungroup" data-sn="${escapeHtml(s.device_sn || r.device_sn || '')}" data-field-key="${escapeHtml(s.field_key)}" title="Ungroup this field from '${escapeHtml(r.label || r.concept_key)}'">✂️ Ungroup</button>` : ''}
+            <button class="btn-group-action btn-group-with-action" data-action="group-with" data-sn="${escapeHtml(s.device_sn || r.device_sn || '')}" data-field-key="${escapeHtml(s.field_key)}" data-concept-key="${escapeHtml(r.concept_key)}" data-concept-label="${escapeHtml(r.label || r.concept_key)}" title="Group this field with an existing or new concept...">🔗 Group...</button>
+            ${s.is_custom_override ? `<button class="btn-group-action btn-reset-action" data-action="reset-group" data-sn="${escapeHtml(s.device_sn || r.device_sn || '')}" data-field-key="${escapeHtml(s.field_key)}" title="Reset to default automatic grouping">↩️ Reset</button>` : ''}
           </div>
         ` : '';
+
+        if (isExpanded) {
+          return `
+            <div class="compare-source-card is-expanded ${isDivergent ? 'is-divergent' : ''}">
+              <div class="compare-source-card-main">
+                <div class="compare-source-left">
+                  <span class="source-chip ${srcChipClass}">${escapeHtml(s.source_id || 'SRC')}</span>
+                  <div class="compare-source-meta expanded">
+                    <span class="compare-source-name" title="${escapeHtml(s.label || s.name || '')}">${escapeHtml(s.label || s.name || '')}</span>
+                    <div class="compare-source-key-row">
+                      <span class="compare-source-key selectable" title="Full register key: ${escapeHtml(s.field_key || '')}">${escapeHtml(s.field_key || '')}</span>
+                      <button class="btn-copy-key" data-copy-key="${escapeHtml(s.field_key || '')}" title="Copy register key">📋</button>
+                    </div>
+                  </div>
+                </div>
+                <div class="compare-source-right">
+                  <div class="compare-source-value-group">
+                    <span class="compare-source-value ${isDivergent ? 'val-divergent' : ''}">${valDisplay}</span>
+                    ${rawDisplay}
+                  </div>
+                  ${tfDisplay}
+                  ${optDisplay}
+                  ${pinDisplay}
+                  ${customDisplay}
+                  ${actionButtons}
+                </div>
+              </div>
+              <div class="compare-source-expanded-meta">
+                <span class="expanded-meta-item"><strong>Source:</strong> ${escapeHtml(s.source_type || 'SUNSPEC')}</span>
+                ${s.model_id ? `<span class="expanded-meta-item"><strong>SunSpec Model:</strong> ${escapeHtml(String(s.model_id))}${s.model_name ? ` (${escapeHtml(s.model_name)})` : ''}</span>` : ''}
+                ${s.units || r.unit ? `<span class="expanded-meta-item"><strong>Units:</strong> ${escapeHtml(s.units || r.unit)}</span>` : ''}
+                ${s.raw_value !== null && s.raw_value !== undefined ? `<span class="expanded-meta-item"><strong>Raw Reg Value:</strong> ${formatFieldValue(s.raw_value)}</span>` : ''}
+                ${s.scale_factor ? `<span class="expanded-meta-item"><strong>Scale Factor:</strong> ${escapeHtml(s.scale_factor)}</span>` : ''}
+                ${s.point_type ? `<span class="expanded-meta-item"><strong>Point Type:</strong> ${escapeHtml(s.point_type)}</span>` : ''}
+                ${s.offset !== null && s.offset !== undefined ? `<span class="expanded-meta-item"><strong>Offset:</strong> ${s.offset}</span>` : ''}
+                ${s.transform ? `<span class="expanded-meta-item"><strong>Transform:</strong> ${escapeHtml(s.transform)}</span>` : ''}
+                ${s.device_sn ? `<span class="expanded-meta-item"><strong>Device SN:</strong> ${escapeHtml(s.device_sn)}</span>` : ''}
+              </div>
+            </div>
+          `;
+        }
 
         return `
           <div class="compare-source-card ${isDivergent ? 'is-divergent' : ''}">
             <div class="compare-source-left">
               <span class="source-chip ${srcChipClass}">${escapeHtml(s.source_id || 'SRC')}</span>
               <div class="compare-source-meta">
-                <span class="compare-source-name">${escapeHtml(s.label || s.name || '')}</span>
-                <span class="compare-source-key">${escapeHtml(s.field_key || '')}</span>
+                <span class="compare-source-name" title="${escapeHtml(s.label || s.name || '')}">${escapeHtml(s.label || s.name || '')}</span>
+                <span class="compare-source-key" title="${escapeHtml(s.field_key || '')}">${escapeHtml(s.field_key || '')}</span>
               </div>
             </div>
             <div class="compare-source-right">
-              <span class="compare-source-value ${isDivergent ? 'val-divergent' : ''}">${valDisplay}</span>
-              ${rawDisplay}
+              <div class="compare-source-value-group">
+                <span class="compare-source-value ${isDivergent ? 'val-divergent' : ''}">${valDisplay}</span>
+                ${rawDisplay}
+              </div>
               ${tfDisplay}
               ${optDisplay}
               ${pinDisplay}
@@ -4624,7 +4991,25 @@ function renderCompareTableRows(rows) {
         `;
       }).join('');
 
-      sourcesCol = `<div class="compare-sources-list">${cardsHtml}</div>`;
+      let discrepancyCard = '';
+      if (isExpanded && r.is_discrepant) {
+        discrepancyCard = `
+          <div class="compare-expanded-discrepancy-card">
+            <div class="discrepancy-header">
+              <span class="warning-badge-icon">⚠️</span>
+              <span><strong>${escapeHtml(r.status_label || r.status || 'Divergent')}:</strong> ${escapeHtml(r.discrepancy_reason || 'Values diverge between sources')}</span>
+            </div>
+            ${(r.delta !== null && r.delta !== undefined) ? `
+              <div class="discrepancy-metrics">
+                <span class="disc-metric"><strong>Δ Difference:</strong> ${formatFieldValue(r.delta)} ${escapeHtml(r.unit || '')}</span>
+                ${r.match_pct !== null && r.match_pct !== undefined ? `<span class="disc-metric"><strong>Agreement:</strong> ${r.match_pct}% match</span>` : ''}
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }
+
+      sourcesCol = `<div class="compare-sources-list">${discrepancyCard}${cardsHtml}</div>`;
     } else {
       // Legacy fallback row
       const mqttDisplay = r.mqtt_value !== null && r.mqtt_value !== undefined
@@ -4636,27 +5021,31 @@ function renderCompareTableRows(rows) {
 
       sourcesCol = `
         <div class="compare-sources-list">
-          <div class="compare-source-card">
-            <div class="compare-source-left">
-              <span class="source-chip src-mqtt">MQTT</span>
-              <div class="compare-source-meta">
-                <span class="compare-source-key">${escapeHtml(r.mqtt_key || 'MQTT Push')}</span>
+          <div class="compare-source-card ${isExpanded ? 'is-expanded' : ''}">
+            <div class="compare-source-card-main">
+              <div class="compare-source-left">
+                <span class="source-chip src-mqtt">MQTT</span>
+                <div class="compare-source-meta ${isExpanded ? 'expanded' : ''}">
+                  <span class="compare-source-key ${isExpanded ? 'selectable' : ''}">${escapeHtml(r.mqtt_key || 'MQTT Push')}</span>
+                </div>
               </div>
-            </div>
-            <div class="compare-source-right">
-              <span class="compare-source-value">${mqttDisplay}</span>
+              <div class="compare-source-right">
+                <span class="compare-source-value">${mqttDisplay}</span>
+              </div>
             </div>
           </div>
-          <div class="compare-source-card">
-            <div class="compare-source-left">
-              <span class="source-chip src-sunspec">MODBUS</span>
-              <div class="compare-source-meta">
-                <span class="compare-source-name">${escapeHtml(r.modbus_label || '')}</span>
-                <span class="compare-source-key">${escapeHtml(r.modbus_key || '')}</span>
+          <div class="compare-source-card ${isExpanded ? 'is-expanded' : ''}">
+            <div class="compare-source-card-main">
+              <div class="compare-source-left">
+                <span class="source-chip src-sunspec">MODBUS</span>
+                <div class="compare-source-meta ${isExpanded ? 'expanded' : ''}">
+                  <span class="compare-source-name">${escapeHtml(r.modbus_label || '')}</span>
+                  <span class="compare-source-key ${isExpanded ? 'selectable' : ''}">${escapeHtml(r.modbus_key || '')}</span>
+                </div>
               </div>
-            </div>
-            <div class="compare-source-right">
-              <span class="compare-source-value">${mbDisplay}</span>
+              <div class="compare-source-right">
+                <span class="compare-source-value">${mbDisplay}</span>
+              </div>
             </div>
           </div>
         </div>

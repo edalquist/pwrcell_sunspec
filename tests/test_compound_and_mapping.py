@@ -303,6 +303,140 @@ class TestConfigurableMappingsAndCompoundViews(unittest.TestCase):
                     save_mappings(get_default_mappings(), mappings_path)
                     reg.reload()
 
+    def test_telemetry_mapping_def_fields_lists_and_backward_compatibility(self):
+        """Verify TelemetryMappingDef parses modern lists and supports legacy properties seamlessly."""
+        # 1. Modern list-based mapping
+        m_modern = TelemetryMappingDef.from_dict({
+            "id": "ac_voltage",
+            "label": "AC Voltage",
+            "device_type": "inverter",
+            "unit": "V",
+            "mqtt_fields": ["inverter.live.ac_voltage_v", "inverter.live.voltage_alt"],
+            "modbus_fields": ["inverter.model_102.PhVphA", "inverter.model_101.PhV"],
+        })
+        self.assertEqual(m_modern.mqtt_fields, ["inverter.live.ac_voltage_v", "inverter.live.voltage_alt"])
+        self.assertEqual(m_modern.modbus_fields, ["inverter.model_102.PhVphA", "inverter.model_101.PhV"])
+        # Backward-compatible property accessors
+        self.assertEqual(m_modern.mqtt_field, "inverter.live.ac_voltage_v")
+        self.assertEqual(m_modern.primary_mqtt_field, "inverter.live.ac_voltage_v")
+        self.assertEqual(m_modern.modbus_field, "inverter.model_102.PhVphA")
+        self.assertEqual(m_modern.primary_modbus_field, "inverter.model_102.PhVphA")
+        self.assertEqual(m_modern.modbus_candidates, ["inverter.model_102.PhVphA", "inverter.model_101.PhV"])
+
+        # 2. Legacy scalar-based mapping
+        m_legacy = TelemetryMappingDef.from_dict({
+            "id": "grid_power",
+            "label": "Grid Net Power",
+            "device_type": "inverter",
+            "unit": "W",
+            "mqtt_field": "inverter.live.grid_power_w",
+            "modbus_field": "inverter.model_64208.CTPow",
+            "modbus_candidates": ["inverter.model_64208.CTPow", "inverter.model_64204.CTPow"],
+        })
+        self.assertEqual(m_legacy.mqtt_fields, ["inverter.live.grid_power_w"])
+        self.assertEqual(m_legacy.modbus_fields, ["inverter.model_64208.CTPow", "inverter.model_64204.CTPow"])
+        self.assertEqual(m_legacy.mqtt_field, "inverter.live.grid_power_w")
+        self.assertEqual(m_legacy.modbus_field, "inverter.model_64208.CTPow")
+
+        # 3. Serialization to dict
+        d = m_modern.to_dict()
+        self.assertIn("mqtt_fields", d)
+        self.assertIn("modbus_fields", d)
+        self.assertEqual(d["mqtt_fields"], ["inverter.live.ac_voltage_v", "inverter.live.voltage_alt"])
+        self.assertEqual(d["modbus_fields"], ["inverter.model_102.PhVphA", "inverter.model_101.PhV"])
+        self.assertEqual(d["mqtt_field"], "inverter.live.ac_voltage_v")
+        self.assertEqual(d["modbus_field"], "inverter.model_102.PhVphA")
+
+    def test_ungrouped_fields_in_telemetry_mappings(self):
+        """Verify fields in ungrouped_fields stay separate without needing custom_groupings.yaml."""
+        from pwrcell.mapping import MappingRegistry, save_mappings
+        from pwrcell.optimizer import group_device_fields
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_p = Path(tmpdir) / "telemetry_mappings.yaml"
+            reg = MappingRegistry.get_instance(str(cfg_p))
+            
+            # Setup two battery voltage fields from different models
+            self.state.set_field(
+                device_sn=self.bat.serial_number,
+                name="V",
+                label="Model 802 Voltage",
+                value=380.0,
+                units="V",
+                model_id=802,
+                sub_group="model_802",
+            )
+            self.state.set_field(
+                device_sn=self.bat.serial_number,
+                name="V",
+                label="Model 64252 Voltage",
+                value=380.0,
+                units="V",
+                model_id=64252,
+                sub_group="model_64252",
+            )
+
+            # Explicitly mark model_64252.V as ungrouped in telemetry_mappings
+            reg.ungrouped_fields = {"battery.model_64252.V"}
+            self.assertTrue(reg.is_field_ungrouped("battery.model_64252.V"))
+            self.assertFalse(reg.is_field_ungrouped("battery.model_802.V"))
+
+            # Group fields with NO custom_groupings overrides
+            groups = group_device_fields(self.bat, mapping_registry=reg, custom_groupings={"field_overrides": {}})
+
+            # model_64252.V must be in its own standalone ungrouped row
+            standalone_group = next((g for g in groups if "battery.model_64252.V" in [s.field_key for s in g.sources]), None)
+            self.assertIsNotNone(standalone_group)
+            self.assertIn("standalone", standalone_group.id)
+            self.assertIn("(Ungrouped)", standalone_group.label)
+
+            # Reset registry
+            reg.ungrouped_fields = set()
+
+    def test_save_and_clean_slate_mappings(self):
+        """Verify save_current_as_telemetry_mappings exports ungrouped fields and resets custom groupings."""
+        from pwrcell.grouping import (
+            set_field_grouping_override,
+            save_current_as_telemetry_mappings,
+            load_custom_groupings,
+            clear_custom_groupings_cache,
+            get_default_grouping_config_path,
+        )
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cust_cfg = Path(tmpdir) / "custom_groupings.yaml"
+            map_cfg = Path(tmpdir) / "telemetry_mappings.yaml"
+
+            # Create an ungrouping override in custom_groupings
+            set_field_grouping_override(
+                self.bat.serial_number,
+                "battery.model_64252.V",
+                None,
+                config_path=cust_cfg,
+            )
+            cg_data = load_custom_groupings(cust_cfg)
+            self.assertIn(f"{self.bat.serial_number}:battery.model_64252.V", cg_data["field_overrides"])
+
+            # Save as clean slate telemetry mappings
+            res = save_current_as_telemetry_mappings(
+                state_store=self.state,
+                config_path=map_cfg,
+                custom_groupings_path=cust_cfg,
+                only_custom=False,
+                clear_custom_overrides=True,
+            )
+            self.assertEqual(res["status"], "ok")
+            self.assertGreaterEqual(res["mappings_count"], 1)
+            self.assertIn("battery.model_64252.V", res.get("ungrouped_fields", []))
+
+            # custom_groupings must be cleared to a clean slate
+            cleared_cg = load_custom_groupings(cust_cfg)
+            self.assertEqual(cleared_cg["field_overrides"], {})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,6 +22,7 @@ from .catalog import (
     SunspecPointDef,
     get_catalog,
     get_suggested_precision,
+    infer_ha_classes,
     is_scale_factor_point,
     is_sunspec_sentinel,
 )
@@ -783,25 +784,55 @@ class StateStore:
         if not target_dev:
             return None
 
+        target_sn = target_dev.serial_number if target_dev else ""
+
+        from .grouping import load_custom_groupings, is_field_excluded_from_mapping
+        custom_data = load_custom_groupings()
+
         # 1. Lookup MQTT Field
-        mqtt_field = self._find_field(m.mqtt_field)
+        raw_mqtt_field = None
+        for mf in m.mqtt_fields:
+            raw_mqtt_field = self._find_field(mf)
+            if raw_mqtt_field:
+                break
+        if not raw_mqtt_field and m.mqtt_field:
+            raw_mqtt_field = self._find_field(m.mqtt_field)
+
+        mqtt_field = raw_mqtt_field
+        if mqtt_field:
+            sn = getattr(mqtt_field, "device_sn", None) or target_sn
+            if is_field_excluded_from_mapping(sn, mqtt_field.key, m.id, custom_data):
+                mqtt_field = None
+
         mqtt_val = mqtt_field.value if mqtt_field else None
         mqtt_raw = mqtt_field.raw_value if mqtt_field else None
         mqtt_upd = mqtt_field.last_updated if mqtt_field else None
         mqtt_k = mqtt_field.key if mqtt_field else m.mqtt_field
 
         # 2. Lookup Modbus Field (primary candidate then alternatives)
-        candidates = [m.modbus_field] + [c for c in m.modbus_candidates if c != m.modbus_field]
+        candidates = list(m.modbus_fields)
         mb_fields: List[StateField] = []
         chosen_cand_key = m.modbus_field
         for cand_key in candidates:
             fields = self.find_fields(cand_key)
-            if fields and any(f.value is not None for f in fields):
-                mb_fields = fields
+            valid_fields = [
+                f for f in fields
+                if not is_field_excluded_from_mapping(getattr(f, "device_sn", None) or target_sn, f.key, m.id, custom_data)
+            ]
+            if valid_fields and any(f.value is not None for f in valid_fields):
+                mb_fields = valid_fields
                 chosen_cand_key = cand_key
                 break
         if not mb_fields:
-            mb_fields = self.find_fields(m.modbus_field)
+            fields = self.find_fields(m.modbus_field)
+            mb_fields = [
+                f for f in fields
+                if not is_field_excluded_from_mapping(getattr(f, "device_sn", None) or target_sn, f.key, m.id, custom_data)
+            ]
+
+        # Suppress compound view if all underlying fields were excluded or missing
+        if not mqtt_field and not mb_fields:
+            return None
 
         should_sum = (
             m.transform in ("sum", "sum_all", "sum_devices")
@@ -913,6 +944,7 @@ class StateStore:
                     units=mqtt_field.units,
                     is_writable=False,
                     is_optimal=(latest_src == FieldSource.MQTT_PUSH.value),
+                    device_sn=mqtt_field.device_sn if mqtt_field else "",
                 )
             )
         if mb_field:
@@ -931,6 +963,7 @@ class StateStore:
                     is_writable=mb_field.is_writable,
                     transform=m.transform if m.transform != "none" else None,
                     is_optimal=(latest_src == FieldSource.MODBUS_POLL.value),
+                    device_sn=mb_field.device_sn if mb_field else "",
                 )
             )
 
@@ -1122,6 +1155,18 @@ class StateStore:
                 merged_flags = existing.bitmask_flags
 
         merged_pt_type = pick(point_type, "point_type")
+        merged_units = pick(units, "units")
+        merged_ha_hint = pick(ha_hint, "ha_hint")
+        if not merged_ha_hint:
+            inf_d, inf_s = infer_ha_classes(units=merged_units, name=name, platform="sensor")
+            if inf_d or inf_s:
+                merged_ha_hint = HomeAssistantHint(
+                    platform="sensor",
+                    device_class=inf_d,
+                    state_class=inf_s,
+                    unit_of_measurement=merged_units,
+                )
+
         return StateField(
             key=key,
             device_sn=dev.serial_number,
@@ -1131,7 +1176,7 @@ class StateStore:
             description=description if (description or existing is None) else existing.description,
             value=value,
             raw_value=raw_value,
-            units=pick(units, "units"),
+            units=merged_units,
             point_type=merged_pt_type,
             is_enum=bool(pick(is_enum, "is_enum")),
             is_bitfield=merged_bitfield,
@@ -1151,7 +1196,7 @@ class StateStore:
             mqtt_equivalent=mqtt_eq,
             compound_key=c_key,
             is_compound_raw=bool(c_key),
-            ha_hint=pick(ha_hint, "ha_hint"),
+            ha_hint=merged_ha_hint,
             model_id=pick(model_id, "model_id"),
             model_name=pick(model_name, "model_name"),
             model_label=pick(model_label, "model_label"),
@@ -1219,6 +1264,12 @@ class StateStore:
             raw_to_comp = get_active_raw_to_compound_mapping()
             mqtt_eq = mb_to_mqtt.get(key)
             c_key = raw_to_comp.get(key) or (raw_to_comp.get(mqtt_eq) if mqtt_eq else None)
+            if c_key:
+                from .grouping import is_field_excluded_from_mapping
+                cid = c_key.split(".")[-1]
+                if is_field_excluded_from_mapping(dev.serial_number, key, cid):
+                    c_key = None
+                    mqtt_eq = None
 
             existing = dev.fields.get(key)
             if existing is not None and self._should_suppress_counter_drop(dev, key, name, existing, value, units, ha_hint):
@@ -1237,7 +1288,8 @@ class StateStore:
             )
             dev.fields[key] = field_obj
 
-            dev.last_seen = time.time()
+            if value is not None or raw_value is not None:
+                dev.last_seen = time.time()
             listeners = list(self._listeners) if changed else []
             compound_listeners = list(self._compound_listeners) if changed else []
 
@@ -1312,29 +1364,35 @@ class StateStore:
             model_name = "live"
             model_label = "Push Telemetry"
             source = FieldSource.MQTT_PUSH
-            if name.endswith("_wh"):
-                units = "Wh"
-                ha_hint = HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh")
-            elif name.endswith("_w"):
-                units = "W"
-                ha_hint = HomeAssistantHint(platform="sensor", device_class="power", state_class="measurement", unit_of_measurement="W")
-            elif name.endswith("_v"):
-                units = "V"
-                ha_hint = HomeAssistantHint(platform="sensor", device_class="voltage", state_class="measurement", unit_of_measurement="V")
-            elif name.endswith("_a"):
-                units = "A"
-                ha_hint = HomeAssistantHint(platform="sensor", device_class="current", state_class="measurement", unit_of_measurement="A")
-            elif name.endswith("_hz"):
-                units = "Hz"
-                ha_hint = HomeAssistantHint(platform="sensor", device_class="frequency", state_class="measurement", unit_of_measurement="Hz")
-            elif name.endswith("_deg_c") or name.endswith("_c"):
-                units = "°C"
-                ha_hint = HomeAssistantHint(platform="sensor", device_class="temperature", state_class="measurement", unit_of_measurement="°C")
-            elif name in ("state_of_charge", "state_of_health"):
-                units = "%"
-                ha_hint = HomeAssistantHint(platform="sensor", device_class="battery", state_class="measurement", unit_of_measurement="%")
-            elif name == "system_mode":
+            if name == "system_mode":
+                ha_hint = HomeAssistantHint(platform="select")
+            elif "state" in name or "status" in name:
                 ha_hint = HomeAssistantHint(platform="sensor", device_class="enum")
+            else:
+                d_class, s_class = infer_ha_classes(units=units, name=name, platform="sensor")
+                if not units:
+                    if d_class == "energy":
+                        units = "Wh"
+                    elif d_class == "power":
+                        units = "W"
+                    elif d_class == "voltage":
+                        units = "V"
+                    elif d_class == "current":
+                        units = "A"
+                    elif d_class == "frequency":
+                        units = "Hz"
+                    elif d_class == "temperature":
+                        units = "°C"
+                    elif d_class == "battery":
+                        units = "%"
+
+                if d_class or s_class:
+                    ha_hint = HomeAssistantHint(
+                        platform="sensor",
+                        device_class=d_class,
+                        state_class=s_class,
+                        unit_of_measurement=units,
+                    )
         elif self.catalog:
             cat_model = self.catalog.get_model_by_name(sub_group)
             if not cat_model and sub_group.startswith("model_"):

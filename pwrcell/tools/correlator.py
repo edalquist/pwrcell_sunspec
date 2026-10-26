@@ -55,26 +55,37 @@ def _load_correlator_mappings() -> List[TelemetryMappingDef]:
     reg = MappingRegistry.get_instance()
     for m in reg.get_all():
         cand_defs = m.get_candidate_defs()
-        prim_def = cand_defs[0]
-        prim_cand = ModbusCandidate(
-            field_key=prim_def.field_key,
-            label=prim_def.label,
-            confidence=prim_def.confidence,
-            transform=prim_def.transform,
-            transform_desc=prim_def.transform_desc,
-            notes=prim_def.notes,
-        )
-        alt_cands = [
-            ModbusCandidate(
-                field_key=alt.field_key,
-                label=alt.label,
-                confidence=alt.confidence,
-                transform=alt.transform,
-                transform_desc=alt.transform_desc,
-                notes=alt.notes,
+        if not cand_defs:
+            prim_cand = ModbusCandidate(
+                field_key="",
+                label=f"{m.label} (Modbus Missing)",
+                confidence="NONE",
+                transform=None,
+                transform_desc=None,
+                notes=m.description or "No Modbus registers configured for this mapping",
             )
-            for alt in cand_defs[1:]
-        ]
+            alt_cands = []
+        else:
+            prim_def = cand_defs[0]
+            prim_cand = ModbusCandidate(
+                field_key=prim_def.field_key,
+                label=prim_def.label,
+                confidence=prim_def.confidence,
+                transform=prim_def.transform,
+                transform_desc=prim_def.transform_desc,
+                notes=prim_def.notes,
+            )
+            alt_cands = [
+                ModbusCandidate(
+                    field_key=alt.field_key,
+                    label=alt.label,
+                    confidence=alt.confidence,
+                    transform=alt.transform,
+                    transform_desc=alt.transform_desc,
+                    notes=alt.notes,
+                )
+                for alt in cand_defs[1:]
+            ]
         res.append(
             TelemetryMappingDef(
                 mapping_id=m.id,
@@ -132,6 +143,17 @@ class ComparisonResultRow:
     polled_count: int = 0
     sources: List[Dict[str, Any]] = field(default_factory=list)
 
+    @property
+    def is_explicitly_grouped(self) -> bool:
+        srcs = self.sources or []
+        cnt = self.source_count or len(srcs)
+        is_multi = len(srcs) > 1 or cnt > 1 or (self.mqtt_value is not None and self.modbus_value is not None)
+        lbl = self.label or ""
+        row_id = self.id or self.mapping_id or ""
+        c_key = self.concept_key or ""
+        is_standalone = ".standalone." in row_id or c_key.startswith("standalone_") or "(Ungrouped)" in lbl
+        return is_multi and not is_standalone
+
     def to_dict(self) -> dict:
         return {
             "id": self.id or self.mapping_id,
@@ -153,6 +175,7 @@ class ComparisonResultRow:
             "is_discrepant": self.is_discrepant,
             "is_custom_override": self.is_custom_override,
             "is_scale_factor": self.is_scale_factor,
+            "is_explicitly_grouped": self.is_explicitly_grouped,
             "match_pct": round(self.match_pct, 1) if self.match_pct is not None else None,
             "delta": round(self.delta, 2) if self.delta is not None else None,
             "notes": self.notes,
@@ -166,6 +189,7 @@ class ComparisonResultRow:
 def evaluate_comparisons(
     state_store: StateStore,
     mappings: Optional[List[TelemetryMappingDef]] = None,
+    custom_groupings: Optional[Dict[str, Any]] = None,
 ) -> List[ComparisonResultRow]:
     """Evaluate all grouped registers across all devices and telemetry mappings against current live state."""
     results: List[ComparisonResultRow] = []
@@ -174,11 +198,45 @@ def evaluate_comparisons(
     active_mappings = mappings if mappings is not None else _load_correlator_mappings()
     telemetry_ids = {m.mapping_id for m in active_mappings}
 
+    from ..grouping import load_custom_groupings, is_field_excluded_from_mapping
+    custom_data = custom_groupings if custom_groupings is not None else load_custom_groupings()
+
     for mapping in active_mappings:
-        mqtt_field = _find_field(state_store, mapping.mqtt_key)
+        raw_mqtt_field = _find_field(state_store, mapping.mqtt_key)
+        mqtt_field = raw_mqtt_field
+        if mqtt_field and is_field_excluded_from_mapping(getattr(mqtt_field, "device_sn", ""), mqtt_field.key, mapping.mapping_id, custom_data):
+            mqtt_field = None
         mqtt_val = mqtt_field.value if mqtt_field else None
+
         cand = mapping.primary_candidate
-        mb_fields = _find_fields(state_store, cand.field_key)
+        raw_mb_fields = _find_fields(state_store, cand.field_key)
+        mb_fields = [
+            f for f in raw_mb_fields
+            if not is_field_excluded_from_mapping(getattr(f, "device_sn", ""), f.key, mapping.mapping_id, custom_data)
+        ]
+
+        valid_alts = []
+        for alt in mapping.alternative_candidates:
+            raw_alt_fields = _find_fields(state_store, alt.field_key)
+            alt_mb_fields = [
+                f for f in raw_alt_fields
+                if not is_field_excluded_from_mapping(getattr(f, "device_sn", ""), f.key, mapping.mapping_id, custom_data)
+            ]
+            valid_alts.append((alt, alt_mb_fields, raw_alt_fields))
+
+        if not mb_fields:
+            for alt, alt_f, _ in valid_alts:
+                if alt_f:
+                    cand = alt
+                    mb_fields = alt_f
+                    break
+
+        any_raw_data = (raw_mqtt_field is not None and raw_mqtt_field.value is not None) or bool(raw_mb_fields) or any(bool(raw_f) for _, _, raw_f in valid_alts)
+        has_active_data = (mqtt_val is not None) or bool(mb_fields)
+
+        # Suppress baseline row if data exists in state store but all sources were excluded via user overrides
+        if any_raw_data and not has_active_data:
+            continue
 
         row = _build_comparison_row(
             mapping=mapping,
@@ -189,9 +247,8 @@ def evaluate_comparisons(
         )
         results.append(row)
 
-        for alt in mapping.alternative_candidates:
-            alt_mb_fields = _find_fields(state_store, alt.field_key)
-            if alt_mb_fields and (not mb_fields or row.status in ("DIVERGENT", "MODBUS_MISSING")):
+        for alt, alt_mb_fields, _ in valid_alts:
+            if alt != cand and alt_mb_fields and (not mb_fields or row.status in ("DIVERGENT", "MODBUS_MISSING")):
                 alt_row = _build_comparison_row(
                     mapping=mapping,
                     candidate=alt,
@@ -204,7 +261,7 @@ def evaluate_comparisons(
     # 2. Evaluate all Unified Field Groups across all registered devices
     if state_store.devices:
         for dev in state_store.devices.values():
-            groups = group_device_fields(dev)
+            groups = group_device_fields(dev, custom_groupings=custom_data)
             for g in groups:
                 # Exclude raw scale factor registers from telemetry comparison & merging UI
                 if getattr(g, "is_scale_factor", False):
@@ -264,6 +321,10 @@ def _build_group_comparison_row(dev, g, mapping_id: Optional[str] = None) -> Com
             "is_pinned": s.is_pinned,
             "is_custom_override": getattr(s, "is_custom_override", False),
             "is_divergent": False,
+            "device_sn": getattr(s, "device_sn", None) or dev.serial_number,
+            "offset": getattr(s, "offset", None),
+            "scale_factor": getattr(s, "scale_factor", None),
+            "point_type": getattr(s, "point_type", None),
         }
         sources_dicts.append(s_dict)
         if s.value is not None:
@@ -474,6 +535,39 @@ def _build_comparison_row(
 
     dev_type = mapping.mqtt_key.split(".")[0] if "." in mapping.mqtt_key else "system"
 
+    # Resolve device_sn and device_name
+    dev_sn = ""
+    dev_name = ""
+    if mb_field and getattr(mb_field, "device_sn", None):
+        dev_sn = mb_field.device_sn
+    elif mb_fields:
+        for f in mb_fields:
+            if getattr(f, "device_sn", None):
+                dev_sn = f.device_sn
+                break
+
+    if not dev_sn and state_store and state_store.devices:
+        target_dev = next((d for d in state_store.devices.values() if d.device_type == dev_type), None)
+        if target_dev:
+            dev_sn = target_dev.serial_number
+            dev_name = target_dev.model_name or target_dev.device_type
+        elif dev_type in ("inverter", "system"):
+            inv = next((d for d in state_store.devices.values() if d.device_type == "inverter"), None)
+            if inv:
+                dev_sn = inv.serial_number
+                dev_name = inv.model_name or inv.device_type
+        if not dev_sn:
+            first_dev = next(iter(state_store.devices.values()))
+            dev_sn = first_dev.serial_number
+            dev_name = first_dev.model_name or first_dev.device_type
+
+    if dev_sn and state_store and not dev_name:
+        dev_obj = state_store.devices.get(dev_sn)
+        if dev_obj:
+            dev_name = dev_obj.model_name or dev_obj.device_type
+    if not dev_name:
+        dev_name = f"{dev_type.capitalize()} Telemetry"
+
     if mqtt_val is None:
         mb_val_display = None
         if has_mb_val:
@@ -482,15 +576,40 @@ def _build_comparison_row(
                 mb_val_display = sum(num_vals)
             else:
                 mb_val_display = mb_field.value
+
+        mb_sn = mb_field.device_sn if (mb_field and getattr(mb_field, "device_sn", None)) else dev_sn
+        mb_src = [
+            {
+                "source_type": "SUNSPEC",
+                "source_id": candidate.field_key.split(".")[-2].replace("model_", "M") if "." in candidate.field_key else "SUNSPEC",
+                "field_key": candidate.field_key,
+                "name": candidate.field_key.split(".")[-1],
+                "label": modbus_label,
+                "model_id": getattr(mb_field, "model_id", None) if mb_field else None,
+                "model_name": getattr(mb_field, "model_name", None) if mb_field else None,
+                "value": mb_val_display,
+                "raw_value": mb_val_display,
+                "units": mapping.unit,
+                "transform": str(candidate.transform) if candidate.transform else None,
+                "is_optimal": True,
+                "is_pinned": False,
+                "is_divergent": False,
+                "device_sn": mb_sn,
+                "offset": getattr(mb_field, "offset", None) if mb_field else None,
+                "scale_factor": getattr(mb_field, "scale_factor_point", None) if mb_field else None,
+                "point_type": getattr(mb_field, "point_type", None) if mb_field else None,
+            }
+        ] if has_mb_val else []
+
         return ComparisonResultRow(
             id=f"telemetry:{mapping.mapping_id}",
             mapping_id=mapping.mapping_id,
             concept_key=mapping.mapping_id,
             label=mapping.label,
             unit=mapping.unit,
-            device_sn="",
+            device_sn=dev_sn,
             device_type=dev_type,
-            device_name=f"{dev_type.capitalize()} Telemetry",
+            device_name=dev_name,
             mqtt_key=mapping.mqtt_key,
             mqtt_value=None,
             modbus_key=candidate.field_key,
@@ -506,7 +625,7 @@ def _build_comparison_row(
             discrepancy_reason="Waiting for MQTT push telemetry",
             source_count=1 if has_mb_val else 0,
             polled_count=1 if has_mb_val else 0,
-            sources=[],
+            sources=mb_src,
         )
 
     if not has_mb_val:
@@ -516,9 +635,9 @@ def _build_comparison_row(
             concept_key=mapping.mapping_id,
             label=mapping.label,
             unit=mapping.unit,
-            device_sn="",
+            device_sn=dev_sn,
             device_type=dev_type,
-            device_name=f"{dev_type.capitalize()} Telemetry",
+            device_name=dev_name,
             mqtt_key=mapping.mqtt_key,
             mqtt_value=mqtt_val,
             modbus_key=candidate.field_key,
@@ -550,6 +669,7 @@ def _build_comparison_row(
                     "is_optimal": True,
                     "is_pinned": False,
                     "is_divergent": False,
+                    "device_sn": dev_sn,
                 }
             ],
         )
@@ -620,6 +740,7 @@ def _build_comparison_row(
     discrepancy_reason = notes or ("All sources agree exactly" if status == "EXACT" else f"Values differ by {delta} {mapping.unit}")
 
     # Construct rich sources list
+    mb_sn = mb_field.device_sn if (mb_field and getattr(mb_field, "device_sn", None)) else dev_sn
     sources = [
         {
             "source_type": "MQTT",
@@ -628,7 +749,7 @@ def _build_comparison_row(
             "name": mapping.mqtt_key.split(".")[-1],
             "label": f"{mapping.label} (Push)",
             "model_id": None,
-            "model_name": None,
+            "model_name": "MQTT Push",
             "value": mqtt_val,
             "raw_value": mqtt_val,
             "units": mapping.unit,
@@ -636,6 +757,10 @@ def _build_comparison_row(
             "is_optimal": True,
             "is_pinned": False,
             "is_divergent": is_discrepant,
+            "device_sn": dev_sn,
+            "offset": None,
+            "scale_factor": None,
+            "point_type": "float" if isinstance(mqtt_val, float) else ("int" if isinstance(mqtt_val, int) else None),
         },
         {
             "source_type": "SUNSPEC",
@@ -643,8 +768,8 @@ def _build_comparison_row(
             "field_key": candidate.field_key,
             "name": candidate.field_key.split(".")[-1],
             "label": modbus_label,
-            "model_id": None,
-            "model_name": None,
+            "model_id": getattr(mb_field, "model_id", None) if mb_field else None,
+            "model_name": getattr(mb_field, "model_name", None) if mb_field else None,
             "value": mb_val,
             "raw_value": raw_mb_val,
             "units": mapping.unit,
@@ -652,6 +777,10 @@ def _build_comparison_row(
             "is_optimal": False,
             "is_pinned": False,
             "is_divergent": is_discrepant,
+            "device_sn": mb_sn,
+            "offset": getattr(mb_field, "offset", None) if mb_field else None,
+            "scale_factor": getattr(mb_field, "scale_factor_point", None) if mb_field else None,
+            "point_type": getattr(mb_field, "point_type", None) if mb_field else None,
         }
     ]
 
@@ -661,9 +790,9 @@ def _build_comparison_row(
         concept_key=mapping.mapping_id,
         label=mapping.label,
         unit=mapping.unit,
-        device_sn="",
+        device_sn=dev_sn,
         device_type=dev_type,
-        device_name=f"{dev_type.capitalize()} Telemetry",
+        device_name=dev_name,
         mqtt_key=mapping.mqtt_key,
         mqtt_value=mqtt_val,
         modbus_key=candidate.field_key,
