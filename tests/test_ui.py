@@ -580,6 +580,20 @@ class TestWebExplorerApi(unittest.TestCase):
             self.assertIn(f"{sn}:pv_link.REbus_status.V", qualified)
             self.assertIn(f"{sn}:pv_link.REbus_status.P", qualified)
 
+    def test_ha_config_with_null_selected_fields(self):
+        """Verify GET /api/ha/config gracefully handles ha_config.yaml with null/empty selected_fields."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cfg_path = Path(tmp_dir) / "ha_config.yaml"
+            cfg_path.write_text("selected_fields:\n", encoding="utf-8")
+            with patch("pwrcell.ha.get_default_ha_config_path", return_value=cfg_path):
+                resp = self.test_client.get("/api/ha/config")
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(resp.get_json(), {"selected_fields": []})
+
     def test_export_default_config_api_and_helpers(self):
         """Verify unqualify_ha_config and export_default_config helper and API endpoint."""
         from unittest.mock import patch

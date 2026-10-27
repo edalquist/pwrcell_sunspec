@@ -139,23 +139,29 @@ def load_ha_config(
                 try:
                     with open(seed_path, "r", encoding="utf-8") as f:
                         data = yaml.safe_load(f) or {}
-                        return data.get("selected_fields", [])
+                        raw_fields = data.get("selected_fields")
+                        return [str(x).strip() for x in raw_fields if x is not None] if raw_fields else []
                 except Exception as e:
                     logger.error("Failed to load default seed %s: %s", seed_path, e)
         return []
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-            return data.get("selected_fields", [])
+            raw_fields = data.get("selected_fields")
+            return [str(x).strip() for x in raw_fields if x is not None] if raw_fields else []
     except Exception as e:
         logger.error("Failed to load %s: %s", path, e)
         return []
 
 
-def qualify_legacy_ha_config(selected_field_keys: List[str], state_store: StateStore) -> List[str]:
+def qualify_legacy_ha_config(selected_field_keys: Optional[List[str]], state_store: StateStore) -> List[str]:
     """Ensure all field keys are scoped by device serial number (<SERIAL>:<FIELD_KEY>)."""
+    if not selected_field_keys:
+        return []
     qualified: Set[str] = set()
     for k in selected_field_keys:
+        if k is None:
+            continue
         k_str = str(k).strip()
         if not k_str:
             continue
@@ -176,30 +182,35 @@ def qualify_legacy_ha_config(selected_field_keys: List[str], state_store: StateS
     return sorted(list(qualified))
 
 
-def save_ha_config(selected_field_keys: List[str], config_path: Optional[Path | str] = None):
+def save_ha_config(selected_field_keys: Optional[List[str]], config_path: Optional[Path | str] = None):
     """Save list of selected field keys to ha_config.yaml."""
     path = Path(config_path) if config_path else get_default_ha_config_path()
+    clean_keys = sorted(list({str(k).strip() for k in (selected_field_keys or []) if k is not None and str(k).strip()}))
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(".tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
             yaml.dump(
-                {"selected_fields": sorted(list(set(selected_field_keys)))},
+                {"selected_fields": clean_keys},
                 f,
                 default_flow_style=False,
                 sort_keys=False,
             )
         tmp_path.replace(path)
-        logger.info("Saved %d entities to %s", len(selected_field_keys), path)
+        logger.info("Saved %d entities to %s", len(clean_keys), path)
     except Exception as e:
         logger.error("Failed to save %s: %s", path, e)
         raise e
 
 
-def unqualify_ha_config(selected_field_keys: List[str]) -> List[str]:
+def unqualify_ha_config(selected_field_keys: Optional[List[str]]) -> List[str]:
     """Strip device serial number prefixes from field keys and return deduplicated generic field IDs."""
+    if not selected_field_keys:
+        return []
     generic_keys: Set[str] = set()
     for k in selected_field_keys:
+        if k is None:
+            continue
         k_str = str(k).strip()
         if not k_str:
             continue
