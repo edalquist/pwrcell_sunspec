@@ -1,7 +1,8 @@
 """Tests for custom bounds on mutable fields, proxy validation, and Home Assistant discovery."""
 
 import unittest
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 from pwrcell.bounds import (
     clear_custom_bounds_cache,
     get_custom_bounds,
@@ -19,6 +20,13 @@ from pwrcell.state import FieldSource, StateField, StateStore
 class TestCustomBounds(unittest.TestCase):
     def setUp(self):
         clear_custom_bounds_cache()
+        self.ha_patcher = patch("pwrcell.ha.get_default_ha_config_path", return_value=Path("/nonexistent/ha_config.yaml"))
+        self.grp_patcher = patch("pwrcell.grouping.get_default_grouping_config_path", return_value=Path("/nonexistent/custom_groupings.yaml"))
+        self.ha_patcher.start()
+        self.grp_patcher.start()
+        self.addCleanup(self.ha_patcher.stop)
+        self.addCleanup(self.grp_patcher.stop)
+        self.addCleanup(clear_custom_bounds_cache)
         self.catalog = get_catalog()
         self.state = StateStore()
         self.bat = self.state.register_device(
@@ -48,9 +56,6 @@ class TestCustomBounds(unittest.TestCase):
         )
         self.achamax_field = self.bat.fields["battery.battery.AChaMax"]
         self.achamax_field.access = "RW"
-
-    def tearDown(self):
-        clear_custom_bounds_cache()
 
     def test_normalize_bounds(self):
         # Dict formats

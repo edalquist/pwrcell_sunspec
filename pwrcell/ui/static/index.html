@@ -605,6 +605,72 @@
     </div>
   </div>
 
+  <!-- Field Bounds Modal -->
+  <div class="modal-backdrop" id="boundsModal">
+    <div class="modal modal-md bounds-modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-tag">FIELD BOUNDS CONFIGURATION</span>
+          <h3 id="boundsModalTitle">📏 Configure Field Bounds</h3>
+          <span class="field-key-badge" id="boundsFieldKeyBadge">--</span>
+        </div>
+        <button class="modal-close" id="btnCloseBoundsModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="bounds-context-banner">
+          <div class="bounds-meta-row">
+            <span class="bounds-meta-label">Target Field:</span>
+            <span class="bounds-meta-value" id="boundsFieldName">--</span>
+          </div>
+          <div class="bounds-meta-row">
+            <span class="bounds-meta-label">SunSpec Specification:</span>
+            <span class="bounds-meta-value" id="boundsDefaultLimits">--</span>
+          </div>
+          <div class="bounds-meta-row">
+            <span class="bounds-meta-label">Current Configuration:</span>
+            <span class="bounds-meta-value" id="boundsCurrentStatus">--</span>
+          </div>
+        </div>
+
+        <p class="modal-desc" style="margin-top: 10px; margin-bottom: 14px;">
+          Define custom physical limits for this field. These limits are validated by the proxy during write commands and set the slider min/max/step for Home Assistant entities.
+        </p>
+
+        <form id="boundsForm" onsubmit="return false;">
+          <div class="form-grid-2col">
+            <div class="bounds-form-group">
+              <label for="boundsMinInput" class="bounds-form-label">Minimum Allowed (<span class="bounds-unit-label">--</span>):</label>
+              <input type="number" step="any" class="text-input" id="boundsMinInput" placeholder="e.g. 0" />
+            </div>
+            <div class="bounds-form-group">
+              <label for="boundsMaxInput" class="bounds-form-label">Maximum Allowed (<span class="bounds-unit-label">--</span>):</label>
+              <input type="number" step="any" class="text-input" id="boundsMaxInput" placeholder="e.g. 35" />
+            </div>
+          </div>
+          <div class="bounds-form-group" style="margin-top: 8px;">
+            <label for="boundsStepInput" class="bounds-form-label">Resolution / Step (<span class="bounds-unit-label">--</span>):</label>
+            <input type="number" step="any" class="text-input" id="boundsStepInput" placeholder="e.g. 0.1 or 1" />
+          </div>
+          <div class="bounds-form-group" style="margin-top: 8px;">
+            <label class="toggle-label" title="Apply these bounds across all devices of the same type instead of only this specific device serial">
+              <input type="checkbox" id="boundsApplyAll" checked />
+              <span>Apply across all devices of this type (e.g. all batteries)</span>
+            </label>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <div class="details-footer-left">
+          <button class="btn btn-secondary btn-sm" id="btnResetBoundsModal" style="display: none;" title="Remove custom bounds and revert to SunSpec register defaults">↩️ Reset to Default</button>
+        </div>
+        <div class="details-footer-actions">
+          <button class="btn btn-secondary" id="btnCancelBoundsModal">Cancel</button>
+          <button class="btn btn-primary" id="btnSaveBoundsModal">Save Bounds</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Notification -->
   <div class="toast" id="toast"></div>
 

@@ -3861,5 +3861,78 @@ body {
   color: #f8fafc;
 }
 
+/* Custom Field Bounds Configuration Modal & Badges */
+.bounds-modal-dialog {
+  max-width: 540px;
+}
+
+.bounds-context-banner {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bounds-meta-row {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  gap: 8px;
+}
+
+.bounds-meta-label {
+  font-weight: 600;
+  color: var(--text-muted);
+  width: 150px;
+  flex-shrink: 0;
+}
+
+.bounds-meta-value {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.form-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.bounds-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bounds-form-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.badge-custom-bounds {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  text-transform: uppercase;
+  display: inline-block;
+  line-height: normal;
+}
+
+.field-bounds-badge.is-custom {
+  border-color: rgba(16, 185, 129, 0.4);
+  background: rgba(16, 185, 129, 0.08);
+  color: #10b981;
+}
+
+
 
 

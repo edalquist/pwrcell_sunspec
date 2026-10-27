@@ -283,16 +283,27 @@ def save_custom_bound(
             logger.error("Failed reading %s: %s", target_path, e)
 
     custom_bounds = dict(raw_data.get("custom_bounds", {}) or {})
-    clean_k = f"{device_sn.strip().upper()}:{field_key.strip()}" if device_sn else field_key.strip()
+    fk = field_key.strip()
+    if ":" in fk:
+        prefix, rest = fk.split(":", 1)
+        if not device_sn and len(prefix) >= 8:
+            device_sn = prefix
+        fk = rest
+
+    clean_k = f"{device_sn.strip().upper()}:{fk}" if device_sn else fk
 
     if bounds is None:
         custom_bounds.pop(clean_k, None)
+        custom_bounds.pop(fk, None)
+        if device_sn:
+            custom_bounds.pop(f"{device_sn.strip().upper()}:{fk}", None)
     else:
         norm = normalize_bounds(bounds)
         if norm:
             custom_bounds[clean_k] = norm
         else:
             custom_bounds.pop(clean_k, None)
+            custom_bounds.pop(fk, None)
 
     raw_data["custom_bounds"] = custom_bounds
     target_path.parent.mkdir(parents=True, exist_ok=True)

@@ -125,11 +125,20 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             return jsonify(load_custom_bounds())
 
         body = request.get_json(silent=True) or {}
-        field_key = body.get("field_key")
+        field_key = (
+            body.get("field_key")
+            or body.get("key")
+            or request.args.get("field_key")
+            or request.args.get("key")
+        )
         if not field_key:
             return jsonify({"error": "field_key is required"}), 400
 
-        device_sn = body.get("device_sn")
+        device_sn = body.get("device_sn") or request.args.get("device_sn")
+        apply_all = body.get("apply_all", False)
+        if apply_all:
+            device_sn = None
+
         if request.method == "DELETE":
             save_custom_bound(field_key, None, device_sn=device_sn)
             return jsonify({"success": True, "bounds": load_custom_bounds()})

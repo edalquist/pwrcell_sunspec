@@ -36,6 +36,7 @@ const state = {
   showPlanDetails: false,
   showAllPlanFields: false,
   groupingModalData: null,
+  boundsModalField: null,
   expandedGroups: new Set(),
 };
 
@@ -168,6 +169,20 @@ const el = {
   polarityNegativeLabel: document.getElementById('polarityNegativeLabel'),
   polarityPositiveDesc: document.getElementById('polarityPositiveDesc'),
   polarityNegativeDesc: document.getElementById('polarityNegativeDesc'),
+  boundsModal: document.getElementById('boundsModal'),
+  boundsModalTitle: document.getElementById('boundsModalTitle'),
+  boundsFieldKeyBadge: document.getElementById('boundsFieldKeyBadge'),
+  boundsFieldName: document.getElementById('boundsFieldName'),
+  boundsDefaultLimits: document.getElementById('boundsDefaultLimits'),
+  boundsCurrentStatus: document.getElementById('boundsCurrentStatus'),
+  boundsMinInput: document.getElementById('boundsMinInput'),
+  boundsMaxInput: document.getElementById('boundsMaxInput'),
+  boundsStepInput: document.getElementById('boundsStepInput'),
+  boundsApplyAll: document.getElementById('boundsApplyAll'),
+  btnCloseBoundsModal: document.getElementById('btnCloseBoundsModal'),
+  btnCancelBoundsModal: document.getElementById('btnCancelBoundsModal'),
+  btnSaveBoundsModal: document.getElementById('btnSaveBoundsModal'),
+  btnResetBoundsModal: document.getElementById('btnResetBoundsModal'),
   btnOpenExportMappings: document.getElementById('btnOpenExportMappings'),
   exportMappingsModal: document.getElementById('exportMappingsModal'),
   btnCloseExportModal: document.getElementById('btnCloseExportModal'),
@@ -962,12 +977,14 @@ function formatBoundsBadge(field) {
   }
 
   if (!text) return '';
+  const customTag = b.is_custom ? ' <span class="badge-custom-bounds" title="Custom limits active">CUSTOM</span>' : '';
   return `
     <div class="field-bounds-line">
-      <span class="field-bounds-badge" title="SunSpec Bounds: ${escapeHtml(fullDesc)}">
+      <span class="field-bounds-badge${b.is_custom ? ' is-custom' : ''}" title="${b.is_custom ? 'Custom Bounds: ' : 'SunSpec Bounds: '}${escapeHtml(fullDesc)}">
         <span class="bounds-icon">📏</span>
         <span class="bounds-text">${escapeHtml(text)}</span>
       </span>
+      ${customTag}
     </div>
   `;
 }
@@ -1631,6 +1648,7 @@ function renderFieldTable() {
             <div class="action-dropdown-menu">
               <button class="action-menu-item item-details" data-key="${targetFieldRef.key}">📋 Modbus Details</button>
               ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${targetFieldRef.key}">✏️ Edit Value</button>` : ''}
+              ${(f.is_writable || f.bounds) ? `<button class="action-menu-item item-bounds" data-key="${targetFieldRef.key}">📏 Configure Bounds...</button>` : ''}
               <button class="action-menu-item item-copy" data-key="${targetFieldRef.key}">📄 Copy Key</button>
               ${!isScaleFactorField(f) && !isScaleFactorField(targetFieldRef) ? `
                 <button class="action-menu-item item-group-with" data-key="${targetFieldRef.key}">🔗 Group with Concept...</button>
@@ -1723,6 +1741,15 @@ function renderFieldTable() {
           e.stopPropagation();
           dropdownMenu.classList.remove('show');
           openWriteModal(targetFieldRef);
+        });
+      }
+
+      const menuBounds = dropdownMenu.querySelector('.item-bounds');
+      if (menuBounds) {
+        menuBounds.addEventListener('click', (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          openBoundsModal(targetFieldRef || f);
         });
       }
 
@@ -2053,6 +2080,7 @@ function renderFieldTable() {
               <div class="action-dropdown-menu">
                 <button class="action-menu-item item-details" data-key="${f.key}">📋 Modbus Details</button>
                 ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${f.key}">✏️ Edit Value</button>` : ''}
+                ${(f.is_writable || f.bounds) ? `<button class="action-menu-item item-bounds" data-key="${f.key}">📏 Configure Bounds...</button>` : ''}
                 <button class="action-menu-item item-copy" data-key="${f.key}">📄 Copy Key</button>
                 ${!isScaleFactorField(f) ? `
                   <button class="action-menu-item item-group-with" data-key="${f.key}">🔗 Group with Concept...</button>
@@ -2111,6 +2139,7 @@ function renderFieldTable() {
               <div class="action-dropdown-menu">
                 <button class="action-menu-item item-details" data-key="${f.key}">📋 Modbus Details</button>
                 ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${f.key}">✏️ Edit Value</button>` : ''}
+                ${(f.is_writable || f.bounds) ? `<button class="action-menu-item item-bounds" data-key="${f.key}">📏 Configure Bounds...</button>` : ''}
                 <button class="action-menu-item item-copy" data-key="${f.key}">📄 Copy Key</button>
                 ${!isScaleFactorField(f) ? `
                   <button class="action-menu-item item-group-with" data-key="${f.key}">🔗 Group with Concept...</button>
@@ -2173,6 +2202,15 @@ function renderFieldTable() {
           e.stopPropagation();
           dropdownMenu.classList.remove('show');
           openWriteModal(f);
+        });
+      }
+
+      const menuBounds = dropdownMenu.querySelector('.item-bounds');
+      if (menuBounds) {
+        menuBounds.addEventListener('click', (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          openBoundsModal(f);
         });
       }
 
@@ -2789,8 +2827,14 @@ function renderWriteModalBounds(field) {
   el.writeModalBounds.innerHTML = `
     <div class="write-bounds-card">
       <div class="write-bounds-header">
-        <span class="write-bounds-title">📏 SunSpec Bounds &amp; Restrictions</span>
-        <span class="badge-writable">Read/Write (RW)</span>
+        <span class="write-bounds-title">
+          📏 SunSpec Bounds &amp; Restrictions
+          ${b.is_custom ? '<span class="badge-custom-bounds" style="margin-left: 6px;">Custom</span>' : ''}
+        </span>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button type="button" class="btn btn-secondary btn-xs btn-edit-bounds-from-write" style="padding: 1px 6px; font-size: 11px;" title="Configure custom bounds for this field">✏️ Edit Bounds</button>
+          <span class="badge-writable">Read/Write (RW)</span>
+        </div>
       </div>
       <div class="write-bounds-grid">
         <div class="write-bounds-item">
@@ -2827,6 +2871,14 @@ function renderWriteModalBounds(field) {
       ${b.description ? `<div class="write-bounds-desc">ℹ️ <strong>SunSpec Specification:</strong> ${escapeHtml(b.description)}</div>` : ''}
     </div>
   `;
+
+  const btnEditBounds = el.writeModalBounds.querySelector('.btn-edit-bounds-from-write');
+  if (btnEditBounds) {
+    btnEditBounds.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openBoundsModal(field);
+    });
+  }
 }
 
 function openWriteModal(field) {
@@ -3342,10 +3394,14 @@ function renderFieldDetailsModal(data) {
         <div class="details-bounds-header">
           <div class="details-bounds-title">
             <span>📏 SunSpec Bounds &amp; Restrictions</span>
+            ${bounds.is_custom ? '<span class="badge-custom-bounds" style="margin-left: 8px;">Custom</span>' : ''}
           </div>
-          <span class="${isSettable ? 'badge-writable' : 'source-tag'}">
-            ${isSettable ? 'RW (Settable)' : 'R (Read-Only)'}
-          </span>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <button type="button" class="btn btn-secondary btn-xs btn-open-bounds-from-details" title="Configure custom bounds for this field">✏️ Edit Bounds</button>
+            <span class="${isSettable ? 'badge-writable' : 'source-tag'}">
+              ${isSettable ? 'RW (Settable)' : 'R (Read-Only)'}
+            </span>
+          </div>
         </div>
         <div class="details-bounds-grid">
           <div class="write-bounds-item">
@@ -3743,6 +3799,21 @@ function renderFieldDetailsModal(data) {
       }
     });
   });
+
+  const editBoundsFromDetails = el.detailsModalBody.querySelector('.btn-open-bounds-from-details');
+  if (editBoundsFromDetails) {
+    editBoundsFromDetails.addEventListener('click', () => {
+      openBoundsModal({
+        key: f.key || pt.key || fieldKey,
+        name: f.name || pt.name,
+        label: f.label || pt.label || f.name || pt.name,
+        units: f.units || pt.units,
+        device_sn: dev ? dev.serial_number : '',
+        bounds: bounds,
+        point_type: f.point_type || pt.type,
+      });
+    });
+  }
 }
 
 // Setup Event Listeners
@@ -4521,6 +4592,25 @@ function setupEventListeners() {
     });
   }
 
+  // Bounds Modal
+  if (el.btnCloseBoundsModal) {
+    el.btnCloseBoundsModal.addEventListener('click', closeBoundsModal);
+  }
+  if (el.btnCancelBoundsModal) {
+    el.btnCancelBoundsModal.addEventListener('click', closeBoundsModal);
+  }
+  if (el.btnSaveBoundsModal) {
+    el.btnSaveBoundsModal.addEventListener('click', saveBoundsAction);
+  }
+  if (el.btnResetBoundsModal) {
+    el.btnResetBoundsModal.addEventListener('click', resetBoundsAction);
+  }
+  if (el.boundsModal) {
+    el.boundsModal.addEventListener('click', (e) => {
+      if (e.target === el.boundsModal) closeBoundsModal();
+    });
+  }
+
   // Export Mappings Modal
   if (el.btnOpenExportMappings) {
     el.btnOpenExportMappings.addEventListener('click', () => openExportModal());
@@ -4729,6 +4819,198 @@ function promptPolaritySelection({ suggestion, onSelect }) {
   if (el.btnCancelPolarityModal) el.btnCancelPolarityModal.onclick = cleanup;
 
   el.polarityModal.classList.add('open');
+}
+
+// Field Bounds Configuration Modal Logic
+function openBoundsModal(field) {
+  if (!el.boundsModal || !field) return;
+  state.boundsModalField = field;
+
+  const b = getFieldBounds(field) || {};
+  const isCustom = !!b.is_custom;
+  const unit = field.units || b.units || '';
+  const fieldKey = field.key || field.field_key || field.id || '';
+  const label = field.label || field.name || fieldKey;
+
+  // Header & Context
+  if (el.boundsModalTitle) el.boundsModalTitle.textContent = `Configure Bounds: ${label}`;
+  if (el.boundsFieldKeyBadge) el.boundsFieldKeyBadge.textContent = fieldKey;
+  if (el.boundsFieldName) el.boundsFieldName.textContent = `${label} (${fieldKey})`;
+
+  // Default SunSpec specification explanation
+  let defaultText = 'No raw bounds specified';
+  if (b.raw_min !== undefined && b.raw_max !== undefined) {
+    if (b.scaled_min !== undefined && b.scaled_max !== undefined && b.sf) {
+      defaultText = `${b.scaled_min} to ${b.scaled_max} ${unit}`.trim() + ` (raw: ${b.raw_min.toLocaleString()} to ${b.raw_max.toLocaleString()}, SF: ${b.sf})`;
+    } else {
+      defaultText = `${b.raw_min.toLocaleString()} to ${b.raw_max.toLocaleString()} ${unit}`.trim();
+    }
+  }
+  if (el.boundsDefaultLimits) el.boundsDefaultLimits.textContent = defaultText;
+
+  // Current status
+  if (el.boundsCurrentStatus) {
+    if (isCustom) {
+      el.boundsCurrentStatus.innerHTML = `<span style="color: #10b981; font-weight: 600;">Active Custom Limits: ${b.min_value} to ${b.max_value} ${unit} (step: ${b.step !== undefined ? b.step : 1})</span>`;
+    } else {
+      el.boundsCurrentStatus.textContent = 'Using SunSpec register specification defaults';
+    }
+  }
+
+  // Toggle Reset button
+  if (el.btnResetBoundsModal) {
+    el.btnResetBoundsModal.style.display = isCustom ? 'inline-block' : 'none';
+  }
+
+  // Update unit labels
+  document.querySelectorAll('.bounds-unit-label').forEach(lbl => {
+    lbl.textContent = unit || 'units';
+  });
+
+  // Populate inputs with current values
+  if (el.boundsMinInput) {
+    el.boundsMinInput.value = b.min_value !== undefined && b.min_value !== null
+      ? b.min_value
+      : (b.scaled_min !== undefined && b.scaled_min !== null ? b.scaled_min : (b.raw_min !== undefined ? b.raw_min : 0));
+  }
+  if (el.boundsMaxInput) {
+    el.boundsMaxInput.value = b.max_value !== undefined && b.max_value !== null
+      ? b.max_value
+      : (b.scaled_max !== undefined && b.scaled_max !== null ? b.scaled_max : (b.raw_max !== undefined ? b.raw_max : ''));
+  }
+  if (el.boundsStepInput) {
+    el.boundsStepInput.value = b.step !== undefined && b.step !== null
+      ? b.step
+      : (b.sf_value !== undefined && b.sf_value !== null && -10 <= b.sf_value && b.sf_value <= 10 ? Math.pow(10, b.sf_value) : 1);
+  }
+  if (el.boundsApplyAll) {
+    el.boundsApplyAll.checked = true;
+  }
+
+  el.boundsModal.classList.add('open');
+}
+
+function closeBoundsModal() {
+  if (el.boundsModal) {
+    el.boundsModal.classList.remove('open');
+  }
+  state.boundsModalField = null;
+}
+
+async function saveBoundsAction() {
+  if (!state.boundsModalField) return;
+  const field = state.boundsModalField;
+  const fieldKey = field.key || field.field_key || field.id || '';
+  const minValStr = el.boundsMinInput ? el.boundsMinInput.value.trim() : '';
+  const maxValStr = el.boundsMaxInput ? el.boundsMaxInput.value.trim() : '';
+  const stepValStr = el.boundsStepInput ? el.boundsStepInput.value.trim() : '';
+
+  if (minValStr === '' || maxValStr === '') {
+    alert('Please enter both a minimum and maximum value.');
+    return;
+  }
+
+  const minNum = parseFloat(minValStr);
+  const maxNum = parseFloat(maxValStr);
+  if (isNaN(minNum) || isNaN(maxNum)) {
+    alert('Minimum and Maximum must be valid numbers.');
+    return;
+  }
+  if (minNum > maxNum) {
+    alert('Minimum value cannot exceed Maximum value.');
+    return;
+  }
+
+  const stepNum = stepValStr !== '' ? parseFloat(stepValStr) : 1;
+  const applyAll = el.boundsApplyAll ? el.boundsApplyAll.checked : true;
+  const devSn = field.device_sn || (state.activeDevice ? state.activeDevice.serial_number : '');
+
+  try {
+    if (el.btnSaveBoundsModal) {
+      el.btnSaveBoundsModal.disabled = true;
+      el.btnSaveBoundsModal.textContent = 'Saving...';
+    }
+
+    const payload = {
+      field_key: fieldKey,
+      device_sn: devSn,
+      apply_all: applyAll,
+      min: minNum,
+      max: maxNum,
+      step: stepNum,
+    };
+
+    const res = await fetch(apiPath('api/grouping/bounds'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      showToast(`Saved custom bounds for ${field.name || field.label || fieldKey}: ${minNum} to ${maxNum} ${field.units || ''}`);
+      closeBoundsModal();
+      if (devSn) {
+        await selectDevice(devSn);
+      }
+      if (el.modbusDetailsModal && el.modbusDetailsModal.classList.contains('open')) {
+        await openFieldDetails(fieldKey, devSn);
+      }
+    } else {
+      alert(`Error saving bounds: ${data.error || 'Unknown error'}`);
+    }
+  } catch (err) {
+    alert(`Failed saving bounds: ${err}`);
+  } finally {
+    if (el.btnSaveBoundsModal) {
+      el.btnSaveBoundsModal.disabled = false;
+      el.btnSaveBoundsModal.textContent = 'Save Bounds';
+    }
+  }
+}
+
+async function resetBoundsAction() {
+  if (!state.boundsModalField) return;
+  const field = state.boundsModalField;
+  const fieldKey = field.key || field.field_key || field.id || '';
+  const devSn = field.device_sn || (state.activeDevice ? state.activeDevice.serial_number : '');
+
+  try {
+    if (el.btnResetBoundsModal) {
+      el.btnResetBoundsModal.disabled = true;
+      el.btnResetBoundsModal.textContent = 'Resetting...';
+    }
+
+    const res = await fetch(apiPath('api/grouping/bounds'), {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        field_key: fieldKey,
+        device_sn: devSn,
+      }),
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      showToast(`Reset bounds for ${field.name || field.label || fieldKey} to defaults`);
+      closeBoundsModal();
+      if (devSn) {
+        await selectDevice(devSn);
+      }
+      if (el.modbusDetailsModal && el.modbusDetailsModal.classList.contains('open')) {
+        await openFieldDetails(fieldKey, devSn);
+      }
+    } else {
+      alert(`Error resetting bounds: ${data.error || 'Unknown error'}`);
+    }
+  } catch (err) {
+    alert(`Failed resetting bounds: ${err}`);
+  } finally {
+    if (el.btnResetBoundsModal) {
+      el.btnResetBoundsModal.disabled = false;
+      el.btnResetBoundsModal.textContent = '↩️ Reset to Default';
+    }
+  }
 }
 
 // Field Grouping & Ungrouping Modal Logic
