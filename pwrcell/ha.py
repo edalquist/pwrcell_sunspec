@@ -39,6 +39,7 @@ def _load_ha_security_config() -> tuple[Set[str], Set[str]]:
     default_writable = {
         "system_mode", "SysMd", "SoCRsvMin", "SoCRsvMax",
         "SoCMax", "SoCMin", "WChaRteMax", "WDisChaRteMax",
+        "AChaMax", "ADisChaMax",
     }
     default_excluded = {"SAFETY_SHUTDOWN"}
     try:
@@ -69,7 +70,16 @@ def is_ha_writable_allowed(field: Any) -> bool:
         mapping_id = getattr(field, "mapping_id", None) or getattr(field, "name", "")
         return mapping_id in HA_WRITABLE_ALLOWLIST
     pt_name = getattr(field, "name", "") or str(getattr(field, "key", "")).split(".")[-1]
-    return pt_name in HA_WRITABLE_ALLOWLIST
+    f_key = getattr(field, "key", "")
+    if pt_name in HA_WRITABLE_ALLOWLIST or f_key in HA_WRITABLE_ALLOWLIST:
+        return True
+    try:
+        from .bounds import get_custom_bounds
+        if get_custom_bounds(f_key, getattr(field, "device_sn", None), pt_name):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _filter_ha_options(options: Optional[List[str]]) -> Optional[List[str]]:
@@ -375,13 +385,15 @@ def generate_discovery_payload(
                 platform = "number"
     else:
         hint = field.ha_hint
-        if hint and hint.platform and (is_writable or hint.platform == "sensor"):
-            platform = hint.platform
-        elif is_writable:
-            if getattr(field, "is_enum", False) or getattr(field, "symbols", None):
+        if is_writable:
+            if hint and hint.platform in ("select", "number", "switch"):
+                platform = hint.platform
+            elif getattr(field, "is_enum", False) or getattr(field, "symbols", None):
                 platform = "select"
             else:
                 platform = "number"
+        elif hint and hint.platform:
+            platform = hint.platform
         else:
             platform = "sensor"
 

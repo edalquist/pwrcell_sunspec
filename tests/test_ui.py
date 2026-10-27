@@ -623,6 +623,46 @@ class TestWebExplorerApi(unittest.TestCase):
             self.assertIn("inverter.live.grid_power_w", data["default_fields"])
             mock_export.assert_called_once()
 
+    def test_grouping_bounds_api(self):
+        """Verify GET, POST, and DELETE on /api/grouping/bounds."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cfg_file = Path(tmp_dir) / "custom_groupings.yaml"
+            with patch("pwrcell.grouping.get_default_grouping_config_path", return_value=cfg_file):
+                # GET initial bounds
+                resp = self.test_client.get("/api/grouping/bounds")
+                self.assertEqual(resp.status_code, 200)
+
+                # POST new custom bound
+                post_resp = self.test_client.post(
+                    "/api/grouping/bounds",
+                    json={
+                        "field_key": "battery.battery.ADisChaMax",
+                        "min": 0,
+                        "max": 40,
+                        "step": 0.5,
+                    },
+                )
+                self.assertEqual(post_resp.status_code, 200)
+                data = post_resp.get_json()
+                self.assertTrue(data["success"])
+                self.assertIn("battery.battery.ADisChaMax", data["bounds"])
+                self.assertEqual(data["bounds"]["battery.battery.ADisChaMax"]["max_value"], 40.0)
+                self.assertEqual(data["bounds"]["battery.battery.ADisChaMax"]["step"], 0.5)
+
+                # DELETE custom bound
+                del_resp = self.test_client.delete(
+                    "/api/grouping/bounds",
+                    json={"field_key": "battery.battery.ADisChaMax"},
+                )
+                self.assertEqual(del_resp.status_code, 200)
+                del_data = del_resp.get_json()
+                self.assertTrue(del_data["success"])
+                self.assertNotIn("battery.battery.ADisChaMax", del_data["bounds"])
+
     def test_field_modbus_details_endpoint(self):
         """Verify Modbus field details API endpoint returns raw register definitions, scale factors, and associated registers."""
         inv = self.client.state.get_inverter()

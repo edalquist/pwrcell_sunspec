@@ -306,6 +306,23 @@ class ControlDispatcher:
                 raise KeyError(f"Compound field '{field_key}' not found in state store")
             if not c_view.is_writable:
                 raise PermissionError(f"Compound field '{field_key}' is read-only")
+
+            # Validate against custom bounds if defined for this compound field
+            from .bounds import get_custom_bounds
+            c_bounds = get_custom_bounds(field_key, point_name=mapping_id)
+            if c_bounds:
+                min_v = c_bounds.get("min_value")
+                max_v = c_bounds.get("max_value")
+                try:
+                    num_val = float(new_value)
+                    if min_v is not None and num_val < min_v:
+                        raise ValueError(f"Value {new_value} for '{field_key}' is below custom minimum bound {min_v}")
+                    if max_v is not None and num_val > max_v:
+                        raise ValueError(f"Value {new_value} for '{field_key}' exceeds custom maximum bound {max_v}")
+                except (ValueError, TypeError) as ex:
+                    if "bound" in str(ex):
+                        raise ex
+
             target_mb_key = c_view.modbus_key
             if not target_mb_key:
                 for cand in c_view.modbus_candidates:
@@ -337,6 +354,30 @@ class ControlDispatcher:
 
         if not target_field.is_writable:
             raise PermissionError(f"Field '{field_key}' is read-only (access: {target_field.access})")
+
+        # Validate against custom bounds if defined
+        from .bounds import get_custom_bounds
+        c_bounds = get_custom_bounds(
+            field_key,
+            device_sn=target_dev.serial_number,
+            point_name=target_field.name,
+        )
+        if c_bounds:
+            min_v = c_bounds.get("min_value")
+            max_v = c_bounds.get("max_value")
+            try:
+                val_num = float(new_value)
+                if min_v is not None and val_num < min_v:
+                    raise ValueError(
+                        f"Value {new_value} for '{field_key}' is below custom minimum bound {min_v}"
+                    )
+                if max_v is not None and val_num > max_v:
+                    raise ValueError(
+                        f"Value {new_value} for '{field_key}' exceeds custom maximum bound {max_v}"
+                    )
+            except (ValueError, TypeError) as ex:
+                if "bound" in str(ex):
+                    raise ex
 
         # Look up point descriptor from catalog
         point_def = self.catalog.get_point_for_field(field_key)

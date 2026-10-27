@@ -287,6 +287,42 @@ class StateField:
                 res[s_name] = is_active
         return res
 
+    def _apply_custom_bounds(self, res: Dict[str, Any], sf_value: Optional[int] = None) -> Dict[str, Any]:
+        """Apply custom user bounds overrides to computed field bounds."""
+        try:
+            from .bounds import get_custom_bounds
+            c_bounds = get_custom_bounds(self.key, device_sn=self.device_sn, point_name=self.name)
+            if c_bounds:
+                c_min = c_bounds.get("min_value")
+                c_max = c_bounds.get("max_value")
+                c_step = c_bounds.get("step")
+
+                mult = 10.0 ** sf_value if (sf_value is not None and -10 <= sf_value <= 10) else None
+
+                if c_min is not None:
+                    res["min_value"] = c_min
+                    res["scaled_min"] = c_min
+                    res["raw_min"] = int(round(c_min / mult)) if mult else int(c_min)
+
+                if c_max is not None:
+                    res["max_value"] = c_max
+                    res["scaled_max"] = c_max
+                    res["raw_max"] = int(round(c_max / mult)) if mult else int(c_max)
+
+                if c_step is not None:
+                    res["step"] = c_step
+
+                res["is_custom"] = True
+                unit_str = f" {self.units}" if self.units else ""
+                r_min = res.get("raw_min")
+                r_max = res.get("raw_max")
+                step_str = f", step: {res['step']}" if res.get("step") is not None else ""
+                raw_str = f", raw: {r_min:,} to {r_max:,}" if (r_min is not None and r_max is not None) else ""
+                res["description"] = f"{res.get('min_value')} to {res.get('max_value')}{unit_str} (custom bounds{raw_str}{step_str})"
+        except Exception as e:
+            logger.debug("Failed applying custom bounds to %s: %s", self.key, e)
+        return res
+
     def get_bounds(self, sf_value: Optional[int] = None) -> Dict[str, Any]:
         """Calculate SunSpec bounds restrictions for this field."""
         raw_bounds = {
@@ -336,7 +372,7 @@ class StateField:
                 f"{len(valid_names)} options: " + ", ".join(f"{s['name']}" + (f" ({s['value']})" if s['value'] is not None else "") for s in symbols_list)
                 if symbols_list else f"Enum values: {min_v} to {max_v}"
             )
-            return {
+            return self._apply_custom_bounds({
                 "category": "enum",
                 "point_type": p_type,
                 "raw_min": min_v,
@@ -350,7 +386,7 @@ class StateField:
                 "valid_names": valid_names,
                 "sentinel": None,
                 "description": desc,
-            }
+            }, sf_value=sf_value)
 
         # 2. Bitfields
         if self.is_bitfield:
@@ -365,7 +401,7 @@ class StateField:
                     symbols_list.append({"name": s_name, "value": s_val, "label": s_lbl})
             hex_mask = f"0x{max_mask:04X}" if max_bits == 16 else f"0x{max_mask:08X}"
             desc = f"Bitmask 0x0000 to {hex_mask} ({max_bits} bits, {len(symbols_list)} flags)"
-            return {
+            return self._apply_custom_bounds({
                 "category": "bitfield",
                 "point_type": p_type,
                 "raw_min": 0,
@@ -379,7 +415,7 @@ class StateField:
                 "symbols": symbols_list,
                 "sentinel": None,
                 "description": desc,
-            }
+            }, sf_value=sf_value)
 
         # 3. Numeric types
         if p_type in raw_bounds:
@@ -402,7 +438,7 @@ class StateField:
                 unit_str = f" {self.units}" if self.units else ""
                 desc = f"{raw_min:,} to {raw_max:,}{unit_str}"
 
-            return {
+            return self._apply_custom_bounds({
                 "category": "numeric",
                 "point_type": p_type,
                 "raw_min": raw_min,
@@ -417,11 +453,11 @@ class StateField:
                 "sf_value": sf_value,
                 "sentinel": sentinels.get(p_type),
                 "description": desc,
-            }
+            }, sf_value=sf_value)
 
         # 4. Floats
         if p_type in ("float32", "float64"):
-            return {
+            return self._apply_custom_bounds({
                 "category": "float",
                 "point_type": p_type,
                 "raw_min": None,
@@ -434,12 +470,12 @@ class StateField:
                 "sf_value": None,
                 "sentinel": None,
                 "description": f"IEEE 754 {p_type} floating point" + (f" ({self.units})" if self.units else ""),
-            }
+            }, sf_value=sf_value)
 
         # 5. Strings
         if p_type == "string":
             max_len = self.size * 2
-            return {
+            return self._apply_custom_bounds({
                 "category": "string",
                 "point_type": p_type,
                 "max_length": max_len,
@@ -449,9 +485,9 @@ class StateField:
                 "sf_value": None,
                 "sentinel": None,
                 "description": f"Max {max_len} characters ({self.size} registers)",
-            }
+            }, sf_value=sf_value)
 
-        return {
+        return self._apply_custom_bounds({
             "category": "other",
             "point_type": p_type,
             "size_words": self.size,
@@ -460,7 +496,7 @@ class StateField:
             "sf_value": None,
             "sentinel": None,
             "description": f"Type: {p_type}",
-        }
+        }, sf_value=sf_value)
 
     def to_dict(self, sf_value: Optional[int] = None) -> dict:
         serialized_symbols = None
@@ -1878,7 +1914,7 @@ class StateStore:
                     }
 
             sf_val_num = sf_info["value"] if (sf_info and isinstance(sf_info.get("value"), (int, float))) else None
-            bounds_info = pt_def.get_bounds(sf_val_num) if pt_def else (target_field.get_bounds(sf_val_num) if target_field else (c_view.get_bounds() if c_view else None))
+            bounds_info = target_field.get_bounds(sf_val_num) if target_field else (pt_def.get_bounds(sf_val_num) if pt_def else (c_view.get_bounds() if c_view else None))
 
             return {
                 "device": {

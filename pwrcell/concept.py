@@ -236,12 +236,49 @@ class ConceptView:
                 "valid_names": list(self.ha_options),
                 "symbols": [{"value": i, "name": opt, "label": opt} for i, opt in enumerate(self.ha_options)],
             }
+        base_bounds = None
         if self.bounds:
-            return self.bounds
-        for s in self.sources:
-            if s.bounds:
-                return s.bounds
-        return None
+            base_bounds = dict(self.bounds)
+        else:
+            for s in self.sources:
+                if s.bounds:
+                    base_bounds = dict(s.bounds)
+                    break
+
+        try:
+            from .bounds import get_custom_bounds
+            c_bounds = get_custom_bounds(
+                self.id,
+                device_sn=self.device_sn,
+                point_name=self.concept_key or self.name,
+            )
+            if not c_bounds and self.active_source_key:
+                c_bounds = get_custom_bounds(self.active_source_key, device_sn=self.device_sn)
+
+            if c_bounds:
+                if not base_bounds:
+                    base_bounds = {
+                        "category": "numeric",
+                        "point_type": "float32",
+                        "units": self.units,
+                        "step": 1,
+                    }
+                c_min = c_bounds.get("min_value")
+                c_max = c_bounds.get("max_value")
+                c_step = c_bounds.get("step")
+                if c_min is not None:
+                    base_bounds["min_value"] = c_min
+                    base_bounds["scaled_min"] = c_min
+                if c_max is not None:
+                    base_bounds["max_value"] = c_max
+                    base_bounds["scaled_max"] = c_max
+                if c_step is not None:
+                    base_bounds["step"] = c_step
+                base_bounds["is_custom"] = True
+        except Exception:
+            pass
+
+        return base_bounds
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for REST API responses."""

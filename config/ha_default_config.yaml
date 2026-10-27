@@ -88,5 +88,11 @@ controllable_fields:
 - SoCMin
 - WChaRteMax
 - WDisChaRteMax
+- AChaMax
+- ADisChaMax
+custom_bounds:
+  battery.battery.AChaMax:
+    min: 0
+    max: 35
 excluded_select_options:
 - SAFETY_SHUTDOWN

@@ -47,3 +47,12 @@ mqtt:
 #       - battery.battery_status
 #       - inverter.inverter_status
 #       - pv_link.string_combiner
+
+# Optional: Custom physical/real-world bounds on mutable fields
+# Overrides default SunSpec register range for proxy write validation and Home Assistant entity definitions
+# custom_bounds:
+#   battery.battery.AChaMax:
+#     min: 0
+#     max: 35
+#   battery.battery.ADisChaMax: [0, 40]
+

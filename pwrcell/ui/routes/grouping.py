@@ -118,6 +118,26 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         res["comparison"] = comp_dict
         return jsonify(res)
 
+    @bp.route("/api/grouping/bounds", methods=["GET", "POST", "DELETE"])
+    def handle_grouping_bounds():
+        from ...bounds import load_custom_bounds, save_custom_bound
+        if request.method == "GET":
+            return jsonify(load_custom_bounds())
+
+        body = request.get_json(silent=True) or {}
+        field_key = body.get("field_key")
+        if not field_key:
+            return jsonify({"error": "field_key is required"}), 400
+
+        device_sn = body.get("device_sn")
+        if request.method == "DELETE":
+            save_custom_bound(field_key, None, device_sn=device_sn)
+            return jsonify({"success": True, "bounds": load_custom_bounds()})
+
+        bounds_val = body.get("bounds", body)
+        save_custom_bound(field_key, bounds_val, device_sn=device_sn)
+        return jsonify({"success": True, "bounds": load_custom_bounds()})
+
     @bp.route("/api/grouping/overrides")
     def get_grouping_overrides():
         from ...grouping import load_custom_groupings

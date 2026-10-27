@@ -833,6 +833,29 @@ def group_device_fields(
         latest_grp_ts = max(grp_src_ts) if grp_src_ts else 0.0
 
         grp_units = meta.get("units") or next((s.units for s in sources if s.units), None)
+
+        from .bounds import get_custom_bounds
+        c_grp_bounds = get_custom_bounds(c_id, device_sn=dev_sn)
+        if c_grp_bounds:
+            if not grp_bounds:
+                grp_bounds = {
+                    "category": "numeric",
+                    "point_type": "float32",
+                    "units": grp_units,
+                    "step": 1,
+                }
+            else:
+                grp_bounds = dict(grp_bounds)
+            if c_grp_bounds.get("min_value") is not None:
+                grp_bounds["min_value"] = c_grp_bounds["min_value"]
+                grp_bounds["scaled_min"] = c_grp_bounds["min_value"]
+            if c_grp_bounds.get("max_value") is not None:
+                grp_bounds["max_value"] = c_grp_bounds["max_value"]
+                grp_bounds["scaled_max"] = c_grp_bounds["max_value"]
+            if c_grp_bounds.get("step") is not None:
+                grp_bounds["step"] = c_grp_bounds["step"]
+            grp_bounds["is_custom"] = True
+
         group = UnifiedFieldGroup(
             id=c_id,
             concept_key=meta.get("concept_key", c_id.split(".")[-1]),
