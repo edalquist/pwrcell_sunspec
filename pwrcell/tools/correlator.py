@@ -209,7 +209,7 @@ def evaluate_comparisons(
         mqtt_val = mqtt_field.value if mqtt_field else None
 
         cand = mapping.primary_candidate
-        raw_mb_fields = _find_fields(state_store, cand.field_key)
+        raw_mb_fields = _find_fields(state_store, cand.field_key) if cand else []
         mb_fields = [
             f for f in raw_mb_fields
             if not is_field_excluded_from_mapping(getattr(f, "device_sn", ""), f.key, mapping.mapping_id, custom_data)
@@ -517,14 +517,16 @@ def _build_comparison_row(
     elif mb_field is None and mb_fields:
         mb_field = mb_fields[0]
 
+    raw_mqtt_field = _find_field(state_store, mapping.mqtt_key) if state_store else None
+
     should_sum = (
-        candidate.transform in ("sum", "sum_all", "sum_devices")
+        (candidate is not None and candidate.transform in ("sum", "sum_all", "sum_devices"))
         or mapping.mapping_id == "solar_power"
-        or (candidate.field_key.startswith("pv_link.") and mapping.mqtt_key == "inverter.live.solar_power_w")
+        or (candidate is not None and candidate.field_key.startswith("pv_link.") and mapping.mqtt_key == "inverter.live.solar_power_w")
     )
 
-    notes = candidate.notes
-    modbus_label = candidate.label
+    notes = candidate.notes if candidate else ""
+    modbus_label = candidate.label if candidate else ""
 
     # Check if modbus field(s) exist and have values
     if should_sum:
@@ -581,16 +583,16 @@ def _build_comparison_row(
         mb_src = [
             {
                 "source_type": "SUNSPEC",
-                "source_id": candidate.field_key.split(".")[-2].replace("model_", "M") if "." in candidate.field_key else "SUNSPEC",
-                "field_key": candidate.field_key,
-                "name": candidate.field_key.split(".")[-1],
+                "source_id": candidate.field_key.split(".")[-2].replace("model_", "M") if (candidate and "." in candidate.field_key) else "SUNSPEC",
+                "field_key": candidate.field_key if candidate else (mb_field.key if mb_field else ""),
+                "name": candidate.field_key.split(".")[-1] if candidate else (mb_field.name if mb_field else ""),
                 "label": modbus_label,
                 "model_id": getattr(mb_field, "model_id", None) if mb_field else None,
                 "model_name": getattr(mb_field, "model_name", None) if mb_field else None,
                 "value": mb_val_display,
                 "raw_value": mb_val_display,
                 "units": mapping.unit,
-                "transform": str(candidate.transform) if candidate.transform else None,
+                "transform": str(candidate.transform) if (candidate and candidate.transform) else None,
                 "is_optimal": True,
                 "is_pinned": False,
                 "is_divergent": False,
@@ -598,6 +600,7 @@ def _build_comparison_row(
                 "offset": getattr(mb_field, "offset", None) if mb_field else None,
                 "scale_factor": getattr(mb_field, "scale_factor_point", None) if mb_field else None,
                 "point_type": getattr(mb_field, "point_type", None) if mb_field else None,
+                "last_updated": getattr(mb_field, "last_updated", None) if mb_field else None,
             }
         ] if has_mb_val else []
 
@@ -612,10 +615,10 @@ def _build_comparison_row(
             device_name=dev_name,
             mqtt_key=mapping.mqtt_key,
             mqtt_value=None,
-            modbus_key=candidate.field_key,
+            modbus_key=candidate.field_key if candidate else (mb_field.key if mb_field else ""),
             modbus_label=modbus_label,
             modbus_value=mb_val_display,
-            confidence=candidate.confidence,
+            confidence=candidate.confidence if candidate else "LOW",
             status="MQTT_MISSING",
             status_label="MQTT Waiting",
             is_discrepant=False,
@@ -640,10 +643,10 @@ def _build_comparison_row(
             device_name=dev_name,
             mqtt_key=mapping.mqtt_key,
             mqtt_value=mqtt_val,
-            modbus_key=candidate.field_key,
+            modbus_key=candidate.field_key if candidate else "",
             modbus_label=modbus_label,
             modbus_value=None,
-            confidence=candidate.confidence,
+            confidence=candidate.confidence if candidate else "LOW",
             status="MODBUS_MISSING",
             status_label="Modbus Not Polled",
             is_discrepant=False,
@@ -670,6 +673,7 @@ def _build_comparison_row(
                     "is_pinned": False,
                     "is_divergent": False,
                     "device_sn": dev_sn,
+                    "last_updated": getattr(raw_mqtt_field, "last_updated", None) if raw_mqtt_field else None,
                 }
             ],
         )
@@ -680,8 +684,8 @@ def _build_comparison_row(
         if len(mb_fields) > 1:
             dev_summary = ", ".join(f"{f.device_sn[-4:] if len(f.device_sn) >= 4 else f.device_sn}:{f.value}" for f in mb_fields if f.value is not None)
             notes = f"Sum across {len(mb_fields)} devices ({dev_summary})"
-            modbus_label = f"{candidate.label} (∑ {len(mb_fields)})"
-        if candidate.transform and candidate.transform not in ("sum", "sum_all", "sum_devices"):
+            modbus_label = f"{candidate.label if candidate else 'Modbus'} (∑ {len(mb_fields)})"
+        if candidate and candidate.transform and candidate.transform not in ("sum", "sum_all", "sum_devices"):
             if callable(candidate.transform):
                 mb_val = candidate.transform(raw_mb_val)
             else:
@@ -690,7 +694,7 @@ def _build_comparison_row(
             mb_val = raw_mb_val
     else:
         raw_mb_val = mb_field.value
-        if candidate.transform:
+        if candidate and candidate.transform:
             if callable(candidate.transform):
                 mb_val = candidate.transform(raw_mb_val)
             else:
@@ -761,19 +765,20 @@ def _build_comparison_row(
             "offset": None,
             "scale_factor": None,
             "point_type": "float" if isinstance(mqtt_val, float) else ("int" if isinstance(mqtt_val, int) else None),
+            "last_updated": getattr(raw_mqtt_field, "last_updated", None) if raw_mqtt_field else None,
         },
         {
             "source_type": "SUNSPEC",
-            "source_id": candidate.field_key.split(".")[-2].replace("model_", "M") if "." in candidate.field_key else "SUNSPEC",
-            "field_key": candidate.field_key,
-            "name": candidate.field_key.split(".")[-1],
+            "source_id": candidate.field_key.split(".")[-2].replace("model_", "M") if (candidate and "." in candidate.field_key) else "SUNSPEC",
+            "field_key": candidate.field_key if candidate else (mb_field.key if mb_field else ""),
+            "name": candidate.field_key.split(".")[-1] if candidate else (mb_field.name if mb_field else ""),
             "label": modbus_label,
             "model_id": getattr(mb_field, "model_id", None) if mb_field else None,
             "model_name": getattr(mb_field, "model_name", None) if mb_field else None,
             "value": mb_val,
             "raw_value": raw_mb_val,
             "units": mapping.unit,
-            "transform": str(candidate.transform) if candidate.transform else None,
+            "transform": str(candidate.transform) if (candidate and candidate.transform) else None,
             "is_optimal": False,
             "is_pinned": False,
             "is_divergent": is_discrepant,
@@ -781,6 +786,7 @@ def _build_comparison_row(
             "offset": getattr(mb_field, "offset", None) if mb_field else None,
             "scale_factor": getattr(mb_field, "scale_factor_point", None) if mb_field else None,
             "point_type": getattr(mb_field, "point_type", None) if mb_field else None,
+            "last_updated": getattr(mb_field, "last_updated", None) if mb_field else None,
         }
     ]
 

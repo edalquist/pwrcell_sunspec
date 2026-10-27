@@ -817,11 +817,12 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertIn("minimal_models", opt_data)
         self.assertIn("assignments", opt_data)
         self.assertIn("models_avoided", opt_data)
-        # Model 64208 covers them
-        self.assertEqual(opt_data["minimal_models"], [64208])
-        self.assertEqual(opt_data["stats"]["models_needed"], 1)
+        # Both have MQTT push telemetry, so zero Modbus models are needed to poll
+        self.assertEqual(opt_data["minimal_models"], [])
+        self.assertEqual(opt_data["stats"]["models_needed"], 0)
+        self.assertEqual(opt_data["stats"].get("mqtt_covered_count"), 2)
 
-        # Pin system_mode to Model 64202 SysMd
+        # Pin system_mode to Model 64202 SysMd and grid_power to Model 64208 CTPow
         opt_pinned = self.test_client.post(
             f"/api/devices/{inv_sn}/optimize_polling",
             json={
@@ -830,6 +831,7 @@ class TestWebExplorerApi(unittest.TestCase):
                     "inverter.concept.system_mode",
                 ],
                 "preferred_sources": {
+                    "inverter.concept.grid_power": "inverter.inverter_status.CTPow",
                     "inverter.concept.system_mode": "inverter.REbus_arb.SysMd",
                 },
             },
@@ -843,7 +845,7 @@ class TestWebExplorerApi(unittest.TestCase):
         pinned_sys = next(g for g in pinned_data["unified_fields"] if g["concept_key"] == "system_mode")
         self.assertEqual(pinned_sys["preferred_source_key"], "inverter.REbus_arb.SysMd")
 
-        # Unpin system_mode (empty preferred_sources)
+        # Unpin system_mode and grid_power (empty preferred_sources)
         opt_unpinned = self.test_client.post(
             f"/api/devices/{inv_sn}/optimize_polling",
             json={
@@ -856,14 +858,17 @@ class TestWebExplorerApi(unittest.TestCase):
         )
         self.assertEqual(opt_unpinned.status_code, 200)
         unpinned_data = opt_unpinned.get_json()
-        self.assertEqual(unpinned_data["minimal_models"], [64208])
+        self.assertEqual(unpinned_data["minimal_models"], [])
         self.assertIn("unified_fields", unpinned_data)
         unpinned_sys = next(g for g in unpinned_data["unified_fields"] if g["concept_key"] == "system_mode")
         self.assertIsNone(unpinned_sys["preferred_source_key"])
         self.assertTrue(all(not s.get("is_pinned") for s in unpinned_sys["sources"]))
-        # Optimal source MUST match the minimal polling plan model (64208), NOT avoided Model 64202!
-        opt_src = next(s for s in unpinned_sys["sources"] if s.get("is_optimal"))
-        self.assertEqual(opt_src["model_id"], 64208)
+        # Primary source is MQTT push
+        primary_src = next(s for s in unpinned_sys["sources"] if s.get("is_primary"))
+        self.assertEqual(primary_src["source_type"], "MQTT")
+        # Optimal SunSpec fallback source MUST match Model 64208, NOT avoided Model 64202!
+        opt_mb_src = next(s for s in unpinned_sys["sources"] if s.get("is_optimal") and s.get("source_type") != "MQTT")
+        self.assertEqual(opt_mb_src["model_id"], 64208)
 
     def test_overview_integer_mode_uses_canonical_name(self):
         """When system_mode is an integer, /api/overview must return canonical mode names rather than overwritten aliases."""
@@ -883,6 +888,32 @@ class TestWebExplorerApi(unittest.TestCase):
                 resp = self.test_client.get("/api/overview")
                 self.assertEqual(resp.status_code, 200)
                 self.assertEqual(resp.get_json()["system_mode"], expected_name)
+
+    def test_pvlink_polling_optimizer_does_not_leak_peer_device_fields(self):
+        """Verify optimize_polling for PV Link does not select Model 404 when Model 64207 satisfies all fields."""
+        pv_sn = "000100034E68"
+        # Simulate HA config that has keys from peer devices (like string_combiner.DCA on 0001000361F4)
+        mock_ha_keys = [
+            f"{pv_sn}:pv_link.REbus_status.E",
+            f"{pv_sn}:pv_link.REbus_status.I",
+            f"{pv_sn}:pv_link.REbus_status.P",
+            f"{pv_sn}:pv_link.REbus_status.St",
+            f"{pv_sn}:pv_link.REbus_status.T",
+            f"{pv_sn}:pv_link.REbus_status.V",
+            "0001000361F4:pv_link.string_combiner.DCA",  # Peer device field on Model 404
+        ]
+        resp = self.test_client.post(
+            f"/api/devices/{pv_sn}/optimize_polling",
+            json={
+                "selected_keys": mock_ha_keys,
+                "preferred_sources": {},
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["minimal_models"], [64207])
+        self.assertIn(404, data["models_avoided"])
+        self.assertEqual(data["stats"]["total_items"], 6)
 
 
 if __name__ == "__main__":

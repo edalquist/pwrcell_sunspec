@@ -22,24 +22,45 @@ def clean_unit(unit: Optional[str]) -> str:
     """Normalize unit string for fuzzy matching across models."""
     if not unit:
         return ""
-    u = unit.strip().replace("°", "").replace("Deg", "").replace("deg", "")
+    u = str(unit).replace("°", "").replace("Deg", "").replace("deg", "").replace("_", " ").strip()
     mapping = {
         "c": "C",
+        "celsius": "C",
         "f": "F",
+        "fahrenheit": "F",
         "w": "W",
+        "watt": "W",
+        "watts": "W",
+        "kw": "kW",
+        "kilowatt": "kW",
+        "kilowatts": "kW",
         "wh": "Wh",
+        "watt-hour": "Wh",
+        "watt-hours": "Wh",
+        "watt hour": "Wh",
+        "watt hours": "Wh",
         "kwh": "kWh",
         "v": "V",
+        "volt": "V",
+        "volts": "V",
         "a": "A",
+        "amp": "A",
+        "amps": "A",
+        "ampere": "A",
+        "amperes": "A",
         "hz": "Hz",
+        "hertz": "Hz",
         "pct": "%",
         "percent": "%",
         "%": "%",
         "%whrtg": "%",
         "sec": "s",
+        "second": "s",
+        "seconds": "s",
         "s": "s",
         "va": "VA",
         "var": "VAr",
+        "vars": "VAr",
     }
     return mapping.get(u.lower(), u)
 
@@ -127,7 +148,7 @@ def _load_optimizer_preferences() -> Dict[int, float]:
                 return {int(k): float(v) for k, v in d.get("favored_models", {}).items()}
     except Exception:
         pass
-    return {64208: 0.8, 64252: 0.8, 404: 0.8, 64207: 0.85, 102: 0.9, 802: 0.9}
+    return {64208: 0.8, 64252: 0.8, 64207: 0.8, 404: 0.85, 102: 0.9, 802: 0.9}
 
 
 _DEFAULT_FAVORED_MODELS: Optional[Dict[int, float]] = None
@@ -179,11 +200,10 @@ def solve_minimal_model_set(
     # 1. Process items pinned to MQTT or satisfied by MQTT without user Modbus pinning
     for item_key, candidates in items.items():
         user_pin = pinned.get(item_key)
-        if user_pin == "MQTT" or (user_pin is None and allow_mqtt and "MQTT" in candidates and len(candidates) == 1):
+        if user_pin == "MQTT":
             assignments[item_key] = "MQTT"
             continue
-
-        if user_pin == "MQTT":
+        if user_pin is None and allow_mqtt and "MQTT" in candidates:
             assignments[item_key] = "MQTT"
             continue
 
@@ -235,6 +255,7 @@ def solve_minimal_model_set(
                 "models_needed": len(models_list),
                 "candidate_models_count": len(all_candidate_models),
                 "models_avoided": max(0, len(all_candidate_models) - len(models_list)),
+                "mqtt_covered_count": sum(1 for v in assignments.values() if v == "MQTT"),
             },
         )
 
@@ -329,6 +350,10 @@ def _field_matches_modbus_target(f: Any, target_str: str) -> bool:
         else:
             if f.model_name and model_part not in (f.model_name.lower(), f"model_{f.model_id}"):
                 return False
+    if len(parts) >= 3:
+        target_dev_type = parts[0].lower()
+        if getattr(f, "device_type", None) and target_dev_type != f.device_type.lower():
+            return False
     return True
 
 
@@ -364,6 +389,7 @@ def group_device_fields(
             custom_groupings = {}
 
     overrides = custom_groupings.get("field_overrides", {}) or {}
+    field_transforms = custom_groupings.get("field_transforms", {}) or {}
     custom_concepts = custom_groupings.get("custom_concepts", {}) or {}
 
     dev_type = getattr(dev, "device_type", "inverter")
@@ -394,7 +420,15 @@ def group_device_fields(
     # Map each field into a concept
     assigned_field_keys: Set[str] = set()
 
-    for f_key, f in all_fields.items():
+    def _field_priority(item):
+        k, _ = item
+        qk = f"{dev_sn}:{k}" if dev_sn else k
+        if qk in overrides or k in overrides:
+            return 0
+        return 1
+
+    sorted_fields = sorted(all_fields.items(), key=_field_priority)
+    for f_key, f in sorted_fields:
         # Check user custom grouping overrides first
         qual_key = f"{dev_sn}:{f_key}" if dev_sn else f_key
         has_override = qual_key in overrides or f_key in overrides
@@ -436,7 +470,7 @@ def group_device_fields(
                         "id": c_id,
                         "concept_key": f"{f.name.lower()}_{getattr(f, 'model_id', 'raw')}",
                         "name": f.name,
-                        "label": f"{f.label} (Ungrouped)",
+                        "label": f.label or f.name,
                         "description": f.description,
                         "units": f.units,
                         "ha_platform": f.ha_hint.platform if f.ha_hint else ("sensor" if not f.is_writable else "number"),
@@ -449,6 +483,10 @@ def group_device_fields(
                 continue
             else:
                 target_key = str(target_concept).strip()
+                if target_key.startswith(f"{dev_type}.concept."):
+                    target_key = target_key[len(f"{dev_type}.concept."):]
+                elif target_key.startswith(f"{dev_type}."):
+                    target_key = target_key[len(f"{dev_type}."):]
                 c_id = f"{dev_type}.concept.{target_key}"
                 c_meta = custom_concepts.get(target_key, {})
                 c_units = c_meta.get("units", f.units)
@@ -457,11 +495,13 @@ def group_device_fields(
                 if not c_d_class and not c_s_class:
                     c_d_class, c_s_class = infer_ha_classes(units=c_units, name=target_key)
                 if c_id not in concept_metadata:
+                    matching_f = next((df for df in dev.fields.values() if df.name.lower() == target_key.lower()), None)
+                    resolved_label = c_meta.get("label") or (matching_f.label if matching_f else target_key.replace("_", " ").title())
                     concept_metadata[c_id] = {
                         "id": c_id,
                         "concept_key": target_key,
                         "name": target_key,
-                        "label": c_meta.get("label") or target_key.replace("_", " ").title(),
+                        "label": resolved_label,
                         "description": c_meta.get("description", f.description),
                         "units": c_units,
                         "ha_platform": c_meta.get("ha_platform", f.ha_hint.platform if f.ha_hint else "sensor"),
@@ -469,8 +509,23 @@ def group_device_fields(
                         "ha_state_class": c_s_class,
                         "is_custom_override": True,
                     }
+                is_mqtt = getattr(f.source, "value", str(f.source)) == "MQTT_PUSH" or "live." in f_key
                 c_trans = c_meta.get("transform")
-                concept_buckets.setdefault(c_id, []).append((f_key, f, c_trans))
+                
+                # Check explicit field transform first
+                if qual_key in field_transforms or f_key in field_transforms:
+                    raw_tf = field_transforms.get(qual_key, field_transforms.get(f_key))
+                    f_trans = None if raw_tf in (None, "none", "") else raw_tf
+                elif c_trans and c_trans != "none":
+                    # Concept negation applies to Modbus/candidate fields, never to MQTT reference stream
+                    if is_mqtt and c_trans == "negate":
+                        f_trans = None
+                    else:
+                        f_trans = c_trans
+                else:
+                    f_trans = None
+
+                concept_buckets.setdefault(c_id, []).append((f_key, f, f_trans))
                 assigned_field_keys.add(f_key)
                 continue
 
@@ -487,7 +542,7 @@ def group_device_fields(
                     "id": c_id,
                     "concept_key": f"{f.name.lower()}_{getattr(f, 'model_id', 'raw')}",
                     "name": f.name,
-                    "label": f"{f.label} (Ungrouped)",
+                    "label": f"{f.label or f.name} (Ungrouped)",
                     "description": f.description,
                     "units": f.units,
                     "ha_platform": f.ha_hint.platform if f.ha_hint else ("sensor" if not f.is_writable else "number"),
@@ -512,13 +567,75 @@ def group_device_fields(
                     transform = m.transform
 
                 if is_match:
+                    if qual_key in field_transforms or f_key in field_transforms:
+                        transform = field_transforms.get(qual_key, field_transforms.get(f_key))
                     c_id = f"{dev_type}.concept.{m.id}"
+                    if c_id not in concept_metadata:
+                        concept_metadata[c_id] = {
+                            "id": c_id,
+                            "concept_key": m.id,
+                            "name": m.id,
+                            "label": m.label,
+                            "description": m.description,
+                            "units": m.unit or f.units,
+                            "ha_platform": m.ha_platform,
+                            "ha_device_class": m.ha_device_class,
+                            "ha_state_class": m.ha_state_class,
+                            "is_custom_override": False,
+                        }
                     concept_buckets.setdefault(c_id, []).append((f_key, f, transform))
                     assigned_field_keys.add(f_key)
                     assigned = True
                     break
 
         if assigned:
+            continue
+
+        # Check if an unmapped field belongs to an existing custom concept bucket on this device
+        cand_keys = [
+            f"{f.name.lower()}_{getattr(f, 'model_id', 'raw')}",
+            f.name.lower(),
+            f.name,
+        ]
+        matching_c_id = next(
+            (f"{dev_type}.concept.{ck}" for ck in cand_keys if f"{dev_type}.concept.{ck}" in concept_buckets),
+            None
+        )
+        if matching_c_id:
+            concept_buckets[matching_c_id].append((f_key, f, None))
+            assigned_field_keys.add(f_key)
+            continue
+
+        active_target_concepts = {
+            str(v).strip()
+            for k, v in overrides.items()
+            if (not dev_sn or k.startswith(f"{dev_sn}:")) and v and str(v).strip().lower() not in ("", "null", "none", "standalone", "ungrouped")
+        }
+        matching_target_key = next((ck for ck in cand_keys if ck in active_target_concepts), None)
+        if matching_target_key:
+            c_id = f"{dev_type}.concept.{matching_target_key}"
+            c_meta = custom_concepts.get(matching_target_key, {})
+            if c_id not in concept_metadata:
+                resolved_label = c_meta.get("label") or f.label or matching_target_key.replace("_", " ").title()
+                c_units = c_meta.get("units", f.units)
+                c_d_class = c_meta.get("ha_device_class")
+                c_s_class = c_meta.get("ha_state_class")
+                if not c_d_class and not c_s_class:
+                    c_d_class, c_s_class = infer_ha_classes(units=c_units, name=matching_target_key)
+                concept_metadata[c_id] = {
+                    "id": c_id,
+                    "concept_key": matching_target_key,
+                    "name": matching_target_key,
+                    "label": resolved_label,
+                    "description": c_meta.get("description", f.description),
+                    "units": c_units,
+                    "ha_platform": c_meta.get("ha_platform", f.ha_hint.platform if f.ha_hint else "sensor"),
+                    "ha_device_class": c_d_class,
+                    "ha_state_class": c_s_class,
+                    "is_custom_override": True,
+                }
+            concept_buckets.setdefault(c_id, []).append((f_key, f, None))
+            assigned_field_keys.add(f_key)
             continue
 
         # If auto-grouping heuristics are disabled, every unmapped field is strictly standalone
@@ -586,11 +703,11 @@ def group_device_fields(
         )
         m_id = getattr(f, "model_id", None)
         if is_model_specific and m_id:
-            auto_c_id = f"{dev_type}.m{m_id}.concept.{norm_name}_{c_unit}" if c_unit else f"{dev_type}.m{m_id}.concept.{norm_name}"
+            auto_c_id = f"{dev_type}.m{m_id}.concept.{norm_name}"
             c_key = f"{norm_name}_m{m_id}"
             c_label = f"{f.label} (M{m_id})" if f.label else f.name
         else:
-            auto_c_id = f"{dev_type}.concept.{norm_name}_{c_unit}" if c_unit else f"{dev_type}.concept.{norm_name}"
+            auto_c_id = f"{dev_type}.concept.{norm_name}"
             c_key = norm_name
             c_label = f.label
 
@@ -693,6 +810,7 @@ def group_device_fields(
                     is_scale_factor=is_sf,
                     is_custom_override=(qual_key in overrides or f_key in overrides),
                     device_sn=dev_sn,
+                    last_updated=getattr(f, "last_updated", None) or getattr(f, "timestamp", None),
                 )
             )
 
@@ -720,6 +838,10 @@ def group_device_fields(
                     pinned_model_inputs[c_id] = "MQTT" if s.source_type == "MQTT" else (s.model_id or pref_key)
                     break
 
+        grp_src_ts = [s.last_updated for s in sources if s.last_updated]
+        latest_grp_ts = max(grp_src_ts) if grp_src_ts else 0.0
+
+        grp_units = meta.get("units") or next((s.units for s in sources if s.units), None)
         group = UnifiedFieldGroup(
             id=c_id,
             concept_key=meta.get("concept_key", c_id.split(".")[-1]),
@@ -728,13 +850,13 @@ def group_device_fields(
             name=meta.get("name", c_id.split(".")[-1]),
             label=meta.get("label", c_id.split(".")[-1]),
             description=meta.get("description", ""),
-            units=meta.get("units"),
+            units=grp_units,
             sources=sources,
             preferred_source_key=pref_key,
             is_writable=is_grp_writable,
             ha_platform=meta.get("ha_platform", "sensor"),
-            ha_device_class=meta.get("ha_device_class") or infer_ha_classes(units=meta.get("units"), name=meta.get("name", c_id.split(".")[-1]), platform=meta.get("ha_platform", "sensor"))[0],
-            ha_state_class=meta.get("ha_state_class") or infer_ha_classes(units=meta.get("units"), name=meta.get("name", c_id.split(".")[-1]), platform=meta.get("ha_platform", "sensor"))[1],
+            ha_device_class=meta.get("ha_device_class") or infer_ha_classes(units=grp_units, name=meta.get("name", c_id.split(".")[-1]), platform=meta.get("ha_platform", "sensor"))[0],
+            ha_state_class=meta.get("ha_state_class") or infer_ha_classes(units=grp_units, name=meta.get("name", c_id.split(".")[-1]), platform=meta.get("ha_platform", "sensor"))[1],
             is_selected=grp_selected,
             bounds=grp_bounds,
             point_type=next((s.point_type for s in sources if s.point_type), None),
@@ -742,6 +864,7 @@ def group_device_fields(
             is_enum=any(s.is_enum for s in sources),
             symbols=next((s.symbols for s in sources if s.symbols), None),
             bitmask_flags=next((s.bitmask_flags for s in sources if s.bitmask_flags), None),
+            latest_updated=latest_grp_ts,
             is_scale_factor=(
                 is_scale_factor_point(
                     name=meta.get("name"),
@@ -785,6 +908,7 @@ def group_device_fields(
             pinned_sources=pinned_model_inputs,
             allow_mqtt=True,
         )
+        polled_models = set(opt_res.minimal_models)
         assignments = opt_res.assignments
 
     # 4. Assign active sources and optimal flags
@@ -792,6 +916,7 @@ def group_device_fields(
         for s in g.sources:
             s.is_optimal = False
             s.is_pinned = False
+            s.is_primary = False
 
         chosen = assignments.get(g.id)
         active_src: Optional[UnifiedSource] = None
@@ -817,10 +942,14 @@ def group_device_fields(
 
         if active_src:
             active_src.is_optimal = True
+            active_src.is_primary = True
             g.active_source_key = active_src.field_key
+            g.primary_source_key = active_src.field_key
             g.latest_value = active_src.value
             g.raw_value = active_src.raw_value
             g.latest_source = active_src.source_id
+            if active_src.last_updated:
+                g.latest_updated = active_src.last_updated
             if active_src.point_type:
                 g.point_type = active_src.point_type
             if active_src.is_bitfield:
@@ -833,6 +962,16 @@ def group_device_fields(
                 g.bitmask_flags = active_src.bitmask_flags
             if active_src.is_scale_factor:
                 g.is_scale_factor = True
+
+        # Also identify the optimal SunSpec candidate among Modbus sources for comparison/fallback
+        mb_sources = [s for s in g.sources if s.source_type != "MQTT"]
+        if mb_sources and not any(s.is_optimal for s in mb_sources):
+            favored = get_default_favored_models()
+            best_mb = min(
+                mb_sources,
+                key=lambda s: (0 if s.model_id in polled_models else 1, favored.get(s.model_id or 0, 1.0))
+            )
+            best_mb.is_optimal = True
 
         # Compute delta and match percentage across sources
         num_vals = [s.value for s in g.sources if isinstance(s.value, (int, float))]

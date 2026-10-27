@@ -19,7 +19,9 @@ from .config import data_dir, is_addon_data_env
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MAPPINGS_FILE = "telemetry_mappings.yaml"
+DEFAULT_GROUPINGS_FILE = "groupings.yaml"
+LEGACY_MAPPINGS_FILE = "telemetry_mappings.yaml"
+DEFAULT_MAPPINGS_FILE = DEFAULT_GROUPINGS_FILE
 
 
 def apply_transform(val: Any, transform: Optional[str]) -> Any:
@@ -56,6 +58,81 @@ def apply_transform(val: Any, transform: Optional[str]) -> Any:
             return val
 
     return val
+
+
+@dataclass
+class GroupMemberDef:
+    """A member telemetry source in a minimal field group."""
+    path: str
+    transform: Optional[str] = None
+
+    def to_dict(self) -> Union[str, Dict[str, Any]]:
+        if self.transform and self.transform != "none":
+            return {"path": self.path, "transform": self.transform}
+        return self.path
+
+    @classmethod
+    def from_item(cls, item: Union[str, Dict[str, Any]]) -> GroupMemberDef:
+        if isinstance(item, str):
+            return cls(path=item.strip())
+        if isinstance(item, dict):
+            return cls(path=str(item.get("path", "")).strip(), transform=item.get("transform"))
+        return cls(path=str(item).strip())
+
+
+@dataclass
+class FieldGroupDef:
+    """Minimal representation of a unified field group (v2.0)."""
+    id: str
+    name: str
+    fields: List[GroupMemberDef] = field(default_factory=list)
+    device_type: Optional[str] = None
+    synonyms: List[str] = field(default_factory=list)
+
+    def to_mapping_def(self) -> TelemetryMappingDef:
+        mqtt_fields: List[str] = []
+        modbus_fields: List[str] = []
+        grp_transform = "none"
+        d_type = self.device_type
+        for m in self.fields:
+            p = m.path.strip()
+            if not p:
+                continue
+            if not d_type and ("live." in p or p.startswith(("inverter.live", "battery.live", "rebus_beacon.live"))):
+                d_type = p.split(".")[0]
+            if d_type and "." in p:
+                prefix = p.split(".")[0].lower()
+                if prefix in ("inverter", "battery", "pv_link", "rebus_beacon") and prefix != d_type.lower():
+                    logger.warning("Rejecting cross-device field '%s' from group '%s' (device_type=%s)", p, self.id, d_type)
+                    continue
+            if "live." in p or p.startswith(("inverter.live", "battery.live", "rebus_beacon.live")):
+                mqtt_fields.append(p)
+            else:
+                modbus_fields.append(p)
+                if m.transform and m.transform != "none":
+                    grp_transform = m.transform
+
+        if not d_type:
+            for m in self.fields:
+                p = m.path.strip()
+                if p and "." in p:
+                    d_type = p.split(".")[0]
+                    break
+        if not d_type:
+            d_type = "inverter"
+
+        d_class, s_class = infer_ha_classes(units=None, name=self.id)
+        return TelemetryMappingDef(
+            id=self.id,
+            label=self.name,
+            device_type=d_type,
+            mqtt_fields=mqtt_fields,
+            modbus_fields=modbus_fields,
+            synonyms=list(self.synonyms),
+            transform=grp_transform,
+            ha_device_class=d_class,
+            ha_state_class=s_class,
+        )
 
 
 @dataclass
@@ -281,24 +358,45 @@ def clean_unit(unit: Optional[str]) -> str:
     """Normalize unit string for fuzzy matching across models."""
     if not unit:
         return ""
-    u = unit.strip().replace("°", "").replace("Deg", "").replace("deg", "")
+    u = str(unit).replace("°", "").replace("Deg", "").replace("deg", "").replace("_", " ").strip()
     mapping = {
         "c": "C",
+        "celsius": "C",
         "f": "F",
+        "fahrenheit": "F",
         "w": "W",
+        "watt": "W",
+        "watts": "W",
+        "kw": "kW",
+        "kilowatt": "kW",
+        "kilowatts": "kW",
         "wh": "Wh",
+        "watt-hour": "Wh",
+        "watt-hours": "Wh",
+        "watt hour": "Wh",
+        "watt hours": "Wh",
         "kwh": "kWh",
         "v": "V",
+        "volt": "V",
+        "volts": "V",
         "a": "A",
+        "amp": "A",
+        "amps": "A",
+        "ampere": "A",
+        "amperes": "A",
         "hz": "Hz",
+        "hertz": "Hz",
         "pct": "%",
         "percent": "%",
         "%": "%",
         "%whrtg": "%",
         "sec": "s",
+        "second": "s",
+        "seconds": "s",
         "s": "s",
         "va": "VA",
         "var": "VAr",
+        "vars": "VAr",
     }
     return mapping.get(u.lower(), u)
 
@@ -330,16 +428,28 @@ def _field_matches_modbus_target(f: Any, target_str: str) -> bool:
 
 
 def get_default_mappings() -> List[TelemetryMappingDef]:
-    """Default configurable mappings loaded directly from package data telemetry_mappings.yaml."""
-    pkg_data_path = Path(__file__).resolve().parent / "data" / DEFAULT_MAPPINGS_FILE
-    if pkg_data_path.exists():
-        try:
-            with open(pkg_data_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-                items = data.get("mappings", [])
-                return [TelemetryMappingDef.from_dict(d) for d in items]
-        except Exception as e:
-            logger.error("Failed to load package telemetry_mappings.yaml from %s: %s", pkg_data_path, e)
+    """Default configurable mappings loaded directly from package data groupings.yaml or telemetry_mappings.yaml."""
+    pkg_dir = Path(__file__).resolve().parent
+    for fname in (DEFAULT_GROUPINGS_FILE, LEGACY_MAPPINGS_FILE):
+        pkg_data_path = pkg_dir / "data" / fname
+        if pkg_data_path.exists():
+            try:
+                with open(pkg_data_path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                    if "groups" in data:
+                        mappings = []
+                        for g_dict in data.get("groups", []):
+                            g_id = g_dict.get("id")
+                            g_name = g_dict.get("name", g_id)
+                            fields = [GroupMemberDef.from_item(item) for item in g_dict.get("fields", [])]
+                            g_def = FieldGroupDef(id=g_id, name=g_name, fields=fields, device_type=g_dict.get("device_type"))
+                            mappings.append(g_def.to_mapping_def())
+                        return mappings
+                    items = data.get("mappings", [])
+                    if items:
+                        return [TelemetryMappingDef.from_dict(d) for d in items]
+            except Exception as e:
+                logger.error("Failed to load package %s from %s: %s", fname, pkg_data_path, e)
     return []
 
 
@@ -347,15 +457,30 @@ def _resolve_mappings_path(config_path: Optional[Path | str] = None) -> Path:
     if config_path:
         return Path(config_path)
     if is_addon_data_env():
-        return data_dir() / DEFAULT_MAPPINGS_FILE
+        g_path = data_dir() / DEFAULT_GROUPINGS_FILE
+        if g_path.exists():
+            return g_path
+        leg_path = data_dir() / LEGACY_MAPPINGS_FILE
+        if leg_path.exists():
+            return leg_path
+        return g_path
     pkg_dir = Path(__file__).resolve().parent
-    data_path = pkg_dir / "data" / DEFAULT_MAPPINGS_FILE
+    repo_root = pkg_dir.parent
+
+    # Look for groupings.yaml in config, root, data_dir
+    for base in (repo_root / "config", repo_root, data_dir()):
+        p = base / DEFAULT_GROUPINGS_FILE
+        if p.exists():
+            return p
+    # Look for legacy telemetry_mappings.yaml
+    for base in (repo_root / "config", repo_root, data_dir()):
+        p = base / LEGACY_MAPPINGS_FILE
+        if p.exists():
+            return p
+
+    data_path = pkg_dir / "data" / DEFAULT_GROUPINGS_FILE
     if data_path.exists():
         return data_path
-    repo_root = pkg_dir.parent
-    root_path = repo_root / DEFAULT_MAPPINGS_FILE
-    if root_path.exists():
-        return root_path
     return data_path
 
 
@@ -363,13 +488,13 @@ def load_mappings_config(config_path: Optional[Path | str] = None) -> Dict[str, 
     """Load raw telemetry mappings configuration dictionary from yaml."""
     path = _resolve_mappings_path(config_path)
     if not path.exists():
-        return {"version": "1.0", "auto_group_heuristics": True, "ungrouped_fields": [], "mappings": []}
+        return {"version": "2.0", "auto_group_heuristics": False, "ungrouped_fields": [], "groups": []}
     try:
         with open(path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     except Exception as e:
         logger.error("Failed to load mappings config from %s: %s", path, e)
-        return {"version": "1.0", "auto_group_heuristics": True, "ungrouped_fields": [], "mappings": []}
+        return {"version": "2.0", "auto_group_heuristics": False, "ungrouped_fields": [], "groups": []}
 
 
 def load_mappings(config_path: Optional[Path | str] = None) -> List[TelemetryMappingDef]:
@@ -383,6 +508,18 @@ def load_mappings(config_path: Optional[Path | str] = None) -> List[TelemetryMap
         return defaults
 
     raw = load_mappings_config(config_path)
+    if "groups" in raw:
+        mappings = []
+        for g_dict in raw.get("groups", []):
+            g_id = g_dict.get("id")
+            g_name = g_dict.get("name", g_id)
+            fields = [GroupMemberDef.from_item(item) for item in g_dict.get("fields", [])]
+            syns = list(g_dict.get("synonyms", []) or [])
+            g_def = FieldGroupDef(id=g_id, name=g_name, fields=fields, device_type=g_dict.get("device_type"), synonyms=syns)
+            mappings.append(g_def.to_mapping_def())
+        logger.info("Loaded %d field groups from %s", len(mappings), path)
+        return mappings
+
     items = raw.get("mappings", [])
     if not items:
         logger.warning("No mappings defined in %s. Using built-in defaults.", path)
@@ -396,25 +533,47 @@ def save_mappings(
     mappings: List[TelemetryMappingDef],
     config_path: Optional[Path | str] = None,
     ungrouped_fields: Optional[Union[List[str], Set[str]]] = None,
-    auto_group_heuristics: bool = True,
+    auto_group_heuristics: bool = False,
 ):
-    """Save telemetry mappings list, ungrouped fields, and heuristic settings to YAML."""
+    """Save field groups list, ungrouped fields, and heuristic settings to YAML (v2.0 minimal format)."""
     path = _resolve_mappings_path(config_path)
+    # If path currently points to legacy file name, prefer saving as groupings.yaml
+    if path.name == LEGACY_MAPPINGS_FILE and not config_path:
+        path = path.parent / DEFAULT_GROUPINGS_FILE
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         u_list = sorted(list({str(x).strip() for x in (ungrouped_fields or []) if str(x).strip()}))
+        groups_list = []
+        for m in mappings:
+            f_list = []
+            for mf in m.mqtt_fields:
+                f_list.append(mf)
+            for mbf in m.modbus_fields:
+                if m.transform and m.transform != "none":
+                    f_list.append({"path": mbf, "transform": m.transform})
+                else:
+                    f_list.append(mbf)
+            g_entry = {
+                "id": m.id,
+                "name": m.label,
+                "fields": f_list,
+            }
+            if m.synonyms:
+                g_entry["synonyms"] = list(m.synonyms)
+            groups_list.append(g_entry)
+
         data: Dict[str, Any] = {
-            "version": "1.0",
-            "auto_group_heuristics": auto_group_heuristics,
+            "version": "2.0",
+            "groups": groups_list,
         }
         if u_list:
             data["ungrouped_fields"] = u_list
-        data["mappings"] = [m.to_dict() for m in mappings]
+
         with open(path, "w", encoding="utf-8") as f:
-            f.write("# PWRcell SunSpec - Telemetry & Compound Metric Mappings\n")
-            f.write("# Canonical pairings between internal MQTT push and SunSpec Modbus registers.\n\n")
+            f.write("# PWRcell SunSpec - Field Groupings & Telemetry Mappings (v2.0)\n")
+            f.write("# Unified links across MQTT push streams and SunSpec Modbus registers.\n\n")
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-        logger.info("Saved %d telemetry mappings to %s", len(mappings), path)
+        logger.info("Saved %d field groups to %s", len(mappings), path)
     except Exception as e:
         logger.error("Failed to save mappings to %s: %s", path, e)
         raise e
@@ -433,26 +592,25 @@ class MappingRegistry:
         self._modbus_to_mqtt: Dict[str, str] = {}
         self._raw_to_compound: Dict[str, str] = {}
         self.ungrouped_fields: Set[str] = set()
-        self.auto_group_heuristics: bool = True
+        self.auto_group_heuristics: bool = False
         self.reload()
 
     @classmethod
     def get_instance(cls, config_path: Optional[str] = None) -> MappingRegistry:
         if cls._instance is None:
             cls._instance = MappingRegistry(config_path)
+        elif config_path is not None and cls._instance.config_path != config_path:
+            cls._instance.config_path = config_path
+            cls._instance.reload()
         return cls._instance
 
     def reload(self):
         raw = load_mappings_config(self.config_path)
-        self.auto_group_heuristics = bool(raw.get("auto_group_heuristics", True))
+        self.auto_group_heuristics = bool(raw.get("auto_group_heuristics", False))
         raw_ungrouped = raw.get("ungrouped_fields", []) or []
         self.ungrouped_fields = {str(x).strip() for x in raw_ungrouped if str(x).strip()}
 
-        items = raw.get("mappings", [])
-        if not items:
-            self._mappings = get_default_mappings()
-        else:
-            self._mappings = [TelemetryMappingDef.from_dict(d) for d in items]
+        self._mappings = load_mappings(self.config_path)
 
         self._by_id = {m.id: m for m in self._mappings}
         self._by_mqtt: Dict[str, TelemetryMappingDef] = {}

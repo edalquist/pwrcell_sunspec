@@ -446,6 +446,139 @@ class PwrcellClient:
         unrecognized_topics = self.mqtt.get_unrecognized_topics() if self.mqtt else []
         return inspect_unrecognized_proto_fields(erl, unrecognized_topics)
 
+    def sync_sample_fields(
+        self,
+        field_keys: List[str],
+        device_sn: Optional[str] = None,
+        timeout: float = 2.5,
+    ) -> Dict[str, Any]:
+        """Request a coordinated sample across a set of fields so their values are sampled as close in time as possible."""
+        if not field_keys:
+            return {"status": "error", "error": "No field keys provided", "sources": []}
+
+        # 1. Inspect fields and resolve contributing protocols and models
+        has_mqtt = False
+        modbus_targets: set[tuple[int, str, int]] = set()
+
+        for k in field_keys:
+            if (
+                k.startswith("inverter.live.")
+                or k.startswith("battery.live.")
+                or k.startswith("mqtt.")
+            ):
+                has_mqtt = True
+                continue
+
+            found_modbus = False
+            devices = [self.state.get_device(device_sn)] if device_sn else list(self.state.devices.values())
+            for dev in devices:
+                if not dev:
+                    continue
+                f = dev.fields.get(k)
+                if f:
+                    if f.source == FieldSource.MQTT_PUSH or f.key.startswith("mqtt."):
+                        has_mqtt = True
+                    elif f.model_id is not None and dev.slave_id is not None:
+                        modbus_targets.add((dev.slave_id, dev.serial_number, f.model_id))
+                        found_modbus = True
+                    break
+            if not found_modbus and ("live." in k or k.startswith("mqtt.")):
+                has_mqtt = True
+
+        # 2. Execute coordinated sampling
+        now_ts = time.time()
+        if has_mqtt and modbus_targets:
+            if self.is_mock and self._mock_generator:
+                rec_set = self._mock_generator.tick(elapsed_seconds=1.0)
+                snap = MqttClient._parse_snapshot(rec_set)
+                self.state.update_from_telemetry_snapshot(snap)
+                now_ts = time.time()
+                for slave_id, sn, mid in modbus_targets:
+                    dev = self.state.get_device(sn)
+                    if dev:
+                        for f in dev.fields.values():
+                            if f.model_id == mid:
+                                f.last_updated = now_ts
+            elif self.mqtt:
+                mqtt_event = threading.Event()
+                def _snap_cb(_snap):
+                    mqtt_event.set()
+                self.mqtt.register_snapshot_callback(_snap_cb)
+                try:
+                    mqtt_event.wait(timeout=min(timeout, 2.5))
+                finally:
+                    self.mqtt.unregister_snapshot_callback(_snap_cb)
+                for slave_id, sn, mid in modbus_targets:
+                    try:
+                        self.poller.poll_device_model(slave_id, sn, mid)
+                    except Exception as e:
+                        logger.warning("Error during sync sample of model %s on slave %d: %s", mid, slave_id, e)
+            else:
+                for slave_id, sn, mid in modbus_targets:
+                    try:
+                        self.poller.poll_device_model(slave_id, sn, mid)
+                    except Exception as e:
+                        logger.warning("Error during sync sample of model %s on slave %d: %s", mid, slave_id, e)
+        elif modbus_targets:
+            if self.is_mock:
+                for slave_id, sn, mid in modbus_targets:
+                    dev = self.state.get_device(sn)
+                    if dev:
+                        for f in dev.fields.values():
+                            if f.model_id == mid:
+                                f.last_updated = now_ts
+            else:
+                for slave_id, sn, mid in modbus_targets:
+                    try:
+                        self.poller.poll_device_model(slave_id, sn, mid)
+                    except Exception as e:
+                        logger.warning("Error during sync sample of model %s on slave %d: %s", mid, slave_id, e)
+        elif has_mqtt:
+            if self.is_mock and self._mock_generator:
+                rec_set = self._mock_generator.tick(elapsed_seconds=1.0)
+                snap = MqttClient._parse_snapshot(rec_set)
+                self.state.update_from_telemetry_snapshot(snap)
+            elif self.mqtt:
+                mqtt_event = threading.Event()
+                def _snap_cb(_snap):
+                    mqtt_event.set()
+                self.mqtt.register_snapshot_callback(_snap_cb)
+                try:
+                    mqtt_event.wait(timeout=min(timeout, 2.5))
+                finally:
+                    self.mqtt.unregister_snapshot_callback(_snap_cb)
+
+        # 3. Retrieve refreshed values and calculate skew
+        results = []
+        for k in field_keys:
+            f_obj = None
+            for dev in self.state.devices.values():
+                if k in dev.fields:
+                    f_obj = dev.fields[k]
+                    break
+            if f_obj:
+                results.append({
+                    "field_key": f_obj.key,
+                    "name": f_obj.name,
+                    "label": f_obj.label,
+                    "value": f_obj.value,
+                    "raw_value": f_obj.raw_value,
+                    "units": f_obj.units,
+                    "device_sn": f_obj.device_sn,
+                    "model_id": f_obj.model_id,
+                    "last_updated": f_obj.last_updated,
+                })
+
+        valid_ts = [r["last_updated"] for r in results if r.get("last_updated")]
+        skew_sec = round(max(valid_ts) - min(valid_ts), 3) if len(valid_ts) > 1 else 0.0
+
+        return {
+            "status": "ok",
+            "field_keys": field_keys,
+            "sources": results,
+            "skew_seconds": skew_sec,
+        }
+
 
     def _load_from_device_config(self, cfg: DeviceConfig):
         for dev_type, sn_map in cfg.to_dict().items():

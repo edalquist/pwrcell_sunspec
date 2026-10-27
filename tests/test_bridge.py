@@ -108,7 +108,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
             call[0][0]: call[0][1] for call in self.mock_mqttc.publish.call_args_list
         }
 
-        compound_config_topic = f"homeassistant/select/pwrcell_{sn.lower()}/compound_system_mode/config"
+        compound_config_topic = f"homeassistant/select/pwrcell_{sn.lower()}/system_mode/config"
         raw_config_topic = f"homeassistant/sensor/pwrcell_{sn.lower()}/live_system_mode/config"
 
         # Compound discovery config must be published with non-empty payload
@@ -177,7 +177,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
         self.bridge.selected_field_keys = [f"{sn}:inverter.live.system_mode"]
         self.bridge.publish_discovery()
 
-        cmd_topic = f"pwrcell/{sn.lower()}/compound_system_mode/set"
+        cmd_topic = f"pwrcell/{sn.lower()}/system_mode/set"
         self.assertIn(cmd_topic, self.bridge._command_topic_to_field)
 
         # Simulate incoming command message
@@ -267,7 +267,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
         self.bridge.selected_field_keys = [f"{sn}:inverter.live.inverter_output_exported_energy_wh"]
         self.bridge.publish_discovery()
 
-        config_topic = f"homeassistant/sensor/pwrcell_{sn.lower()}/compound_inverter_output_energy/config"
+        config_topic = f"homeassistant/sensor/pwrcell_{sn.lower()}/inverter_output_energy/config"
         matching_call = next(call for call in self.mock_mqttc.publish.call_args_list if call[0][0] == config_topic)
         payload = json.loads(matching_call[0][1])
         # Energy in Wh has suggested_display_precision 0
@@ -286,7 +286,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
             units="Wh",
         )
 
-        state_topic = f"pwrcell/{sn.lower()}/compound_inverter_output_energy/state"
+        state_topic = f"pwrcell/{sn.lower()}/inverter_output_energy/state"
         state_call = next(call for call in self.mock_mqttc.publish.call_args_list if call[0][0] == state_topic)
         self.assertEqual(state_call[0][1], "63050200")
         self.assertNotIn("e+", state_call[0][1])
@@ -416,7 +416,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
         sn = inv.serial_number
         self.bridge.selected_field_keys = [f"{sn}:inverter.live.system_mode"]
         self.bridge.publish_discovery()
-        cmd_topic = f"pwrcell/{sn.lower()}/compound_system_mode/set"
+        cmd_topic = f"pwrcell/{sn.lower()}/system_mode/set"
 
         # 1. Verify _cmd_executor exists (max_workers=1) and commands are submitted to it
         self.assertIsNotNone(getattr(self.bridge, "_cmd_executor", None))
@@ -460,7 +460,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
         sn = inv.serial_number
         self.bridge.selected_field_keys = [f"{sn}:inverter.live.system_mode"]
         self.bridge.publish_discovery()
-        cmd_topic = f"pwrcell/{sn.lower()}/compound_system_mode/set"
+        cmd_topic = f"pwrcell/{sn.lower()}/system_mode/set"
 
         # Set known baseline mode
         self.client.controls.write_field("inverter.compound.system_mode", "SELF_SUPPLY")

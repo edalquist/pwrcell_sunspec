@@ -52,7 +52,10 @@ def load_custom_groupings(config_path: Optional[Path | str] = None) -> Dict[str,
     """Load custom grouping overrides from YAML with mtime caching."""
     path = Path(config_path) if config_path else get_default_grouping_config_path()
     if not path.exists():
-        return {"field_overrides": {}, "custom_concepts": {}, "dismissed_suggestions": []}
+        _CUSTOM_GROUPINGS_CACHE["path"] = str(path)
+        _CUSTOM_GROUPINGS_CACHE["mtime"] = 0.0
+        _CUSTOM_GROUPINGS_CACHE["data"] = None
+        return {"field_overrides": {}, "field_transforms": {}, "custom_concepts": {}, "dismissed_suggestions": []}
     
     try:
         mtime = path.stat().st_mtime
@@ -61,6 +64,7 @@ def load_custom_groupings(config_path: Optional[Path | str] = None) -> Dict[str,
             if cached is not None:
                 return {
                     "field_overrides": dict(cached.get("field_overrides", {})),
+                    "field_transforms": dict(cached.get("field_transforms", {}) or {}),
                     "custom_concepts": dict(cached.get("custom_concepts", {})),
                     "dismissed_suggestions": list(cached.get("dismissed_suggestions", [])),
                 }
@@ -68,10 +72,11 @@ def load_custom_groupings(config_path: Optional[Path | str] = None) -> Dict[str,
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
             if not isinstance(data, dict):
-                res = {"field_overrides": {}, "custom_concepts": {}, "dismissed_suggestions": []}
+                res = {"field_overrides": {}, "field_transforms": {}, "custom_concepts": {}, "dismissed_suggestions": []}
             else:
                 res = {
                     "field_overrides": data.get("field_overrides", {}) or {},
+                    "field_transforms": data.get("field_transforms", {}) or {},
                     "custom_concepts": data.get("custom_concepts", {}) or {},
                     "dismissed_suggestions": list(data.get("dismissed_suggestions", []) or []),
                 }
@@ -80,12 +85,13 @@ def load_custom_groupings(config_path: Optional[Path | str] = None) -> Dict[str,
             _CUSTOM_GROUPINGS_CACHE["data"] = res
             return {
                 "field_overrides": dict(res["field_overrides"]),
+                "field_transforms": dict(res["field_transforms"]),
                 "custom_concepts": dict(res["custom_concepts"]),
                 "dismissed_suggestions": list(res["dismissed_suggestions"]),
             }
     except Exception as e:
         logger.error("Failed to load custom groupings from %s: %s", path, e)
-        return {"field_overrides": {}, "custom_concepts": {}, "dismissed_suggestions": []}
+        return {"field_overrides": {}, "field_transforms": {}, "custom_concepts": {}, "dismissed_suggestions": []}
 
 
 def save_custom_groupings(data: Dict[str, Any], config_path: Optional[Path | str] = None) -> None:
@@ -95,6 +101,7 @@ def save_custom_groupings(data: Dict[str, Any], config_path: Optional[Path | str
         path.parent.mkdir(parents=True, exist_ok=True)
         content = {
             "field_overrides": data.get("field_overrides", {}) or {},
+            "field_transforms": data.get("field_transforms", {}) or {},
             "custom_concepts": data.get("custom_concepts", {}) or {},
             "dismissed_suggestions": sorted(list(set(data.get("dismissed_suggestions", []) or []))),
         }
@@ -212,14 +219,29 @@ def set_field_grouping_override(
         else None
     )
 
+    if clean_target:
+        from .mapping import MappingRegistry
+        reg = MappingRegistry.get_instance()
+        m = reg.get_by_id(clean_target)
+        if m and m.device_type and "." in field_key:
+            f_prefix = field_key.split(".")[0].lower()
+            if f_prefix in ("inverter", "battery", "pv_link", "rebus_beacon") and f_prefix != m.device_type.lower():
+                raise ValueError(
+                    f"Cannot group field '{field_key}' ({f_prefix}) into concept '{clean_target}' ({m.device_type}): "
+                    f"grouping across devices is not permitted."
+                )
+
     data["field_overrides"][qual_key] = clean_target
 
-    if clean_target and (custom_label or transform):
+    if clean_target and transform and transform != "none":
+        data.setdefault("field_transforms", {})[qual_key] = transform.strip()
+    elif transform is None or transform == "none":
+        data.get("field_transforms", {}).pop(qual_key, None)
+        data.get("field_transforms", {}).pop(field_key.strip(), None)
+
+    if clean_target and custom_label:
         c_entry = data.setdefault("custom_concepts", {}).setdefault(clean_target, {})
-        if custom_label:
-            c_entry["label"] = custom_label.strip()
-        if transform:
-            c_entry["transform"] = transform.strip()
+        c_entry["label"] = custom_label.strip()
 
     save_custom_groupings(data, config_path)
     return data
@@ -237,6 +259,8 @@ def reset_field_grouping_override(
 
     data["field_overrides"].pop(qual_key, None)
     data["field_overrides"].pop(field_key.strip(), None)
+    data.get("field_transforms", {}).pop(qual_key, None)
+    data.get("field_transforms", {}).pop(field_key.strip(), None)
     save_custom_groupings(data, config_path)
     return data
 
@@ -254,6 +278,8 @@ def ungroup_entire_concept(
     for f_key in device_fields.keys():
         qual_key = f"{clean_sn}:{f_key}"
         data["field_overrides"][qual_key] = None
+        data.get("field_transforms", {}).pop(qual_key, None)
+        data.get("field_transforms", {}).pop(f_key, None)
 
     save_custom_groupings(data, config_path)
     return data
@@ -289,6 +315,10 @@ def approve_suggestion(
     custom_label: Optional[str] = None,
     suggestion_id: Optional[str] = None,
     transform: Optional[str] = None,
+    negate_field_key: Optional[str] = None,
+    positive_field_key: Optional[str] = None,
+    negative_field_key: Optional[str] = None,
+    polarity_convention: Optional[str] = None,
     config_path: Optional[Path | str] = None,
 ) -> Dict[str, Any]:
     """Approve a suggested grouping by setting overrides for all source field keys."""
@@ -301,6 +331,10 @@ def approve_suggestion(
                 "custom_label": custom_label,
                 "suggestion_id": suggestion_id,
                 "transform": transform,
+                "negate_field_key": negate_field_key,
+                "positive_field_key": positive_field_key,
+                "negative_field_key": negative_field_key,
+                "polarity_convention": polarity_convention,
             }
         ],
         config_path=config_path,
@@ -314,6 +348,7 @@ def approve_suggestions(
     """Approve multiple suggested groupings in a single batch operation."""
     data = load_custom_groupings(config_path)
     dismissed = set(data.get("dismissed_suggestions", []))
+    field_transforms = data.setdefault("field_transforms", {})
 
     for item in suggestions:
         device_sn = item.get("device_sn", "").strip().upper()
@@ -322,6 +357,10 @@ def approve_suggestions(
         custom_label = item.get("label") or item.get("custom_label")
         suggestion_id = item.get("suggestion_id") or item.get("id")
         transform = item.get("transform")
+        negate_field_key = item.get("negate_field_key")
+        pos_key = item.get("positive_field_key")
+        neg_key = item.get("negative_field_key")
+        pol_conv = item.get("polarity_convention") or "positive"
 
         if not device_sn or not field_keys or not target_concept:
             continue
@@ -329,6 +368,29 @@ def approve_suggestions(
         for f_key in field_keys:
             qual_key = f"{device_sn}:{f_key.strip()}"
             data["field_overrides"][qual_key] = target_concept
+
+        # Determine which specific field to negate if polarity inversion is requested
+        if transform == "negate":
+            if not negate_field_key:
+                if pol_conv == "negative" and pos_key:
+                    negate_field_key = pos_key
+                elif neg_key:
+                    negate_field_key = neg_key
+                else:
+                    # Prefer negating Modbus candidates over MQTT telemetry stream
+                    mb_keys = [k for k in field_keys if "live." not in k and not k.startswith("live.")]
+                    negate_field_key = mb_keys[0] if mb_keys else field_keys[0]
+
+            if negate_field_key:
+                qual_negate_key = f"{device_sn}:{negate_field_key.strip()}"
+                field_transforms[qual_negate_key] = "negate"
+                # Explicitly mark other fields in this group as 'none' so concept-level defaults don't inadvertently invert them
+                for f_key in field_keys:
+                    if f_key.strip() != negate_field_key.strip():
+                        field_transforms[f"{device_sn}:{f_key.strip()}"] = "none"
+        elif transform == "none":
+            for f_key in field_keys:
+                field_transforms[f"{device_sn}:{f_key.strip()}"] = "none"
 
         if custom_label or transform:
             c_entry = data.setdefault("custom_concepts", {}).setdefault(target_concept, {})
@@ -355,6 +417,7 @@ def export_generalized_groupings(config_path: Optional[Path | str] = None) -> Di
     """
     raw_data = load_custom_groupings(config_path)
     overrides = raw_data.get("field_overrides", {}) or {}
+    field_transforms = raw_data.get("field_transforms", {}) or {}
     custom_concepts = raw_data.get("custom_concepts", {}) or {}
 
     generalized_overrides: Dict[str, Any] = {}
@@ -368,10 +431,22 @@ def export_generalized_groupings(config_path: Optional[Path | str] = None) -> Di
             f_key = qual_key
         generalized_overrides[f_key.strip()] = target
 
-    result_dict = {
+    generalized_transforms: Dict[str, Any] = {}
+    for qual_key, tf in field_transforms.items():
+        if not qual_key:
+            continue
+        if ":" in qual_key:
+            _, f_key = qual_key.split(":", 1)
+        else:
+            f_key = qual_key
+        generalized_transforms[f_key.strip()] = tf
+
+    result_dict: Dict[str, Any] = {
         "field_overrides": generalized_overrides,
         "custom_concepts": custom_concepts,
     }
+    if generalized_transforms:
+        result_dict["field_transforms"] = generalized_transforms
 
     yaml_header = (
         "# PWRcell SunSpec - Generalized Custom Field Groupings\n"
@@ -491,74 +566,70 @@ def export_as_telemetry_mappings(
 
                     entry: Dict[str, Any] = {
                         "id": g.concept_key,
-                        "label": g.label or g.concept_key.replace("_", " ").title(),
-                        "device_type": dev_type,
+                        "name": g.label or g.concept_key.replace("_", " ").title(),
+                        "fields": [],
                     }
-                    if g.units:
-                        entry["unit"] = g.units
-                    if mqtt_keys:
-                        entry["mqtt_fields"] = mqtt_keys
-                    if candidates:
-                        entry["modbus_fields"] = candidates
-
                     orig_m = reg.get_by_id(g.concept_key)
                     c_meta = raw_data.get("custom_concepts", {}).get(g.concept_key, {})
                     g_trans = (
-                        c_meta.get("transform")
+                        next((s.transform for s in mb_sources if getattr(s, "transform", None)), None)
+                        or c_meta.get("transform")
                         or (orig_m.transform if orig_m and orig_m.transform != "none" else None)
                         or next((s.transform for s in g.sources if getattr(s, "transform", None)), None)
                     )
-                    if g_trans and g_trans != "none":
-                        entry["transform"] = g_trans
-                    if orig_m and orig_m.transform_desc:
-                        entry["transform_desc"] = orig_m.transform_desc
-                    if orig_m and orig_m.synonyms:
-                        entry["synonyms"] = list(orig_m.synonyms)
-
-                    if getattr(g, "ha_platform", "sensor") != "sensor":
-                        entry["ha_platform"] = g.ha_platform
-                    if dev_class is not None:
-                        entry["ha_device_class"] = dev_class
-                    if st_class is not None:
-                        entry["ha_state_class"] = st_class
-                    if getattr(g, "description", None):
-                        entry["description"] = g.description
+                    for mk in mqtt_keys:
+                        entry["fields"].append(mk)
+                    for c in candidates:
+                        c_tf = next((s.transform for s in mb_sources if (s.field_key == c or getattr(s, "name", "") == c.split(".")[-1]) and getattr(s, "transform", None)), None) or g_trans
+                        if c_tf and c_tf != "none":
+                            entry["fields"].append({"path": c, "transform": c_tf})
+                        else:
+                            entry["fields"].append(c)
 
                     mappings_by_key[map_key] = entry
 
     # When exporting full mappings, ensure existing canonical mappings are preserved
     if not only_custom:
         for m in reg.get_all():
-            if only_explicit_groupings and (len(m.mqtt_fields) + len(m.modbus_fields)) <= 1:
-                continue
             map_key = (m.device_type, m.id)
             if map_key not in mappings_by_key:
-                mappings_by_key[map_key] = m.to_yaml_dict()
+                f_list = []
+                for mf in m.mqtt_fields:
+                    f_list.append(mf)
+                for mbf in m.modbus_fields:
+                    if m.transform and m.transform != "none":
+                        f_list.append({"path": mbf, "transform": m.transform})
+                    else:
+                        f_list.append(mbf)
+                mappings_by_key[map_key] = {
+                    "id": m.id,
+                    "name": m.label,
+                    "fields": f_list,
+                }
 
     mappings_list = [
         m for m in mappings_by_key.values()
         if not only_explicit_groupings
         or m.get("id") in custom_concepts
-        or (len(m.get("mqtt_fields", [])) + len(m.get("modbus_fields", []))) > 1
+        or len(m.get("fields", [])) > 1
     ]
 
-    auto_heuristics = getattr(reg, "auto_group_heuristics", False)
     output_dict: Dict[str, Any] = {
-        "version": "1.0",
-        "auto_group_heuristics": auto_heuristics,
+        "version": "2.0",
+        "groups": mappings_list,
     }
-    if auto_heuristics and exported_ungrouped:
+    if exported_ungrouped:
         output_dict["ungrouped_fields"] = sorted(list(exported_ungrouped))
-    output_dict["mappings"] = mappings_list
 
     yaml_header = (
-        "# PWRcell SunSpec - Telemetry & Compound Metric Mappings\n"
-        "# Explicit pairings between internal MQTT push and SunSpec Modbus registers.\n\n"
+        "# PWRcell SunSpec - Field Groupings & Telemetry Mappings (v2.0)\n"
+        "# Unified links across MQTT push streams and SunSpec Modbus registers.\n\n"
     )
     yaml_str = yaml_header + yaml.safe_dump(output_dict, default_flow_style=False, sort_keys=False)
     return {
         "mappings": mappings_list,
-        "ungrouped_fields": sorted(list(exported_ungrouped)) if auto_heuristics else [],
+        "groups": mappings_list,
+        "ungrouped_fields": sorted(list(exported_ungrouped)),
         "yaml": yaml_str,
     }
 
@@ -585,6 +656,7 @@ def save_current_as_telemetry_mappings(
     if clear_custom_overrides:
         save_custom_groupings({
             "field_overrides": {},
+            "field_transforms": {},
             "custom_concepts": {},
             "dismissed_suggestions": [],
         }, config_path=custom_groupings_path)

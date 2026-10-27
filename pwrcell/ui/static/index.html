@@ -120,6 +120,7 @@
               <div class="opt-banner-title" id="optBannerTitle">Minimal Model Polling Plan</div>
             </div>
             <div class="opt-banner-controls">
+              <button type="button" class="btn btn-secondary btn-xs btn-plan-details" id="btnTogglePlanDetails" title="Expand detailed list of fields polled from each source">📋 Fields by Source ▾</button>
               <button class="btn btn-secondary btn-xs" id="btnResetPins" style="display: none;" title="Reset manually pinned sources back to automatic minimal set solver">↺ Reset to Auto</button>
               <button type="button" class="btn-banner-toggle" id="btnToggleBanner" title="Minimize / Expand Polling Plan Banner">−</button>
             </div>
@@ -128,6 +129,7 @@
             <div class="opt-banner-subtitle" id="optBannerSubtitle">Calculating optimal SunSpec models...</div>
             <div class="opt-models-badges" id="optModelsBadges"></div>
           </div>
+          <div class="opt-plan-breakdown" id="optPlanBreakdown" style="display: none;"></div>
         </div>
 
         <!-- Streamlined Search, Filter & Options Toolbar -->
@@ -378,8 +380,9 @@
             <div class="suggestions-toolbar-right">
               <select class="compare-device-select" id="cmpSuggestionsConfidence">
                 <option value="high" selected>High Confidence Only (≥85%)</option>
-                <option value="all">All Candidates (≥70%)</option>
+                <option value="all">All Candidates (≥65%)</option>
               </select>
+              <button type="button" class="btn btn-secondary btn-sm" id="btnRefreshSuggestions" title="Re-scan telemetry for grouping suggestions">🔄 Re-scan</button>
               <button class="btn-approve-suggestion" id="btnBatchApproveVisible" title="Approve all currently visible grouping suggestions in one batch">
                 ✅ Approve All (<span id="cntBatchApprove">0</span>)
               </button>
@@ -528,7 +531,7 @@
           <button class="format-btn" data-format="telemetry_mappings" id="btnFormatTelemetry">
             <span class="format-icon">📦</span>
             <div class="format-info">
-              <strong>Built-in telemetry_mappings.yaml</strong>
+              <strong>Built-in groupings.yaml</strong>
               <span>Formats groupings into official integration schema to update package defaults or submit a PR</span>
             </div>
           </button>
@@ -546,7 +549,7 @@
       <div class="modal-footer">
         <button class="btn btn-secondary" id="btnCopyExportYaml">📋 Copy YAML</button>
         <button class="btn btn-primary" id="btnDownloadExportYaml">⬇️ Download File</button>
-        <button class="btn btn-warning" id="btnApplyCleanSlate" title="Save this configuration directly to telemetry_mappings.yaml and reset custom_groupings.yaml to start fresh">💾 Save to Mappings &amp; Clean Slate</button>
+        <button class="btn btn-warning" id="btnApplyCleanSlate" title="Save this configuration directly to groupings.yaml and reset custom_groupings.yaml to start fresh">💾 Save to Mappings &amp; Clean Slate</button>
         <button class="btn btn-secondary" id="btnCloseExportFooter">Close</button>
       </div>
     </div>

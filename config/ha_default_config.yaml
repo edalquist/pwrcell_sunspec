@@ -2,7 +2,6 @@
 # Generated from existing ha_config.yaml (hardware serial numbers stripped)
 
 selected_fields:
-- battery.REbus_status.E
 - battery.REbus_status.I
 - battery.REbus_status.P
 - battery.REbus_status.St
@@ -26,6 +25,10 @@ selected_fields:
 - battery.live.max_discharge_power_w
 - battery.live.state_of_charge
 - battery.live.state_of_health
+- battery.live.storage_ac_charged_energy_wh
+- battery.live.storage_ac_discharged_energy_wh
+- battery.standalone.storage_ac_charged_energy_wh_None
+- battery.standalone.storage_ac_discharged_energy_wh_None
 - inverter.REbus_exp.Px1
 - inverter.REbus_exp.Px2
 - inverter.REbus_exp.Whin
@@ -37,9 +40,10 @@ selected_fields:
 - inverter.compound.grid_imported_energy
 - inverter.compound.inverter_output_power
 - inverter.concept.ac_frequency
+- inverter.concept.grid_exported_energy_wh
+- inverter.concept.grid_imported_energy_wh
 - inverter.concept.inverter_output_power
-- inverter.concept.inverter_state
-- inverter.concept.linestatus
+- inverter.concept.inverter_output_power_w
 - inverter.inverter.A
 - inverter.inverter.AphA
 - inverter.inverter.AphB
@@ -48,7 +52,6 @@ selected_fields:
 - inverter.inverter.PF
 - inverter.inverter.PhVphA
 - inverter.inverter.PhVphB
-- inverter.inverter.StVnd
 - inverter.inverter.TmpCab
 - inverter.inverter.TmpOt
 - inverter.inverter.TmpSnk
@@ -56,10 +59,12 @@ selected_fields:
 - inverter.inverter.VA
 - inverter.inverter.VAr
 - inverter.inverter.W
-- inverter.inverter_status.LineStatus
+- inverter.inverter_status.WhIn
+- inverter.inverter_status.WhOut
 - inverter.live.grid_power_w
 - inverter.live.inverter_max_power_w
 - inverter.live.inverter_output_exported_energy_wh
+- inverter.live.inverter_output_power_w
 - inverter.live.inverter_state_name
 - inverter.live.load_imported_energy_wh
 - inverter.live.load_power_w
@@ -72,6 +77,8 @@ selected_fields:
 - pv_link.REbus_status.St
 - pv_link.REbus_status.T
 - pv_link.REbus_status.V
+- pv_link.concept.iin
+- pv_link.string_combiner.DCA
 controllable_fields:
 - system_mode
 - SysMd

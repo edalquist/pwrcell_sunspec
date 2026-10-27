@@ -70,6 +70,54 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             "unrecognized_proto_fields": unrecognized,
         })
 
+    @bp.route("/api/compare/sync_sample", methods=["POST"])
+    @bp.route("/api/grouping/sync_sample", methods=["POST"])
+    def sync_sample_endpoint():
+        body = request.get_json() or {}
+        field_keys = body.get("field_keys", [])
+        device_sn = body.get("device_sn")
+        concept_key = body.get("concept_key")
+
+        # If field_keys is empty but concept_key is provided, resolve field_keys from concept
+        if not field_keys and concept_key:
+            from ...tools.correlator import evaluate_comparisons
+            all_comps = evaluate_comparisons(client.state)
+            matching_row = next(
+                (r for r in all_comps if (r.concept_key == concept_key or r.mapping_id == concept_key) and (not device_sn or r.device_sn == device_sn)),
+                None
+            )
+            if matching_row and matching_row.sources:
+                field_keys = [s.get("field_key") for s in matching_row.sources if s.get("field_key")]
+                if not device_sn:
+                    device_sn = matching_row.device_sn
+
+        if not field_keys:
+            return jsonify({"status": "error", "error": "No field keys or concept provided"}), 400
+
+        res = client.sync_sample_fields(field_keys=field_keys, device_sn=device_sn)
+
+        # Also return refreshed comparison row if applicable
+        comp_dict = None
+        if concept_key or field_keys:
+            from ...tools.correlator import evaluate_comparisons
+            all_comps = evaluate_comparisons(client.state)
+            matching_row = None
+            if concept_key:
+                matching_row = next(
+                    (r for r in all_comps if (r.concept_key == concept_key or r.mapping_id == concept_key) and (not device_sn or r.device_sn == device_sn)),
+                    None
+                )
+            if not matching_row and field_keys:
+                matching_row = next(
+                    (r for r in all_comps if any(s.get("field_key") in field_keys for s in r.sources)),
+                    None
+                )
+            if matching_row:
+                comp_dict = matching_row.to_dict()
+
+        res["comparison"] = comp_dict
+        return jsonify(res)
+
     @bp.route("/api/grouping/overrides")
     def get_grouping_overrides():
         from ...grouping import load_custom_groupings
@@ -129,6 +177,13 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         if not device_sn or not field_key:
             return jsonify({"error": "device_sn and field_key are required"}), 400
         
+        member_field_keys = data.get("member_field_keys") or []
+        if isinstance(member_field_keys, str):
+            member_field_keys = [member_field_keys]
+        member_field_keys = [k for k in member_field_keys if k and isinstance(k, str)]
+        if field_key not in member_field_keys:
+            member_field_keys.insert(0, field_key)
+
         if target_concept and str(target_concept).strip().lower() not in ("", "null", "none", "standalone", "ungrouped"):
             clean_tc = str(target_concept).strip()
             dev = client.state.devices.get(device_sn)
@@ -139,7 +194,12 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                 if incoming_f:
                     existing_groups = group_device_fields(dev)
                     target_grp = next(
-                        (g for g in existing_groups if g.concept_key == clean_tc or g.id.endswith(f".concept.{clean_tc}")),
+                        (
+                            g for g in existing_groups
+                            if g.concept_key == clean_tc
+                            or g.id.endswith(f".concept.{clean_tc}")
+                            or g.id.endswith(f".standalone.{clean_tc}")
+                        ),
                         None,
                     )
                     if target_grp:
@@ -150,14 +210,18 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                                 return jsonify({
                                     "error": f"Cannot merge across fields from the same model ({m_name}). Grouping is strictly for merging corresponding telemetry across different models or protocols."
                                 }), 400
+                            if s.field_key and s.field_key not in member_field_keys:
+                                member_field_keys.append(s.field_key)
 
-        result = set_field_grouping_override(
-            device_sn=device_sn,
-            field_key=field_key,
-            target_concept=target_concept,
-            custom_label=custom_label,
-            transform=transform,
-        )
+        result = None
+        for fk in member_field_keys:
+            result = set_field_grouping_override(
+                device_sn=device_sn,
+                field_key=fk,
+                target_concept=target_concept,
+                custom_label=custom_label,
+                transform=transform if fk == field_key else None,
+            )
         return jsonify({"status": "ok", "overrides": result})
 
     @bp.route("/api/grouping/reset", methods=["POST"])
@@ -176,6 +240,28 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             field_key=field_key,
         )
         return jsonify({"status": "ok", "overrides": result})
+
+    @bp.route("/api/grouping/invert", methods=["POST"])
+    def invert_field_transform():
+        from ...grouping import load_custom_groupings, save_custom_groupings
+        data = request.get_json() or {}
+        device_sn = data.get("device_sn", "")
+        field_key = data.get("field_key", "")
+        device_sn = _resolve_device_sn(device_sn, field_key=field_key)
+        if not device_sn or not field_key:
+            return jsonify({"error": "device_sn and field_key are required"}), 400
+
+        custom_data = load_custom_groupings()
+        transforms = custom_data.setdefault("field_transforms", {})
+        clean_sn = device_sn.strip().upper()
+        qual_key = f"{clean_sn}:{field_key.strip()}"
+
+        current_tf = transforms.get(qual_key) or transforms.get(field_key.strip())
+        new_tf = "none" if current_tf == "negate" else "negate"
+        transforms[qual_key] = new_tf
+
+        save_custom_groupings(custom_data)
+        return jsonify({"status": "ok", "field_key": field_key, "transform": new_tf})
 
     @bp.route("/api/grouping/ungroup_all", methods=["POST"])
     def ungroup_all():
@@ -225,6 +311,10 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         custom_label = data.get("label") or data.get("custom_label")
         suggestion_id = data.get("suggestion_id")
         transform = data.get("transform")
+        negate_field_key = data.get("negate_field_key")
+        positive_field_key = data.get("positive_field_key")
+        negative_field_key = data.get("negative_field_key")
+        polarity_convention = data.get("polarity_convention")
 
         if not device_sn or not field_keys or not target_concept:
             return jsonify({"error": "device_sn, field_keys, and target_concept are required"}), 400
@@ -247,6 +337,10 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             custom_label=custom_label,
             suggestion_id=suggestion_id,
             transform=transform,
+            negate_field_key=negate_field_key,
+            positive_field_key=positive_field_key,
+            negative_field_key=negative_field_key,
+            polarity_convention=polarity_convention,
         )
         return jsonify({"status": "ok", "overrides": result})
 
@@ -291,9 +385,9 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         as_download = request.args.get("download", "").lower() in ("true", "1", "yes")
         full = request.args.get("full", "true").lower() in ("true", "1", "yes")
 
-        if fmt in ("telemetry", "telemetry_mappings", "builtin"):
+        if fmt in ("telemetry", "telemetry_mappings", "builtin", "groupings"):
             res = export_as_telemetry_mappings(client.state, only_custom=not full)
-            filename = "telemetry_mappings.yaml"
+            filename = "groupings.yaml"
         else:
             res = export_generalized_groupings()
             filename = "custom_groupings.yaml"

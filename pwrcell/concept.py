@@ -42,11 +42,15 @@ class ConceptSource:
     is_scale_factor: bool = False
     is_custom_override: bool = False
     is_divergent: bool = False
+    is_primary: bool = False
     device_sn: str = ""
+    last_updated: Optional[float] = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["key"] = self.field_key
+        d["is_primary"] = self.is_primary
+        d["last_updated"] = self.last_updated
         return d
 
 
@@ -70,6 +74,7 @@ class ConceptView:
     # Telemetry sources:
     sources: List[ConceptSource] = field(default_factory=list)
     active_source_key: Optional[str] = None
+    primary_source_key: Optional[str] = None
     preferred_source_key: Optional[str] = None
     latest_value: Any = None
     raw_value: Any = None
@@ -133,6 +138,11 @@ class ConceptView:
     def mapping_id(self) -> str:
         """Legacy mapping ID compatibility."""
         return self.concept_key
+
+    @property
+    def primary_source(self) -> Optional[ConceptSource]:
+        """The authoritative primary telemetry source driving HA state."""
+        return next((s for s in self.sources if s.is_primary), None) or next((s for s in self.sources if s.is_optimal), None) or (self.sources[0] if self.sources else None)
 
     @property
     def mqtt_source(self) -> Optional[ConceptSource]:
@@ -239,6 +249,7 @@ class ConceptView:
             "id": self.id,
             "key": self.active_source_key or self.id,
             "field_key": self.active_source_key,
+            "primary_source_key": self.primary_source_key or self.active_source_key,
             "concept_key": self.concept_key,
             "mapping_id": self.concept_key,
             "device_sn": self.device_sn,
@@ -259,6 +270,7 @@ class ConceptView:
             "raw_value": self.raw_value,
             "latest_source": self.latest_source,
             "latest_updated": self.latest_updated,
+            "last_updated": self.latest_updated,
             "mqtt_key": self.mqtt_key,
             "mqtt_value": self.mqtt_value,
             "modbus_key": self.modbus_key,

@@ -324,7 +324,7 @@ class TestClientLifecycle(unittest.TestCase):
                 self.assertEqual(get_default_ha_config_path(), tmp_path / "ha_config.yaml")
                 self.assertEqual(get_default_published_topics_path(), tmp_path / ".ha_published_topics.json")
                 self.assertEqual(get_default_grouping_config_path(), tmp_path / "custom_groupings.yaml")
-                self.assertEqual(_resolve_mappings_path(), tmp_path / "telemetry_mappings.yaml")
+                self.assertEqual(_resolve_mappings_path(), tmp_path / "groupings.yaml")
 
                 # 1. DeviceConfig.write() writes to tmp_path / devices.yaml even when it did not exist beforehand
                 dev_cfg = DeviceConfig(inverter={"0001000714E9": 8})
@@ -342,9 +342,9 @@ class TestClientLifecycle(unittest.TestCase):
                 save_custom_groupings({"field_overrides": {"0001000714E9:inverter.inverter.W": "inverter_output_power"}})
                 self.assertTrue((tmp_path / "custom_groupings.yaml").exists())
 
-                # 4. save_mappings writes to tmp_path / telemetry_mappings.yaml (not package pwrcell/data/)
+                # 4. save_mappings writes to tmp_path / groupings.yaml (not package pwrcell/data/)
                 save_mappings(get_default_mappings())
-                self.assertTrue((tmp_path / "telemetry_mappings.yaml").exists())
+                self.assertTrue((tmp_path / "groupings.yaml").exists())
 
                 # 5. load_models_dir without explicit sunspec_cache_dir uses data_dir() / sunspec-models
                 models_dir = load_models_dir(AppConfig(pwrcell=None))

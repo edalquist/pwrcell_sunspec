@@ -1,0 +1,363 @@
+# PWRcell SunSpec - Field Groupings & Telemetry Mappings (v2.0)
+# Unified links across MQTT push streams and SunSpec Modbus registers.
+
+version: '2.0'
+auto_group_heuristics: false
+
+groups:
+  # === Global / System ===
+  - id: gateway_serial
+    name: Gateway Serial Number
+    device_type: rebus_beacon
+    synonyms: [sn, gateway_id, serial_number]
+    fields:
+      - rebus_beacon.live.gateway_id
+      - rebus_beacon.common.SN
+      - rebus_beacon.model_1.SN
+
+  - id: beacon_system_mode
+    name: Beacon System Operating Mode
+    device_type: rebus_beacon
+    synonyms: [sysmd, system_mode, operating_mode, beacon_mode]
+    fields:
+      - rebus_beacon.REbus_dir.SysMd
+      - rebus_beacon.model_64200.SysMd
+
+  # === PV Link Groupings ===
+  - id: accumulated_energy
+    name: Accumulated Energy
+    device_type: pv_link
+    synonyms: [e, dcwh, accumulated_energy]
+    fields:
+      - pv_link.REbus_status.E
+      - pv_link.string_combiner.DCWh
+      - pv_link.model_64207.E
+      - pv_link.model_404.DCWh
+
+  - id: device_temperature
+    name: Device Temperature
+    device_type: pv_link
+    synonyms: [t, tmp, device_temperature, temperature]
+    fields:
+      - pv_link.REbus_status.T
+      - pv_link.string_combiner.Tmp
+      - pv_link.model_64207.T
+      - pv_link.model_404.Tmp
+
+  - id: pv_string_current
+    name: PV String Current
+    device_type: pv_link
+    synonyms: [iin, dca, pv_string_current, iin_64251, string_current]
+    fields:
+      - pv_link.string_combiner.DCA
+      - pv_link.pvlink_status.Iin
+      - pv_link.model_404.DCA
+      - pv_link.model_64251.Iin
+
+  - id: pv_string_voltage
+    name: PV String Voltage
+    device_type: pv_link
+    synonyms: [vin, dcv, pv_string_voltage, vin_64251, string_voltage]
+    fields:
+      - pv_link.string_combiner.DCV
+      - pv_link.pvlink_status.Vin
+      - pv_link.model_404.DCV
+      - pv_link.model_64251.Vin
+
+  - id: rebus_power
+    name: REbus Power
+    device_type: pv_link
+    synonyms: [p, dcw, rebus_power]
+    fields:
+      - pv_link.REbus_status.P
+      - pv_link.string_combiner.DCW
+      - pv_link.model_64207.P
+      - pv_link.model_404.DCW
+
+  # === Inverter Groupings ===
+  - id: grid_power
+    name: Grid Net Power
+    device_type: inverter
+    synonyms: [ctpow, grid_power_w, grid_power, ct_power]
+    fields:
+      - inverter.live.grid_power_w
+      - path: inverter.inverter_status.CTPow
+        transform: negate
+      - path: inverter.model_64208.CTPow
+        transform: negate
+      - path: inverter.model_64202.CTPow
+        transform: negate
+
+  - id: system_mode
+    name: System Operating Mode
+    device_type: inverter
+    synonyms: [sysmd, system_mode, operating_mode]
+    fields:
+      - inverter.live.system_mode
+      - inverter.inverter_status.SysMd
+      - inverter.model_64208.SysMd
+      - inverter.model_64202.SysMd
+
+  - id: inverter_output_power
+    name: Inverter AC Output Power
+    device_type: inverter
+    synonyms: [w, inverter_power_w, inverter_output_power_w, inverter_output_power, inverter_power, real_power]
+    fields:
+      - inverter.live.inverter_output_power_w
+      - inverter.inverter.W
+      - inverter.model_102.W
+      - inverter.model_101.W
+      - inverter.model_103.W
+
+  - id: solar_power
+    name: Solar Generation Power
+    device_type: inverter
+    synonyms: [solar_power_w, solar_power]
+    fields:
+      - inverter.live.solar_power_w
+
+  - id: inverter_state
+    name: Inverter Operational State
+    device_type: inverter
+    synonyms: [st, stvnd, inverter_state, state]
+    fields:
+      - inverter.live.inverter_state
+      - inverter.inverter.StVnd
+      - inverter.model_102.StVnd
+      - inverter.model_64207.St
+
+  - id: grid_imported_energy
+    name: Grid Imported Energy
+    device_type: inverter
+    synonyms: [whin, grid_imported_energy_wh, totwhimp]
+    fields:
+      - inverter.live.grid_imported_energy_wh
+      - inverter.inverter_status.WhIn
+      - inverter.model_64208.WhIn
+
+  - id: grid_exported_energy
+    name: Grid Exported Energy
+    device_type: inverter
+    synonyms: [whout, grid_exported_energy_wh, totwhexp, whx]
+    fields:
+      - inverter.live.grid_exported_energy_wh
+      - inverter.inverter_status.WhOut
+      - inverter.REbus_exp.Whx
+      - inverter.model_64208.WhOut
+      - inverter.model_64204.Whx
+
+  - id: inverter_output_energy
+    name: Inverter Output Energy
+    device_type: inverter
+    synonyms: [wh, e, inverter_output_exported_energy_wh, inverter_output_energy_wh]
+    fields:
+      - inverter.live.inverter_output_exported_energy_wh
+      - inverter.inverter.WH
+      - inverter.REbus_status.E
+      - inverter.model_102.WH
+      - inverter.model_64207.E
+
+  - id: inverter_serial
+    name: Inverter Serial Number
+    device_type: inverter
+    synonyms: [sn, inverter_id, serial_number]
+    fields:
+      - inverter.live.inverter_id
+      - inverter.common.SN
+      - inverter.model_1.SN
+
+  - id: rebus_voltage
+    name: REbus Voltage
+    device_type: inverter
+    synonyms: [v, dcv, rebus_voltage]
+    fields:
+      - inverter.REbus_status.V
+      - inverter.inverter.DCV
+      - inverter.model_64207.V
+      - inverter.model_102.DCV
+
+  - id: cabinet_temperature
+    name: Cabinet Temperature
+    device_type: inverter
+    synonyms: [tmpcab, cabinet_temperature, t]
+    fields:
+      - inverter.REbus_status.T
+      - inverter.inverter.TmpCab
+      - inverter.model_64207.T
+      - inverter.model_102.TmpCab
+
+  - id: ac_frequency
+    name: AC Frequency
+    device_type: inverter
+    synonyms: [hz, ac_frequency_hz, ac_freq, freq]
+    fields:
+      - inverter.live.ac_frequency_hz
+      - inverter.inverter.Hz
+      - inverter.model_102.Hz
+      - inverter.model_101.Hz
+      - inverter.model_103.Hz
+      - inverter.model_64208.Hz
+
+  - id: phase_a_voltage
+    name: Phase A Voltage
+    device_type: inverter
+    synonyms: [phvpha, ac_voltage_v, phv]
+    fields:
+      - inverter.live.ac_voltage_v
+      - inverter.inverter.PhVphA
+      - inverter.model_102.PhVphA
+      - inverter.model_101.PhV
+
+  - id: phase_b_voltage
+    name: Phase B Voltage
+    device_type: inverter
+    synonyms: [phvphb]
+    fields:
+      - inverter.inverter.PhVphB
+      - inverter.model_102.PhVphB
+
+  - id: phase_a_current
+    name: Phase A Current
+    device_type: inverter
+    synonyms: [apha, ac_current_a]
+    fields:
+      - inverter.live.ac_current_a
+      - inverter.inverter.AphA
+      - inverter.model_102.AphA
+
+  - id: phase_b_current
+    name: Phase B Current
+    device_type: inverter
+    synonyms: [aphb]
+    fields:
+      - inverter.inverter.AphB
+      - inverter.model_102.AphB
+
+  # === Battery Groupings ===
+  - id: battery_power
+    name: Battery Real Power
+    device_type: battery
+    synonyms: [w, battery_power_w, real_power, battery_power]
+    fields:
+      - battery.live.battery_power_w
+      - path: battery.battery.W
+        transform: negate
+      - path: battery.model_802.W
+        transform: negate
+      - path: battery.model_64252.W
+        transform: negate
+
+  - id: battery_soc
+    name: Battery State of Charge
+    device_type: battery
+    synonyms: [soc, state_of_charge]
+    fields:
+      - battery.live.state_of_charge
+      - battery.battery.SoC
+      - battery.model_802.SoC
+      - battery.model_804.SoC
+
+  - id: battery_soh
+    name: Battery State of Health
+    device_type: battery
+    synonyms: [soh, string_state_of_health, state_of_health]
+    fields:
+      - battery.live.state_of_health
+      - battery.battery.SoH
+      - battery.lithium_ion_string.SoH
+      - battery.model_802.SoH
+      - battery.model_804.SoH
+
+  - id: battery_imported_energy
+    name: Battery Stored / Charged Energy
+    device_type: battery
+    synonyms: [whin, battery_imported_energy_wh, battery_charged_energy]
+    fields:
+      - battery.live.battery_imported_energy_wh
+      - battery.REbus_status.E
+      - battery.model_64207.E
+      - battery.DCB105_warranty.WhIn
+      - battery.model_64209.WhIn
+      - battery.model_64252.WhIn
+
+  - id: battery_exported_energy
+    name: Battery Discharged Energy
+    device_type: battery
+    synonyms: [whout, battery_exported_energy_wh]
+    fields:
+      - battery.live.battery_exported_energy_wh
+      - battery.model_64209.WhOut
+      - battery.model_64252.WhOut
+
+  - id: battery_ac_charged_energy
+    name: Battery AC Charged Energy
+    device_type: battery
+    synonyms: [battery_ac_charged_energy]
+    fields:
+      - battery.live.storage_ac_charged_energy_wh
+      - battery.DCB105_warranty.WhIn
+      - battery.model_64252.WhIn
+      - battery.model_64209.WhIn
+
+  - id: battery_ac_discharged_energy
+    name: Battery AC Discharged Energy
+    device_type: battery
+    synonyms: [battery_ac_discharged_energy]
+    fields:
+      - battery.live.storage_ac_discharged_energy_wh
+      - battery.DCB105_warranty.WhOut
+      - battery.model_64252.WhOut
+      - battery.model_64209.WhOut
+
+  - id: battery_voltage
+    name: Battery DC Voltage
+    device_type: battery
+    synonyms: [v, battery_voltage_v, dcv, external_battery_voltage]
+    fields:
+      - battery.battery.V
+      - battery.DCB105_warranty.V
+      - battery.model_802.V
+      - battery.model_64252.V
+      - battery.model_804.V
+
+  - id: battery_temperature
+    name: Battery Temperature
+    device_type: battery
+    synonyms: [t, tmp, thsin, device_temperature]
+    fields:
+      - battery.REbus_status.T
+      - battery.DCB105_warranty.THSin
+      - battery.model_64207.T
+      - battery.model_64252.THSin
+
+  - id: max_cell_voltage
+    name: Max Cell Voltage
+    device_type: battery
+    synonyms: [cellvmax, max_cell_voltage]
+    fields:
+      - battery.battery.CellVMax
+      - battery.lithium_ion_string.CellVMax
+      - battery.model_802.CellVMax
+      - battery.model_804.CellVMax
+
+  - id: min_cell_voltage
+    name: Min Cell Voltage
+    device_type: battery
+    synonyms: [cellvmin, min_cell_voltage]
+    fields:
+      - battery.battery.CellVMin
+      - battery.lithium_ion_string.CellVMin
+      - battery.model_802.CellVMin
+      - battery.model_804.CellVMin
+
+  - id: total_dc_current
+    name: Total DC Current
+    device_type: battery
+    synonyms: [a, total_dc_current]
+    fields:
+      - battery.battery.A
+      - battery.lithium_ion_string.A
+      - battery.model_802.A
+      - battery.model_804.A
+
+

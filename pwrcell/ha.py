@@ -389,8 +389,12 @@ def generate_discovery_payload(
 
     clean_sn = device.serial_number.strip().lower()
 
-    # Build unique object_id from sub-key path (e.g. 'live_solar_power_w' or 'compound_grid_power')
-    sub_key = field.key.split(".", 1)[-1].replace(".", "_").lower()
+    if is_compound:
+        concept_id = getattr(field, "concept_key", None) or getattr(field, "mapping_id", None) or getattr(field, "name", "")
+        sub_key = str(concept_id).lower().replace(".", "_")
+    else:
+        # Build unique object_id from sub-key path (e.g. 'live_solar_power_w' or 'compound_grid_power')
+        sub_key = field.key.split(".", 1)[-1].replace(".", "_").lower()
     
     node_id = f"pwrcell_{clean_sn}"
     object_id = sub_key
@@ -403,6 +407,12 @@ def generate_discovery_payload(
     device_availability_topic = f"{base_topic}/{clean_sn}/status"
 
     old_sensor_topic = f"{ha_prefix}/sensor/{node_id}/{object_id}/config" if platform in ("select", "number", "switch") else None
+
+    legacy_config_topics = []
+    if is_compound:
+        for pfx in ("compound_", "concept_"):
+            legacy_config_topics.append(f"{ha_prefix}/{platform}/{node_id}/{pfx}{sub_key}/config")
+            legacy_config_topics.append(f"{ha_prefix}/sensor/{node_id}/{pfx}{sub_key}/config")
 
     device_info = get_device_info(device, gateway_device=gateway_device)
 
@@ -559,6 +569,7 @@ def generate_discovery_payload(
         "attributes_topic": attributes_topic,
         "command_topic": command_topic if is_writable else None,
         "old_sensor_topic": old_sensor_topic,
+        "legacy_config_topics": legacy_config_topics,
         "suggested_display_precision": precision,
         "availability_topic": availability_topic,
         "device_availability_topic": device_availability_topic,

@@ -181,10 +181,22 @@ class MqttClient:
         with self.__lock:
             self.__callbacks.append(callback)
 
+    def unregister_callback(self, callback: Callable[[energy_record_set_pb2.EnergyRecordSet], None]):
+        """Unregister a callback for raw protobuf record sets."""
+        with self.__lock:
+            if callback in self.__callbacks:
+                self.__callbacks.remove(callback)
+
     def register_snapshot_callback(self, callback: Callable[[LiveTelemetrySnapshot], None]):
         """Register a callback for parsed telemetry snapshots."""
         with self.__lock:
             self.__snapshot_callbacks.append(callback)
+
+    def unregister_snapshot_callback(self, callback: Callable[[LiveTelemetrySnapshot], None]):
+        """Unregister a callback for parsed telemetry snapshots."""
+        with self.__lock:
+            if callback in self.__snapshot_callbacks:
+                self.__snapshot_callbacks.remove(callback)
 
     def get_energy_record_set_live(self) -> Optional[energy_record_set_pb2.EnergyRecordSet]:
         with self.__lock:

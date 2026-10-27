@@ -152,6 +152,7 @@ class GroupingCandidateSource:
     value: Any
     raw_value: Any
     units: Optional[str]
+    last_updated: Optional[float] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -595,7 +596,7 @@ def find_suggested_groupings(
                     abs_pct_diff = (abs_delta / denom) * 100.0
 
                     # Check for opposite polarity match (e.g. +2800 vs -2800)
-                    if not both_zero and (f_a * f_b < -0.25) and (abs_delta <= 0.05 or (abs_pct_diff <= 5.0 and denom >= 5.0)):
+                    if not both_zero and (f_a * f_b < -0.25) and (abs_delta <= 0.05 or (abs_pct_diff <= 25.0 and denom >= 5.0) or (same_concept and abs_pct_diff <= 35.0)):
                         is_inverted = True
                         suggested_transform = "negate"
                         pos_key = s_a.field_key if f_a > 0 else s_b.field_key
@@ -614,9 +615,15 @@ def find_suggested_groupings(
                     elif pct_diff <= 1.0 and denom >= 10.0:
                         score += 45
                         reasons.append(f"Near-exact live values agree within {pct_diff:.2f}% (Δ {delta:.2f})")
-                    elif pct_diff <= 5.0 and delta <= 5.0:
-                        score += 30
+                    elif pct_diff <= 5.0 or delta <= 5.0:
+                        score += 35
                         reasons.append(f"Live values agree within sensor noise ({pct_diff:.1f}% difference)")
+                    elif pct_diff <= 25.0 or delta <= 50.0:
+                        score += 20
+                        reasons.append(f"Live values correlate with polling skew ({pct_diff:.1f}% difference, Δ {delta:.1f} {u_a})")
+                    elif same_concept:
+                        score += 15
+                        reasons.append(f"Transient telemetry divergence during polling (Δ {delta:.1f} {u_a})")
                     else:
                         continue
                 else:
@@ -644,8 +651,8 @@ def find_suggested_groupings(
                     score += 15
                     reasons.append("Complementary SunSpec standard and Generac REbus vendor registers")
 
-                # Filter threshold: score >= 70
-                if score >= 70:
+                # Filter threshold: score >= 65
+                if score >= 65:
                     confidence = min(0.99, round(score / 100.0, 2))
                     conf_label = "HIGH" if confidence >= 0.85 else "MEDIUM"
 
@@ -676,6 +683,7 @@ def find_suggested_groupings(
                             value=s_a.value,
                             raw_value=s_a.raw_value,
                             units=s_a.units,
+                            last_updated=getattr(s_a, "last_updated", None),
                         ),
                         GroupingCandidateSource(
                             source_id=s_b.source_id,
@@ -687,6 +695,7 @@ def find_suggested_groupings(
                             value=s_b.value,
                             raw_value=s_b.raw_value,
                             units=s_b.units,
+                            last_updated=getattr(s_b, "last_updated", None),
                         ),
                     ]
 

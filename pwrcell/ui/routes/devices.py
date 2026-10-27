@@ -20,6 +20,23 @@ from ...ha import (
 logger = logging.getLogger(__name__)
 
 
+def _filter_ha_selected_for_device(ha_selected, serial_number: str) -> set:
+    clean_sn = (serial_number or "").strip().upper()
+    dev_keys = set()
+    for k in (ha_selected or []):
+        if not k:
+            continue
+        k_str = str(k).strip()
+        if ":" in k_str:
+            sn_part, field_part = k_str.split(":", 1)
+            if sn_part.strip().upper() == clean_sn:
+                dev_keys.add(field_part.strip())
+                dev_keys.add(k_str)
+        else:
+            dev_keys.add(k_str)
+    return dev_keys
+
+
 def create_blueprint(client: PwrcellClient) -> Blueprint:
     bp = Blueprint("devices", __name__)
 
@@ -114,7 +131,9 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         fields_dict = dev.serialize_fields()
         compound_views = [c.to_dict() for c in client.state.get_compound_views(serial_number)]
         ha_selected = set(load_ha_config())
-        unified_groups = [g.to_dict() for g in client.state.get_unified_fields(serial_number, ha_selected_keys=ha_selected)]
+        clean_sn = (serial_number or "").strip().upper()
+        dev_ha_selected = _filter_ha_selected_for_device(ha_selected, clean_sn)
+        unified_groups = [g.to_dict() for g in client.state.get_unified_fields(serial_number, ha_selected_keys=dev_ha_selected)]
 
         return jsonify({
             **dev.to_dict(catalog=client.catalog),
@@ -129,7 +148,9 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         if not dev:
             return jsonify({"error": "Device not found"}), 404
         ha_selected = set(load_ha_config())
-        groups = client.state.get_unified_fields(serial_number, ha_selected_keys=ha_selected)
+        clean_sn = (serial_number or "").strip().upper()
+        dev_ha_selected = _filter_ha_selected_for_device(ha_selected, clean_sn)
+        groups = client.state.get_unified_fields(serial_number, ha_selected_keys=dev_ha_selected)
         return jsonify({
             "device_sn": serial_number,
             "device_type": dev.device_type,
@@ -148,17 +169,20 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         incoming_selected = body.get("selected_keys")
         preferred_sources = body.get("preferred_sources", {})
 
-        ha_selected = set(incoming_selected) if incoming_selected is not None else set(load_ha_config())
+        clean_sn = (serial_number or "").strip().upper()
+        raw_selected = set(incoming_selected) if incoming_selected is not None else set(load_ha_config())
+        dev_ha_selected = _filter_ha_selected_for_device(raw_selected, clean_sn)
+
         groups = client.state.get_unified_fields(
             serial_number,
             preferred_sources=preferred_sources,
-            ha_selected_keys=ha_selected,
+            ha_selected_keys=dev_ha_selected,
         )
 
         selected_items = {}
         for g in groups:
-            qual_id = f"{serial_number}:{g.id}"
-            if g.is_selected or g.id in ha_selected or qual_id in ha_selected or g.name in ha_selected:
+            qual_id = f"{clean_sn}:{g.id}"
+            if g.is_selected or g.id in dev_ha_selected or qual_id in dev_ha_selected:
                 cand_sources = set()
                 for s in g.sources:
                     if s.source_type == "MQTT":
@@ -167,10 +191,18 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                         cand_sources.add(s.model_id)
                 selected_items[g.id] = cand_sources
 
-        # Also capture any specific raw field keys selected
-        for k in ha_selected:
+        # Determine all source field keys already covered by selected unified groups
+        covered_field_keys = {
+            s.field_key
+            for g_id in selected_items
+            for g in groups if g.id == g_id
+            for s in g.sources
+        }
+
+        # Also capture any specific raw field keys selected for this device that are not part of an already selected group
+        for k in dev_ha_selected:
             clean_k = k.split(":", 1)[-1] if ":" in k else k
-            if clean_k in dev.fields:
+            if clean_k in dev.fields and clean_k not in covered_field_keys and clean_k not in selected_items:
                 f = dev.fields[clean_k]
                 if f.model_id:
                     selected_items.setdefault(clean_k, set()).add(f.model_id)
@@ -240,10 +272,23 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
 
             if matched_src:
                 matched_src.is_optimal = True
+                matched_src.is_primary = True
                 g.active_source_key = matched_src.field_key
+                g.primary_source_key = matched_src.field_key
                 g.latest_value = matched_src.value
                 g.raw_value = matched_src.raw_value
                 g.latest_source = matched_src.source_id
+
+            # Also identify the optimal SunSpec candidate among Modbus sources for comparison/fallback
+            mb_sources = [s for s in g.sources if s.source_type != "MQTT"]
+            if mb_sources and not any(s.is_optimal for s in mb_sources):
+                from ...optimizer import get_default_favored_models
+                favored = get_default_favored_models()
+                best_mb = min(
+                    mb_sources,
+                    key=lambda s: (0 if s.model_id in polled_models else 1, favored.get(s.model_id or 0, 1.0))
+                )
+                best_mb.is_optimal = True
 
         return jsonify({
             "device_sn": serial_number,

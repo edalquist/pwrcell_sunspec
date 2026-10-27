@@ -96,6 +96,7 @@ class HomeAssistantBridge:
         self._command_topic_to_field: Dict[str, Any] = {}
         self._published_discovery_topics: set[str] = set()
         self._active_compound_keys: set[str] = set()
+        self._active_member_keys: set[str] = set()
         self._payload_info_cache: Dict[str, Dict[str, Any]] = {}
         self._device_online_state: Dict[str, str] = {}
         self._mqttc: Optional[mqtt.Client] = None
@@ -290,6 +291,7 @@ class HomeAssistantBridge:
         published_count = 0
         new_command_map: dict[str, Any] = {}
         new_active_compounds: set[str] = set()
+        new_active_member_keys: set[str] = set()
         new_payload_cache: dict[str, Dict[str, Any]] = {}
         current_discovery_topics: set[str] = set()
         persisted_topics = self._load_persisted_published_topics()
@@ -304,6 +306,9 @@ class HomeAssistantBridge:
             for c_view in self.client.state.get_compound_views(dev.serial_number):
                 if is_field_selected(c_view.key, dev.serial_number, selected_set, c_view.mqtt_key):
                     new_active_compounds.add(f"{sn_clean}:{c_view.key}")
+                    for s in getattr(c_view, "sources", []):
+                        if getattr(s, "field_key", None):
+                            new_active_member_keys.add(f"{sn_clean}:{s.field_key}")
                     payload_info = generate_discovery_payload(
                         c_view,
                         dev,
@@ -321,6 +326,10 @@ class HomeAssistantBridge:
                     old_s_topic = payload_info.get("old_sensor_topic")
                     if old_s_topic and old_s_topic in previously_published:
                         self._mqttc.publish(old_s_topic, "", retain=True)
+
+                    for leg_t in payload_info.get("legacy_config_topics", []):
+                        if leg_t in previously_published:
+                            self._mqttc.publish(leg_t, "", retain=True)
 
                     cmd_topic = payload_info.get("command_topic")
                     if cmd_topic:
@@ -348,7 +357,11 @@ class HomeAssistantBridge:
                     self.client.state.ensure_field_definition(dev.serial_number, f_path)
 
             for f_key, field in list(dev.fields.items()):
-                if field.compound_key and f"{sn_clean}:{field.compound_key}" in new_active_compounds:
+                is_suppressed = (
+                    f"{sn_clean}:{f_key}" in new_active_member_keys
+                    or (field.compound_key and f"{sn_clean}:{field.compound_key}" in new_active_compounds)
+                )
+                if is_suppressed:
                     # Suppress duplicate raw field because its compound view is active.
                     # Clear any previously retained discovery and state topics for this suppressed field.
                     payload_info = generate_discovery_payload(
@@ -385,6 +398,10 @@ class HomeAssistantBridge:
                     if old_s_topic and old_s_topic in previously_published:
                         self._mqttc.publish(old_s_topic, "", retain=True)
 
+                    for leg_t in payload_info.get("legacy_config_topics", []):
+                        if leg_t in previously_published:
+                            self._mqttc.publish(leg_t, "", retain=True)
+
                     # If field is writable, subscribe to its command topic
                     cmd_topic = payload_info.get("command_topic")
                     if cmd_topic:
@@ -398,6 +415,7 @@ class HomeAssistantBridge:
         with self._lock:
             self._command_topic_to_field = new_command_map
             self._active_compound_keys = new_active_compounds
+            self._active_member_keys = new_active_member_keys
             self._payload_info_cache = new_payload_cache
             previously_published = set(self._published_discovery_topics) | persisted_topics
             self._published_discovery_topics = set(current_discovery_topics)
@@ -439,20 +457,23 @@ class HomeAssistantBridge:
 
     def _is_field_suppressed_by_compound(self, field: StateField) -> bool:
         """Check if a raw field is suppressed because its unified compound view is active."""
-        if not field.compound_key or not field.device_sn:
+        if not field.device_sn:
             return False
         clean_sn = field.device_sn.strip().upper()
-        comp_id = f"{clean_sn}:{field.compound_key}"
         with self._lock:
-            if comp_id in self._active_compound_keys:
+            if f"{clean_sn}:{field.key}" in self._active_member_keys:
+                return True
+            if field.compound_key and f"{clean_sn}:{field.compound_key}" in self._active_compound_keys:
                 return True
             selected_snapshot = set(self.selected_field_keys) | set(self._selected_set)
         c_views = self.client.state.get_compound_views(field.device_sn)
         for c_view in c_views:
-            if c_view.key == field.compound_key:
+            is_member = any(getattr(s, "field_key", None) == field.key for s in getattr(c_view, "sources", []))
+            if is_member or (field.compound_key and c_view.key == field.compound_key):
                 if is_field_selected(c_view.key, field.device_sn, selected_snapshot, getattr(c_view, "mqtt_key", None)):
                     with self._lock:
-                        self._active_compound_keys.add(comp_id)
+                        self._active_compound_keys.add(f"{clean_sn}:{c_view.key}")
+                        self._active_member_keys.add(f"{clean_sn}:{field.key}")
                     return True
         return False
 

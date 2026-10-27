@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from pwrcell.client import PwrcellClient
-from pwrcell.state import FieldSource
+from pwrcell.state import FieldSource, UnifiedDevice, StateField
 from pwrcell.grouping import (
     load_custom_groupings,
     save_custom_groupings,
@@ -18,6 +18,11 @@ from pwrcell.ui.server import create_app
 
 class TestGroupingOverrides(unittest.TestCase):
     def setUp(self):
+        from pwrcell.mapping import MappingRegistry
+        from pwrcell.grouping import clear_custom_groupings_cache
+        MappingRegistry._instance = None
+        clear_custom_groupings_cache()
+
         self.temp_dir = tempfile.TemporaryDirectory()
         self.config_path = Path(self.temp_dir.name) / "custom_groupings.yaml"
 
@@ -55,6 +60,11 @@ class TestGroupingOverrides(unittest.TestCase):
         )
 
     def tearDown(self):
+        from pwrcell.mapping import MappingRegistry
+        from pwrcell.grouping import clear_custom_groupings_cache
+        MappingRegistry._instance = None
+        clear_custom_groupings_cache()
+
         self.client.stop()
         self.temp_dir.cleanup()
         orig_p = Path("config/custom_groupings.yaml")
@@ -120,7 +130,7 @@ class TestGroupingOverrides(unittest.TestCase):
         self.assertIsNotNone(standalone_grp)
         self.assertIn("standalone", standalone_grp.id)
         self.assertTrue(standalone_grp.is_custom_override)
-        self.assertIn("Ungrouped", standalone_grp.label)
+        self.assertEqual(standalone_grp.label, "Inverter Power")
 
     def test_regroup_field_to_different_concept(self):
         # Regroup CTPow into inverter_output_power
@@ -140,6 +150,17 @@ class TestGroupingOverrides(unittest.TestCase):
         self.assertIn("W", keys)
         self.assertIn("CTPow", keys)
         self.assertTrue(pwr_grp.is_custom_override)
+
+    def test_cross_device_grouping_forbidden(self):
+        """Grouping fields across different device types is strictly rejected."""
+        with self.assertRaises(ValueError) as ctx:
+            set_field_grouping_override(
+                device_sn="000100034AC7",
+                field_key="pv_link.model_64207.P",
+                target_concept="inverter_output_power",
+                config_path=self.config_path,
+            )
+        self.assertIn("grouping across devices is not permitted", str(ctx.exception).lower())
 
     def test_grouping_api_endpoints(self):
         app = create_app(self.client)
@@ -241,17 +262,14 @@ class TestGroupingOverrides(unittest.TestCase):
 
         # 2. Test export_as_telemetry_mappings
         tel_res = export_as_telemetry_mappings(self.client.state, config_path=self.config_path)
-        self.assertIn("mappings", tel_res)
+        self.assertIn("groups", tel_res)
         self.assertIn("yaml", tel_res)
-        self.assertIn("version: '1.0'", tel_res["yaml"])
-        # Custom concept should be in mappings
-        match = next((m for m in tel_res["mappings"] if m["id"] == "custom_inverter_power"), None)
+        self.assertIn("version: '2.0'", tel_res["yaml"])
+        # Custom concept should be in groups
+        match = next((m for m in tel_res["groups"] if m["id"] == "custom_inverter_power"), None)
         self.assertIsNotNone(match)
-        self.assertEqual(match["device_type"], "inverter")
-        self.assertEqual(match["label"], "Custom Inverter Power")
-        # Inferred Home Assistant metadata from unit "W"
-        self.assertEqual(match["ha_device_class"], "power")
-        self.assertEqual(match["ha_state_class"], "measurement")
+        self.assertEqual(match["name"], "Custom Inverter Power")
+        self.assertIn("inverter.model_102.W", match["fields"])
 
         # 3. Test API export routes
         app = create_app(self.client)
@@ -264,11 +282,11 @@ class TestGroupingOverrides(unittest.TestCase):
         self.assertEqual(gen_json["status"], "ok")
         self.assertEqual(gen_json["filename"], "custom_groupings.yaml")
 
-        resp_tel = test_client.get("/api/grouping/export?format=telemetry_mappings")
+        resp_tel = test_client.get("/api/grouping/export?format=groupings")
         self.assertEqual(resp_tel.status_code, 200)
         tel_json = resp_tel.get_json()
         self.assertEqual(tel_json["status"], "ok")
-        self.assertEqual(tel_json["filename"], "telemetry_mappings.yaml")
+        self.assertEqual(tel_json["filename"], "groupings.yaml")
 
         # Download format
         resp_dl = test_client.get("/api/grouping/export?format=generalized&download=true")
@@ -311,6 +329,182 @@ class TestGroupingOverrides(unittest.TestCase):
         self.assertIsNotNone(field.ha_hint)
         self.assertEqual(field.ha_hint.device_class, "energy")
         self.assertEqual(field.ha_hint.state_class, "total_increasing")
+
+    def test_approve_polarity_positive_and_negative_conventions(self):
+        """Verify approving an inverted pair with Positive or Negative convention correctly applies transform."""
+        from pwrcell.grouping import approve_suggestion, save_current_as_telemetry_mappings
+        from pwrcell.tools.correlator import evaluate_comparisons
+        from pwrcell.mapping import MappingRegistry
+
+        test_sn = "TEST_INV_POLARITY"
+        dev = self.client.state.register_device(test_sn, 99, "inverter", "Test Inverter")
+
+        # Add live push telemetry
+        self.client.state.set_field(
+            device_sn=test_sn,
+            name="grid_power_w",
+            label="Grid Net Power",
+            value=4029.0,
+            raw_value=4029.0,
+            units="W",
+            source=FieldSource.MQTT_PUSH,
+            sub_group="live",
+        )
+        self.client.state.set_field(
+            device_sn=test_sn,
+            name="CTPow",
+            label="External CT Power measurement",
+            value=-4007.0,
+            raw_value=-4007.0,
+            units="W",
+            source=FieldSource.MODBUS_POLL,
+            sub_group="inverter_status",
+            model_id=64208,
+        )
+
+        # 1. Approve with Positive Convention (inverts negative field CTPow)
+        approve_suggestion(
+            device_sn=test_sn,
+            field_keys=["inverter.inverter_status.CTPow", "inverter.live.grid_power_w"],
+            target_concept="grid_power",
+            custom_label="Grid Net Power",
+            suggestion_id="sugg_test_pos",
+            transform="negate",
+            negate_field_key="inverter.inverter_status.CTPow",
+            polarity_convention="positive",
+            config_path=self.config_path,
+        )
+
+        custom_data = load_custom_groupings(self.config_path)
+        rows = evaluate_comparisons(self.client.state, custom_groupings=custom_data)
+        grid_row = next((r for r in rows if r.mapping_id == f"{test_sn}_grid_power"), None)
+        self.assertIsNotNone(grid_row)
+        self.assertFalse(grid_row.is_discrepant, f"Should not be discrepant: {grid_row.discrepancy_reason}")
+        val_map = {s["field_key"]: s["value"] for s in grid_row.sources}
+        self.assertEqual(val_map["inverter.inverter_status.CTPow"], 4007.0)
+        self.assertEqual(val_map["inverter.live.grid_power_w"], 4029.0)
+
+        # 2. Approve with Negative Convention (inverts positive field grid_power_w)
+        approve_suggestion(
+            device_sn=test_sn,
+            field_keys=["inverter.inverter_status.CTPow", "inverter.live.grid_power_w"],
+            target_concept="grid_power",
+            custom_label="Grid Net Power",
+            suggestion_id="sugg_test_neg",
+            transform="negate",
+            negate_field_key="inverter.live.grid_power_w",
+            polarity_convention="negative",
+            config_path=self.config_path,
+        )
+
+        custom_data = load_custom_groupings(self.config_path)
+        rows = evaluate_comparisons(self.client.state, custom_groupings=custom_data)
+        grid_row = next((r for r in rows if r.mapping_id == f"{test_sn}_grid_power"), None)
+        self.assertIsNotNone(grid_row)
+        self.assertFalse(grid_row.is_discrepant, f"Should not be discrepant: {grid_row.discrepancy_reason}")
+        val_map = {s["field_key"]: s["value"] for s in grid_row.sources}
+        self.assertEqual(val_map["inverter.inverter_status.CTPow"], -4007.0)
+        self.assertEqual(val_map["inverter.live.grid_power_w"], -4029.0)
+
+        # 3. Save to Mappings and Clean Slate
+        tmppath = Path(self.temp_dir.name) / "telemetry_mappings.yaml"
+        # Reset to positive convention before exporting
+        approve_suggestion(
+            device_sn=test_sn,
+            field_keys=["inverter.inverter_status.CTPow", "inverter.live.grid_power_w"],
+            target_concept="grid_power",
+            custom_label="Grid Net Power",
+            suggestion_id="sugg_test_pos",
+            transform="negate",
+            negate_field_key="inverter.inverter_status.CTPow",
+            polarity_convention="positive",
+            config_path=self.config_path,
+        )
+        save_current_as_telemetry_mappings(
+            self.client.state,
+            config_path=tmppath,
+            custom_groupings_path=self.config_path,
+            only_custom=False,
+            clear_custom_overrides=True,
+        )
+        reg = MappingRegistry.get_instance(str(tmppath))
+        reg.reload()
+        custom_data_clean = load_custom_groupings(self.config_path)
+        self.assertEqual(custom_data_clean.get("field_overrides"), {})
+        self.assertEqual(custom_data_clean.get("field_transforms"), {})
+
+        rows_after = evaluate_comparisons(self.client.state, custom_groupings=custom_data_clean)
+        grid_row_after = next((r for r in rows_after if r.mapping_id == f"{test_sn}_grid_power"), None)
+        self.assertIsNotNone(grid_row_after)
+        self.assertFalse(grid_row_after.is_discrepant)
+
+    def test_manual_grouping_merges_standalone_fields(self):
+        """When grouping a field with an existing standalone concept, both fields merge into one group."""
+        pv_dev = UnifiedDevice(
+            serial_number="000100034AC7",
+            slave_id=1,
+            device_type="pv_link",
+            model_name="pv_link",
+            manufacturer="Generac",
+            version="1.0",
+        )
+        f1 = StateField(
+            key="pv_link.pvlink_status.Iin",
+            device_sn=pv_dev.serial_number,
+            device_type="pv_link",
+            name="Iin",
+            label="PV String Current",
+            description="",
+            value=4.5,
+            raw_value=45,
+            units="A",
+            model_id=64251,
+            model_name="pvlink_status",
+        )
+        f2 = StateField(
+            key="pv_link.string_combiner.DCA",
+            device_sn=pv_dev.serial_number,
+            device_type="pv_link",
+            name="DCA",
+            label="PV String Current",
+            description="",
+            value=4.4,
+            raw_value=44,
+            units="A",
+            model_id=64252,
+            model_name="string_combiner",
+        )
+        pv_dev.fields[f1.key] = f1
+        pv_dev.fields[f2.key] = f2
+        self.client.state.devices[pv_dev.serial_number] = pv_dev
+
+        # Test API endpoint override with member_field_keys
+        app = create_app(self.client)
+        app.config["TESTING"] = True
+        test_client = app.test_client()
+
+        resp = test_client.post(
+            "/api/grouping/override",
+            json={
+                "device_sn": pv_dev.serial_number,
+                "field_key": f2.key,
+                "member_field_keys": [f1.key, f2.key],
+                "target_concept": "iin_64251",
+                "custom_label": "PV String Current",
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        # Run group_device_fields
+        groups = group_device_fields(pv_dev)
+        curr_groups = [g for g in groups if "iin" in g.concept_key.lower()]
+        # There must only be exactly 1 group, NOT two rows with the same name
+        self.assertEqual(len(curr_groups), 1)
+        grp = curr_groups[0]
+        self.assertEqual(grp.label, "PV String Current")
+        src_keys = [s.field_key for s in grp.sources]
+        self.assertIn("pv_link.pvlink_status.Iin", src_keys)
+        self.assertIn("pv_link.string_combiner.DCA", src_keys)
 
 
 if __name__ == "__main__":

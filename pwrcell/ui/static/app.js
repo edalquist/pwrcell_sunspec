@@ -33,7 +33,10 @@ const state = {
   multiSortMode: false,
   bannerCollapsed: false,
   showAvoidedModels: false,
+  showPlanDetails: false,
+  showAllPlanFields: false,
   groupingModalData: null,
+  expandedGroups: new Set(),
 };
 
 // DOM Elements
@@ -61,6 +64,8 @@ const el = {
   optBannerSubtitle: document.getElementById('optBannerSubtitle'),
   optModelsBadges: document.getElementById('optModelsBadges'),
   btnResetPins: document.getElementById('btnResetPins'),
+  btnTogglePlanDetails: document.getElementById('btnTogglePlanDetails'),
+  optPlanBreakdown: document.getElementById('optPlanBreakdown'),
   thModelContent: document.getElementById('thModelContent'),
   filterPills: document.getElementById('filterPills'),
   hideScaleFactors: document.getElementById('hideScaleFactors'),
@@ -108,6 +113,7 @@ const el = {
   suggestionsList: document.getElementById('suggestionsList'),
   suggestionsToolbar: document.getElementById('suggestionsToolbar'),
   cmpSuggestionsConfidence: document.getElementById('cmpSuggestionsConfidence'),
+  btnRefreshSuggestions: document.getElementById('btnRefreshSuggestions'),
   btnBatchApproveVisible: document.getElementById('btnBatchApproveVisible'),
   btnBatchDismissVisible: document.getElementById('btnBatchDismissVisible'),
   cntBatchApprove: document.getElementById('cntBatchApprove'),
@@ -1006,8 +1012,8 @@ async function updateOptimizationPlan() {
         }
 
         if (el.optModelsBadges) {
-          const activeBadges = minModels.map(m => `<span class="badge-opt-active" title="Model ${m} selected for active Modbus polling">M${m} (Polled)</span>`).join(' ');
-          const mqttBadge = stats.mqtt_covered_count ? `<span class="badge-opt-mqtt" title="${stats.mqtt_covered_count} points provided via Push MQTT">⚡ ${stats.mqtt_covered_count} Push MQTT</span>` : '';
+          const activeBadges = minModels.map(m => `<span class="badge-opt-active" data-model="${m}" style="cursor: pointer;" title="Model ${m} selected for active Modbus polling - click to view fields">M${m} (Polled)</span>`).join(' ');
+          const mqttBadge = stats.mqtt_covered_count ? `<span class="badge-opt-mqtt" data-source="mqtt" style="cursor: pointer;" title="${stats.mqtt_covered_count} points provided via Push MQTT - click to view fields">⚡ ${stats.mqtt_covered_count} Push MQTT</span>` : '';
           const avoidedToggle = avoidedModels.length > 0
             ? `<button type="button" class="btn-avoided-toggle" id="btnToggleAvoided" title="Toggle list of avoided models">${state.showAvoidedModels ? '▴ Hide Avoided' : `+${avoidedModels.length} avoided ▾`}</button>`
             : '';
@@ -1034,13 +1040,31 @@ async function updateOptimizationPlan() {
               }
             });
           }
+
+          // Badge click shortcuts to jump into detailed breakdown
+          el.optModelsBadges.querySelectorAll('.badge-opt-active, .badge-opt-mqtt').forEach(badge => {
+            badge.addEventListener('click', (e) => {
+              e.stopPropagation();
+              state.showPlanDetails = true;
+              renderPlanBreakdown(data);
+              const mId = badge.dataset.model;
+              const targetCardId = mId ? `planCardM${mId}` : 'planCardMqtt';
+              const targetCard = document.getElementById(targetCardId);
+              if (targetCard) {
+                targetCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+              }
+            });
+          });
         }
 
         if (el.btnResetPins) {
           el.btnResetPins.style.display = Object.keys(state.preferredSources).length > 0 ? 'inline-block' : 'none';
         }
+
+        renderPlanBreakdown(data);
       } else {
         el.optimizationBanner.style.display = 'none';
+        if (el.optPlanBreakdown) el.optPlanBreakdown.style.display = 'none';
       }
     }
 
@@ -1099,6 +1123,261 @@ async function updateOptimizationPlan() {
   } catch (err) {
     console.error('Failed optimizing polling:', err);
   }
+}
+
+// Render Detailed Polling Plan Breakdown by Source
+function renderPlanBreakdown(data) {
+  if (!el.optPlanBreakdown) return;
+
+  if (!state.showPlanDetails) {
+    el.optPlanBreakdown.style.display = 'none';
+    if (el.btnTogglePlanDetails) {
+      el.btnTogglePlanDetails.classList.remove('active');
+      el.btnTogglePlanDetails.textContent = '📋 Fields by Source ▾';
+    }
+    return;
+  }
+
+  el.optPlanBreakdown.style.display = 'flex';
+  if (el.btnTogglePlanDetails) {
+    el.btnTogglePlanDetails.classList.add('active');
+    el.btnTogglePlanDetails.textContent = '📋 Hide Breakdown ▴';
+  }
+
+  const planData = data || state.optimizationPlan || {};
+  const minModels = planData.minimal_models || [];
+  const avoidedModels = planData.models_avoided || [];
+  const assignments = planData.assignments || {};
+  const groups = planData.unified_fields || state.unifiedFields || [];
+  const rawFields = state.activeFields || [];
+
+  const mqttItems = [];
+  const modelItems = {};
+  minModels.forEach(mId => {
+    modelItems[mId] = [];
+  });
+
+  // Track items already added to prevent duplicates
+  const processedKeys = new Set();
+
+  // 1. Process Unified Groups
+  groups.forEach(g => {
+    const isSelected = isFieldSelected(g) || g.is_selected || (assignments[g.id] !== undefined);
+    if (!state.showAllPlanFields && !isSelected) return;
+
+    const prefKey = state.preferredSources[g.id] || g.preferred_source_key;
+    let activeSrc = null;
+
+    if (prefKey && g.sources) {
+      activeSrc = g.sources.find(s => s.field_key === prefKey);
+    }
+    if (!activeSrc && assignments[g.id] !== undefined && g.sources) {
+      const assigned = assignments[g.id];
+      if (assigned === 'MQTT') {
+        activeSrc = g.sources.find(s => s.source_type === 'MQTT');
+      } else {
+        activeSrc = g.sources.find(s => s.model_id === assigned);
+      }
+    }
+    if (!activeSrc && g.active_source_key && g.sources) {
+      activeSrc = g.sources.find(s => s.field_key === g.active_source_key);
+    }
+    if (!activeSrc && g.sources && g.sources.length > 0) {
+      activeSrc = g.sources.find(s => s.is_optimal) || g.sources[0];
+    }
+
+    const isMqtt = (assignments[g.id] === 'MQTT') || (activeSrc && activeSrc.source_type === 'MQTT');
+    const modelId = (!isMqtt && activeSrc && activeSrc.model_id)
+      ? activeSrc.model_id
+      : (typeof assignments[g.id] === 'number' ? assignments[g.id] : null);
+
+    const val = (activeSrc && activeSrc.value !== undefined) ? activeSrc.value : g.latest_value;
+    const entry = {
+      id: g.id,
+      rowId: `row-${sanitizeId(g.id)}`,
+      label: g.label || g.name || g.id,
+      fieldKey: (activeSrc && activeSrc.field_key) || g.id,
+      sourceId: (activeSrc && activeSrc.source_id) || (isMqtt ? 'MQTT' : (modelId ? `M${modelId}` : '')),
+      value: val,
+      lastUpdated: (activeSrc && activeSrc.last_updated) || g.latest_updated || g.last_updated,
+      rawItem: g,
+      isPinned: (activeSrc && activeSrc.is_pinned) || (prefKey !== undefined && prefKey !== null)
+    };
+
+    processedKeys.add(g.id);
+    if (activeSrc && activeSrc.field_key) processedKeys.add(activeSrc.field_key);
+
+    if (isMqtt) {
+      mqttItems.push(entry);
+    } else if (modelId && minModels.includes(modelId)) {
+      if (!modelItems[modelId]) modelItems[modelId] = [];
+      modelItems[modelId].push(entry);
+    }
+  });
+
+  // 2. Process Raw Fields (if not already represented in a unified group)
+  rawFields.forEach(f => {
+    if (processedKeys.has(f.key)) return;
+    if (groups.some(g => (g.sources || []).some(s => s.field_key === f.key))) return;
+
+    const isSelected = isFieldSelected(f) || (assignments[f.key] !== undefined);
+    if (!state.showAllPlanFields && !isSelected) return;
+
+    const isMqtt = f.is_mqtt || f.key?.startsWith('mqtt.') || f.source_type === 'MQTT';
+    const modelId = f.model_id;
+    const entry = {
+      id: f.key,
+      rowId: `row-${sanitizeId(f.key)}`,
+      label: f.label || f.name || f.key,
+      fieldKey: f.key,
+      sourceId: isMqtt ? 'MQTT' : (modelId ? `M${modelId}` : ''),
+      value: f.value,
+      lastUpdated: f.last_updated || f.timestamp,
+      rawItem: f,
+      isPinned: false
+    };
+
+    if (isMqtt) {
+      mqttItems.push(entry);
+    } else if (modelId && minModels.includes(modelId)) {
+      if (!modelItems[modelId]) modelItems[modelId] = [];
+      modelItems[modelId].push(entry);
+    }
+  });
+
+  const totalPoints = mqttItems.length + Object.values(modelItems).reduce((sum, list) => sum + list.length, 0);
+
+  // Helper to render individual field items
+  const renderItemHtml = (item) => {
+    const formattedVal = formatFieldValue(item.value, item.rawItem);
+    const tsStr = formatTimestamp(item.lastUpdated);
+    const tsHtml = tsStr ? `<span class="opt-field-time" title="Read at ${tsStr}">🕒 ${tsStr}</span>` : '';
+    return `
+      <div class="opt-field-item" data-row-id="${escapeHtml(item.rowId)}" title="Click to jump to this field in the table">
+        <div class="opt-field-info">
+          <span class="opt-field-name">${escapeHtml(item.label)}</span>
+          <span class="opt-field-path">${escapeHtml(item.fieldKey)}</span>
+        </div>
+        <div class="opt-field-meta">
+          <span class="opt-field-val">${formattedVal}</span>
+          ${tsHtml}
+          ${item.isPinned ? '<span class="opt-pin-icon" title="Pinned preferred data source">📌</span>' : ''}
+        </div>
+      </div>
+    `;
+  };
+
+  // Build Grid Cards
+  let cardsHtml = '';
+
+  // MQTT Card
+  if (mqttItems.length > 0 || planData.stats?.mqtt_covered_count > 0) {
+    cardsHtml += `
+      <div class="opt-source-card mqtt" id="planCardMqtt">
+        <div class="opt-source-card-header">
+          <div class="opt-source-badge-wrap">
+            <span class="badge-opt-mqtt">⚡ Push MQTT</span>
+            <span class="opt-source-count">${mqttItems.length} field${mqttItems.length === 1 ? '' : 's'}</span>
+          </div>
+          <div class="opt-source-title">Push Telemetry</div>
+          <div class="opt-source-desc">Streaming live via broker &bull; 0 Modbus bus latency</div>
+        </div>
+        <div class="opt-field-list">
+          ${mqttItems.length > 0 ? mqttItems.map(renderItemHtml).join('') : '<div class="text-muted" style="font-size: 11px; padding: 4px;">No selected fields assigned to MQTT.</div>'}
+        </div>
+      </div>
+    `;
+  }
+
+  // Modbus Model Cards
+  minModels.forEach(mId => {
+    const mMeta = (state.activeDeviceModels || []).find(m => m.model_id === mId);
+    const mName = mMeta ? (mMeta.label || mMeta.name || `Model ${mId}`) : `Model ${mId}`;
+    const items = modelItems[mId] || [];
+
+    cardsHtml += `
+      <div class="opt-source-card modbus" id="planCardM${mId}">
+        <div class="opt-source-card-header">
+          <div class="opt-source-badge-wrap">
+            <span class="badge-opt-active">M${mId} (Polled)</span>
+            <span class="opt-source-count">${items.length} field${items.length === 1 ? '' : 's'}</span>
+          </div>
+          <div class="opt-source-title">Model ${mId}: ${escapeHtml(mName)}</div>
+          <div class="opt-source-desc">Polled cyclically over Modbus RS-485</div>
+        </div>
+        <div class="opt-field-list">
+          ${items.length > 0 ? items.map(renderItemHtml).join('') : '<div class="text-muted" style="font-size: 11px; padding: 4px;">Model active for required block coverage.</div>'}
+        </div>
+      </div>
+    `;
+  });
+
+  // Avoided Models Card
+  if (avoidedModels.length > 0) {
+    cardsHtml += `
+      <div class="opt-source-card avoided" id="planCardAvoided">
+        <div class="opt-source-card-header">
+          <div class="opt-source-badge-wrap">
+            <span class="badge-opt-avoided">${avoidedModels.length} Excluded</span>
+          </div>
+          <div class="opt-source-title">Avoided SunSpec Models</div>
+          <div class="opt-source-desc">Redundant models omitted from polling to minimize bus traffic</div>
+        </div>
+        <div class="opt-avoided-list">
+          ${avoidedModels.map(aId => {
+            const mMeta = (state.activeDeviceModels || []).find(m => m.model_id === aId);
+            const aName = mMeta ? (mMeta.label || mMeta.name || `Model ${aId}`) : `Model ${aId}`;
+            return `
+              <div class="opt-avoided-item">
+                <span class="opt-avoided-name">M${aId}: ${escapeHtml(aName)}</span>
+                <span class="opt-avoided-reason">Covered by active plan</span>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  el.optPlanBreakdown.innerHTML = `
+    <div class="opt-plan-summary-bar">
+      <span><strong>Polling Plan Breakdown:</strong> ${totalPoints} active point${totalPoints === 1 ? '' : 's'} across ${minModels.length} polled model${minModels.length === 1 ? '' : 's'}${mqttItems.length > 0 ? ' &amp; Push MQTT' : ''}. Click any field to jump to its row.</span>
+      <label class="toggle-label" style="font-size: 10px; cursor: pointer;" title="Toggle between showing only actively polled/selected fields vs all points available in these models">
+        <input type="checkbox" id="chkShowAllPlanFields" ${state.showAllPlanFields ? 'checked' : ''} />
+        Show all model fields
+      </label>
+    </div>
+    <div class="opt-plan-grid">
+      ${cardsHtml || '<div class="empty-state" style="padding: 12px; grid-column: 1 / -1;">No active data sources or models found.</div>'}
+    </div>
+  `;
+
+  // Attach Checkbox Handler
+  const chkShowAll = el.optPlanBreakdown.querySelector('#chkShowAllPlanFields');
+  if (chkShowAll) {
+    chkShowAll.addEventListener('change', (e) => {
+      state.showAllPlanFields = e.target.checked;
+      renderPlanBreakdown(state.optimizationPlan);
+    });
+  }
+
+  // Attach Item Click Handlers
+  el.optPlanBreakdown.querySelectorAll('.opt-field-item').forEach(itemEl => {
+    itemEl.addEventListener('click', () => {
+      const rowId = itemEl.dataset.rowId;
+      if (!rowId) return;
+      const targetRow = document.getElementById(rowId);
+      if (targetRow) {
+        targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        targetRow.classList.remove('highlight-row-flash');
+        void targetRow.offsetWidth;
+        targetRow.classList.add('highlight-row-flash');
+        setTimeout(() => targetRow.classList.remove('highlight-row-flash'), 1800);
+      } else {
+        showToast('Field is currently filtered out or on another page');
+      }
+    });
+  });
 }
 
 // Helper to determine if a field or group is a SunSpec scale factor
@@ -1251,20 +1530,28 @@ function renderFieldTable() {
       const isPolled = isMqtt || (s.model_id && minModelsSet.has(s.model_id));
       const pillClass = isPinned ? 'pinned' : (isOptimal ? 'optimal' : (isMqtt ? 'mqtt' : (isPolled ? 'polled' : 'alternate')));
       const prefix = isPinned ? '📌 ' : (isOptimal ? '★ ' : '');
-      const sVal = formatFieldValue(s.value, f);
+      const sVal = formatFieldValuePlain(s.value, f);
+      const sTime = formatTimestamp(s.last_updated);
+      const sTimeNote = sTime ? ` (read @ ${sTime})` : '';
       const title = isPinned
-        ? `📌 Pinned preferred source: ${s.source_id} (${s.field_key})\nValue: ${sVal}\nClick to unpin and use automatic minimal set solver.`
+        ? `📌 Pinned preferred source: ${s.source_id} (${s.field_key})\nValue: ${sVal}${sTimeNote}\nClick to unpin and use automatic minimal set solver.`
         : (isOptimal
-            ? `★ Optimal source: ${s.source_id} (${s.field_key})\nSelected in minimal polling plan.\nValue: ${sVal}`
+            ? `★ Optimal source: ${s.source_id} (${s.field_key})\nSelected in minimal polling plan.\nValue: ${sVal}${sTimeNote}`
             : (isPolled
-                ? `⚡ ${s.source_id} (${s.field_key})\nIncluded in minimal polling plan.\nValue: ${sVal}\nClick to pin this source.`
-                : `${s.source_id} (${s.field_key})\nExcluded / avoided from Modbus polling.\nValue: ${sVal}\nClick to pin this source.`));
+                ? `⚡ ${s.source_id} (${s.field_key})\nIncluded in minimal polling plan.\nValue: ${sVal}${sTimeNote}\nClick to pin this source.`
+                : `${s.source_id} (${s.field_key})\nExcluded / avoided from Modbus polling.\nValue: ${sVal}${sTimeNote}\nClick to pin this source.`));
 
       return `<button class="source-pill ${pillClass}" data-group-id="${f.id}" data-field-key="${s.field_key}" data-source-id="${s.source_id}" title="${escapeHtml(title)}">${prefix}${s.source_id}</button>`;
     }).join(' ');
 
     const countBadge = (f.sources && f.sources.length > 1)
       ? `<span class="badge-source-count" title="${f.sources.length} sources available">${f.sources.length} sources</span>`
+      : '';
+
+    const hasChildren = f.sources && f.sources.length > 1;
+    const isExpanded = hasChildren && state.expandedGroups && state.expandedGroups.has(f.id);
+    const expandBtnHtml = hasChildren
+      ? `<button class="btn-group-expand ${isExpanded ? 'is-expanded' : ''}" data-group-id="${escapeHtml(f.id)}" title="${isExpanded ? 'Collapse child sources' : 'Expand contributing child fields'}">${isExpanded ? '▼' : '▶'}</button>`
       : '';
 
     // Active source description
@@ -1313,6 +1600,7 @@ function renderFieldTable() {
       <td>
         <div class="field-cell-main">
           <div class="field-label-line">
+            ${expandBtnHtml}
             <span class="field-label" title="${escapeHtml(f.description || '')}">${f.label}</span>
             ${f.is_writable ? '<span class="badge-writable" title="Settable register (Read/Write)">RW</span>' : ''}
             ${countBadge}
@@ -1322,7 +1610,10 @@ function renderFieldTable() {
         </div>
       </td>
       <td>
-        <span class="field-value-badge latest${isBf ? ' is-bitfield' : ''}" id="val-${sanitizeId(f.id)}">${displayVal}</span>
+        <div class="value-cell-wrap">
+          <span class="field-value-badge latest${isBf ? ' is-bitfield' : ''}" id="val-${sanitizeId(f.id)}">${displayVal}</span>
+          ${formatTimestampBadge(f.latest_updated || f.last_updated || (activeSrc && activeSrc.last_updated), `ts-${sanitizeId(f.id)}`)}
+        </div>
       </td>
       <td>${f.units || '&mdash;'}</td>
       <td>
@@ -1490,7 +1781,200 @@ function renderFieldTable() {
       }
     }
 
-    return tr;
+    const expandBtn = tr.querySelector('.btn-group-expand');
+    if (expandBtn) {
+      expandBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (state.expandedGroups.has(f.id)) {
+          state.expandedGroups.delete(f.id);
+        } else {
+          state.expandedGroups.add(f.id);
+        }
+        renderFieldTable();
+      });
+    }
+
+    let subTr = null;
+    if (isExpanded && hasChildren) {
+      subTr = document.createElement('tr');
+      subTr.className = 'group-children-row';
+      subTr.id = `children-${sanitizeId(f.id)}`;
+
+      const childRowsHtml = (f.sources || []).map(s => {
+        const isOptimal = s.is_optimal;
+        const isPinned = pinnedKey ? (pinnedKey === s.field_key) : false;
+        const isMqtt = s.source_type === 'MQTT';
+        const isPolled = isMqtt || (s.model_id && minModelsSet.has(s.model_id));
+
+        let roleBadge = '';
+        if (s.is_primary) {
+          roleBadge = `<span class="badge-source-role primary" title="Active primary source driving Home Assistant">⚡ Primary</span>`;
+        } else if (isPolled) {
+          roleBadge = `<span class="badge-source-role secondary" title="Polled in minimal model plan; actively cross-checked">★ Polled</span>`;
+        } else {
+          roleBadge = `<span class="badge-source-role standby" title="Avoided from Modbus polling by optimizer">○ Standby</span>`;
+        }
+
+        const sourceLabel = isMqtt ? 'MQTT Push' : (s.model_name ? `${s.model_name} (M${s.model_id})` : `Model ${s.model_id}`);
+        const rawValDisplay = formatFieldValue(s.raw_value, f);
+        const transValDisplay = formatFieldValue(s.value, f);
+
+        let valDisplayHtml = `<strong>${transValDisplay}</strong>`;
+        if (s.transform && s.transform !== 'none') {
+          valDisplayHtml = `<span class="raw-val-dim">${rawValDisplay}</span> <span class="arrow-trans">➔</span> <strong>${transValDisplay}</strong> <span class="badge-tf">${s.transform}</span>`;
+        }
+
+        return `
+          <tr class="child-source-item" data-field-key="${escapeHtml(s.field_key)}">
+            <td class="child-role-cell">${roleBadge}</td>
+            <td class="child-protocol-cell"><span class="source-type-pill ${isMqtt ? 'mqtt' : 'modbus'}">${escapeHtml(sourceLabel)}</span></td>
+            <td class="child-key-cell"><code class="code-path">${escapeHtml(s.field_key)}</code></td>
+            <td class="child-val-cell">
+              <div class="child-val-wrap">
+                ${valDisplayHtml}
+                ${formatTimestampBadge(s.last_updated, `ts-${sanitizeId(s.field_key)}`)}
+              </div>
+            </td>
+            <td class="child-actions-cell text-right">
+              ${!isMqtt ? `<button class="btn btn-xs btn-invert-polarity ${s.transform === 'negate' ? 'active' : ''}" data-sn="${escapeHtml(s.device_sn || f.device_sn || '')}" data-key="${escapeHtml(s.field_key)}" title="Toggle polarity negation (multiply by -1)">± ${s.transform === 'negate' ? 'Inverted' : 'Invert'}</button>` : ''}
+              <button class="btn btn-xs btn-pin-source ${isPinned ? 'active' : ''}" data-group-id="${escapeHtml(f.id)}" data-key="${escapeHtml(s.field_key)}" title="${isPinned ? 'Unpin source' : 'Pin source'}">${isPinned ? '📌 Pinned' : 'Pin'}</button>
+              ${s.is_custom_override || (f.sources && f.sources.length > 1) ? `<button class="btn btn-xs btn-remove-member" data-sn="${escapeHtml(s.device_sn || f.device_sn || '')}" data-key="${escapeHtml(s.field_key)}" title="Remove this field from the group">✕ Remove</button>` : ''}
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      const cleanDeviceType = f.device_type || 'inverter';
+      const haEntityId = `sensor.pwrcell_${cleanDeviceType}_${f.concept_key}`;
+
+      let syncBadge = '';
+      if (f.delta !== null && f.delta !== undefined) {
+        if (f.is_discrepant) {
+          syncBadge = `<span class="badge-discrepancy alert" title="${escapeHtml(f.discrepancy_reason || 'Values deviate across sources')}">⚠️ Divergent (Δ ${formatNumber(f.delta, 2)} ${f.units || ''})</span>`;
+        } else {
+          syncBadge = `<span class="badge-discrepancy ok">✓ In Sync (Δ ${formatNumber(f.delta, 2)} ${f.units || ''}, ${(f.match_pct || 100).toFixed(1)}%)</span>`;
+        }
+      }
+
+      const validTimestamps = (f.sources || []).map(s => s.last_updated).filter(t => typeof t === 'number' && t > 0);
+      let skewBadge = '';
+      if (validTimestamps.length > 1) {
+        const minT = Math.min(...validTimestamps);
+        const maxT = Math.max(...validTimestamps);
+        const deltaSec = maxT - minT;
+        if (deltaSec >= 1.0) {
+          skewBadge = `<span class="badge-skew-note" title="Difference in sample read times between sources in this group">⏱️ Δt ${deltaSec < 60 ? `${deltaSec.toFixed(1)}s` : `${Math.round(deltaSec / 60)}m`} poll skew</span>`;
+        }
+      }
+
+      const childKeysJson = escapeHtml(JSON.stringify((f.sources || []).map(s => s.field_key)));
+      const syncChildBtn = (f.sources && f.sources.length > 1)
+        ? `<button class="btn-group-sync-sample" data-sn="${escapeHtml(f.device_sn || '')}" data-concept-key="${escapeHtml(f.concept_key || '')}" data-field-keys="${childKeysJson}" title="Sample all contributing sources together at the exact same moment to compare values and verify polling skew">⚡ Sync Sample</button>`
+        : '';
+
+      subTr.innerHTML = `
+        <td colspan="8" class="group-children-container-cell">
+          <div class="group-children-panel">
+            <div class="group-children-header">
+              <div class="group-children-header-left">
+                <span class="group-children-title">Contributing Telemetry Sources (${f.sources.length})</span>
+                ${syncBadge}
+                ${skewBadge}
+                ${syncChildBtn}
+              </div>
+              <div class="ha-preview-tag" title="Home Assistant Entity ID published via MQTT Discovery">
+                <span class="ha-preview-label">HA Entity:</span> <code>${haEntityId}</code>
+              </div>
+            </div>
+            <table class="group-children-table">
+              <thead>
+                <tr>
+                  <th width="110">Role</th>
+                  <th width="170">Protocol / Model</th>
+                  <th>Field Path</th>
+                  <th width="210">Live Value</th>
+                  <th width="180" class="text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${childRowsHtml}
+              </tbody>
+            </table>
+          </div>
+        </td>
+      `;
+
+      // Event listeners for child actions
+      subTr.querySelectorAll('.btn-invert-polarity').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const sn = btn.dataset.sn;
+          const key = btn.dataset.key;
+          try {
+            const res = await fetch(apiPath('api/grouping/invert'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ device_sn: sn, field_key: key }),
+            });
+            const data = await res.json();
+            if (data.status === 'ok') {
+              showToast(`Updated polarity transform for ${key}`);
+              await refreshAfterGroupingChange(state.activeDevice ? state.activeDevice.serial_number : sn);
+            } else {
+              alert(`Error: ${data.error || 'Failed to update polarity'}`);
+            }
+          } catch (err) {
+            alert(`Failed to invert: ${err}`);
+          }
+        });
+      });
+
+      subTr.querySelectorAll('.btn-pin-source').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const gId = btn.dataset.groupId;
+          const fKey = btn.dataset.key;
+          const currentPin = state.preferredSources[gId] || f.preferred_source_key;
+
+          if (currentPin === fKey) {
+            delete state.preferredSources[gId];
+            f.preferred_source_key = null;
+            (f.sources || []).forEach(s => { s.is_pinned = false; });
+            showToast(`Unpinned ${f.label}; returned to automatic solver`);
+          } else {
+            state.preferredSources[gId] = fKey;
+            f.preferred_source_key = fKey;
+            (f.sources || []).forEach(s => { s.is_pinned = (s.field_key === fKey); });
+            showToast(`Pinned ${f.label} to ${fKey}`);
+          }
+          updateOptimizationPlan();
+        });
+      });
+
+      subTr.querySelectorAll('.btn-remove-member').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const sn = btn.dataset.sn || (state.activeDevice ? state.activeDevice.serial_number : '');
+          const key = btn.dataset.key;
+          if (confirm(`Remove ${key} from group "${f.label}"?`)) {
+            await ungroupFieldAction(sn, key);
+          }
+        });
+      });
+
+      const syncBtn = subTr.querySelector('.btn-group-sync-sample');
+      if (syncBtn) {
+        syncBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const sn = syncBtn.dataset.sn;
+          const conceptKey = syncBtn.dataset.conceptKey;
+          const fieldKeys = JSON.parse(syncBtn.dataset.fieldKeys || '[]');
+          await syncSampleAction(fieldKeys, sn, conceptKey, syncBtn);
+        });
+      }
+    }
+
+    return subTr ? [tr, subTr] : tr;
   };
 
   const renderSingleRow = (f) => {
@@ -1539,6 +2023,7 @@ function renderFieldTable() {
               <span class="label-dim">Latest:</span>
               <span class="field-value-badge latest${isLatestBf ? ' is-bitfield' : ''}" id="val-${sanitizeId(f.key)}">${latestVal}</span>
               <span class="source-sub-badge ${latestClass}" id="src-${sanitizeId(f.key)}">${latestSrcIcon} ${latestSrcName}</span>
+              ${formatTimestampBadge(f.last_updated || f.timestamp, `ts-${sanitizeId(f.key)}`)}
             </div>
             <div class="compound-sources-grid">
               <div class="source-item mqtt">
@@ -1605,7 +2090,10 @@ function renderFieldTable() {
           </div>
         </td>
         <td>
-          <span class="field-value-badge${isBf ? ' is-bitfield' : ''}" id="val-${sanitizeId(f.key)}">${displayVal}</span>
+          <div class="value-cell-wrap">
+            <span class="field-value-badge${isBf ? ' is-bitfield' : ''}" id="val-${sanitizeId(f.key)}">${displayVal}</span>
+            ${formatTimestampBadge(f.last_updated || f.timestamp, `ts-${sanitizeId(f.key)}`)}
+          </div>
         </td>
         <td>${f.units || '&mdash;'}</td>
         <td>
@@ -1733,7 +2221,12 @@ function renderFieldTable() {
 
   if (isUnified) {
     filtered.forEach(f => {
-      fragment.appendChild(renderUnifiedRow(f));
+      const rowResult = renderUnifiedRow(f);
+      if (Array.isArray(rowResult)) {
+        rowResult.forEach(r => fragment.appendChild(r));
+      } else {
+        fragment.appendChild(rowResult);
+      }
     });
   } else if (state.groupByModel) {
     // Group fields by model
@@ -1932,6 +2425,24 @@ function formatBitfieldValue(val, field) {
   return `<div class="bitfield-badges-wrap">${tags}${rawSuffix}</div>`;
 }
 
+function formatBitfieldPlain(val, field) {
+  const activeFlags = decodeBitfieldSymbols(field, val);
+  const rawNum = field && typeof field.raw_value === 'number' ? field.raw_value : (typeof val === 'number' ? val : null);
+  const rawHex = rawNum !== null ? `0x${(rawNum >>> 0).toString(16).toUpperCase()}` : null;
+  const rawSuffix = rawNum !== null ? ` (${rawHex} / ${rawNum})` : '';
+
+  if (!activeFlags || activeFlags.length === 0) {
+    return `NONE (0)${rawSuffix}`;
+  }
+  return `${activeFlags.join(', ')}${rawSuffix}`;
+}
+
+function formatNumber(val, decimals = 2) {
+  if (val === null || val === undefined || isNaN(val)) return '0';
+  const num = Number(val);
+  return Number.isInteger(num) ? num.toString() : num.toFixed(decimals);
+}
+
 function formatFieldValue(val, field = null) {
   if (val === null || val === undefined) return '&mdash;';
 
@@ -1953,6 +2464,64 @@ function formatFieldValue(val, field = null) {
     return Number.isInteger(val) ? val.toString() : val.toFixed(2);
   }
   return String(val);
+}
+
+function formatFieldValuePlain(val, field = null) {
+  if (val === null || val === undefined) return '--';
+
+  if (isBitfield(field, val)) {
+    return formatBitfieldPlain(val, field);
+  }
+
+  if (field) {
+    const sym = lookupEnumSymbol(field, val);
+    if (sym) {
+      if (sym.value !== null && sym.value !== undefined) {
+        return `${sym.name} (${sym.value})`;
+      }
+      return sym.name;
+    }
+  }
+
+  if (typeof val === 'number') {
+    return Number.isInteger(val) ? val.toString() : val.toFixed(2);
+  }
+  return String(val);
+}
+
+// Format a timestamp (epoch seconds or ms) into HH:MM:SS
+function formatTimestamp(ts) {
+  if (!ts || isNaN(ts) || Number(ts) <= 0) return '';
+  const num = Number(ts);
+  const ms = num > 1e11 ? num : num * 1000;
+  const d = new Date(ms);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+// Format data age e.g. "3s ago", "2m 14s ago"
+function formatDataAge(ts) {
+  if (!ts || isNaN(ts) || Number(ts) <= 0) return '';
+  const now = Date.now();
+  const num = Number(ts);
+  const ms = num > 1e11 ? num : num * 1000;
+  const diffSec = Math.max(0, Math.round((now - ms) / 1000));
+  if (diffSec < 60) return `${diffSec}s ago`;
+  const min = Math.floor(diffSec / 60);
+  const sec = diffSec % 60;
+  return `${min}m ${sec}s ago`;
+}
+
+// Generate HTML badge for timestamp
+function formatTimestampBadge(ts, elementId = null) {
+  if (!ts || isNaN(ts) || Number(ts) <= 0) return '';
+  const timeStr = formatTimestamp(ts);
+  if (!timeStr) return '';
+  const ageStr = formatDataAge(ts);
+  const title = `Read at ${timeStr}${ageStr ? ` (${ageStr})` : ''}`;
+  const idAttr = elementId ? ` id="${escapeHtml(elementId)}"` : '';
+  return `<span class="field-timestamp-badge"${idAttr} title="${escapeHtml(title)}"><span class="ts-icon">🕒</span> ${escapeHtml(timeStr)}</span>`;
 }
 
 function sanitizeId(key) {
@@ -2076,6 +2645,15 @@ function handleLiveCompoundUpdate(cField) {
       srcBadge.textContent = `${icon} ${name}`;
       srcBadge.className = `source-sub-badge ${cls}`;
     }
+    // Update timestamp badge
+    const tsBadge = document.getElementById(`ts-${id}`);
+    if (tsBadge) {
+      const ts = cField.last_updated || Date.now() / 1000;
+      const tsStr = formatTimestamp(ts);
+      const ageStr = formatDataAge(ts);
+      tsBadge.innerHTML = `<span class="ts-icon">🕒</span> ${escapeHtml(tsStr)}`;
+      tsBadge.title = `Read at ${tsStr}${ageStr ? ` (${ageStr})` : ''}`;
+    }
     // Update MQTT sub-val
     const mqttElem = document.getElementById(`val-mqtt-${id}`);
     if (mqttElem) {
@@ -2122,6 +2700,7 @@ function handleLiveFieldUpdate(field) {
           if (s.field_key === field.key) {
             s.value = field.value;
             s.raw_value = field.raw_value;
+            if (field.last_updated) s.last_updated = field.last_updated;
             matched = true;
           }
         });
@@ -2129,12 +2708,20 @@ function handleLiveFieldUpdate(field) {
           const activeKey = state.preferredSources[g.id] || g.active_source_key;
           if (activeKey === field.key) {
             g.latest_value = field.value;
+            if (field.last_updated) g.latest_updated = field.last_updated;
             const valBadge = document.getElementById(`val-${sanitizeId(g.id)}`);
             if (valBadge) {
               valBadge.innerHTML = formatFieldValue(field.value, g);
               valBadge.classList.toggle('is-bitfield', isBitfield(g, field.value));
               valBadge.classList.add('value-flash');
               setTimeout(() => valBadge.classList.remove('value-flash'), 600);
+            }
+            const tsBadge = document.getElementById(`ts-${sanitizeId(g.id)}`);
+            if (tsBadge && g.latest_updated) {
+              const tsStr = formatTimestamp(g.latest_updated);
+              const ageStr = formatDataAge(g.latest_updated);
+              tsBadge.innerHTML = `<span class="ts-icon">🕒</span> ${escapeHtml(tsStr)}`;
+              tsBadge.title = `Read at ${tsStr}${ageStr ? ` (${ageStr})` : ''}`;
             }
           }
         }
@@ -2148,6 +2735,13 @@ function handleLiveFieldUpdate(field) {
       valBadge.classList.toggle('is-bitfield', isBitfield(field, field.value));
       valBadge.classList.add('value-flash');
       setTimeout(() => valBadge.classList.remove('value-flash'), 600);
+    }
+    const childTsBadge = document.getElementById(`ts-${sanitizeId(field.key)}`);
+    if (childTsBadge && field.last_updated) {
+      const tsStr = formatTimestamp(field.last_updated);
+      const ageStr = formatDataAge(field.last_updated);
+      childTsBadge.innerHTML = `<span class="ts-icon">🕒</span> ${escapeHtml(tsStr)}`;
+      childTsBadge.title = `Read at ${tsStr}${ageStr ? ` (${ageStr})` : ''}`;
     }
   }
 }
@@ -3271,6 +3865,24 @@ function setupEventListeners() {
     });
   }
 
+  // Polling Plan Detailed Breakdown Toggle
+  if (el.btnTogglePlanDetails) {
+    el.btnTogglePlanDetails.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.showPlanDetails = !state.showPlanDetails;
+      if (state.bannerCollapsed && state.showPlanDetails) {
+        state.bannerCollapsed = false;
+        if (optBannerBody) optBannerBody.style.display = 'flex';
+        if (btnToggleBanner) {
+          btnToggleBanner.textContent = '−';
+          btnToggleBanner.title = 'Minimize Polling Plan';
+        }
+        if (el.optimizationBanner) el.optimizationBanner.classList.remove('collapsed');
+      }
+      renderPlanBreakdown(state.optimizationPlan);
+    });
+  }
+
   // Clear Sort Button
   if (el.btnClearSort) {
     el.btnClearSort.addEventListener('click', () => {
@@ -3593,7 +4205,7 @@ function setupEventListeners() {
           const isInverted = approveBtn.dataset.inverted === 'true';
           const suggestedTransform = approveBtn.dataset.suggestedTransform || null;
 
-          const executeApprove = async (chosenTransform) => {
+          const executeApprove = async (chosenTransform, polarityInfo = {}) => {
             approveBtn.disabled = true;
             approveBtn.textContent = 'Merging...';
 
@@ -3608,6 +4220,10 @@ function setupEventListeners() {
                   label: customLabel,
                   suggestion_id: sId,
                   transform: chosenTransform,
+                  negate_field_key: polarityInfo.negateFieldKey || null,
+                  positive_field_key: polarityInfo.positiveFieldKey || approveBtn.dataset.posKey || null,
+                  negative_field_key: polarityInfo.negativeFieldKey || approveBtn.dataset.negKey || null,
+                  polarity_convention: polarityInfo.polarityConvention || null,
                 }),
               });
               const data = await res.json();
@@ -3636,7 +4252,7 @@ function setupEventListeners() {
             };
             promptPolaritySelection({
               suggestion: currentSug,
-              onSelect: (transform) => executeApprove(transform),
+              onSelect: (pol) => executeApprove(pol.transform, pol),
             });
             return;
           }
@@ -3685,6 +4301,15 @@ function setupEventListeners() {
               el.radioTransformNegate.checked = true;
             }
           }
+          return;
+        }
+
+        const syncSuggBtn = e.target.closest('[data-action="sync-sample-suggestion"]');
+        if (syncSuggBtn) {
+          e.stopPropagation();
+          const sn = syncSuggBtn.dataset.sn;
+          const fieldKeys = JSON.parse(syncSuggBtn.dataset.fieldKeys || '[]');
+          await syncSampleAction(fieldKeys, sn, null, syncSuggBtn);
           return;
         }
 
@@ -3756,6 +4381,20 @@ function setupEventListeners() {
       });
     }
 
+    if (el.btnRefreshSuggestions) {
+      el.btnRefreshSuggestions.addEventListener('click', async () => {
+        el.btnRefreshSuggestions.disabled = true;
+        el.btnRefreshSuggestions.textContent = '🔄 Scanning...';
+        try {
+          await fetchGroupingSuggestions();
+          showToast('Updated grouping suggestions');
+        } finally {
+          el.btnRefreshSuggestions.disabled = false;
+          el.btnRefreshSuggestions.textContent = '🔄 Re-scan';
+        }
+      });
+    }
+
     if (el.btnBatchApproveVisible) {
       el.btnBatchApproveVisible.addEventListener('click', async () => {
         const visible = compareState.visibleSuggestions || [];
@@ -3773,6 +4412,10 @@ function setupEventListeners() {
             label: s.suggested_label,
             suggestion_id: s.id,
             transform: s.suggested_transform,
+            positive_field_key: s.positive_field_key || null,
+            negative_field_key: s.negative_field_key || null,
+            negate_field_key: s.negative_field_key || null,
+            polarity_convention: 'positive',
           }));
           const res = await fetch(apiPath('api/grouping/suggestions/batch-approve'), {
             method: 'POST',
@@ -3922,7 +4565,7 @@ function setupEventListeners() {
   }
   if (el.btnApplyCleanSlate) {
     el.btnApplyCleanSlate.addEventListener('click', async () => {
-      if (!confirm('This will update telemetry_mappings.yaml with all current mappings and ungrouped fields, and clear local overrides in custom_groupings.yaml so you start fresh. Proceed?')) {
+      if (!confirm('This will update groupings.yaml with all current mappings and ungrouped fields, and clear local overrides in custom_groupings.yaml so you start fresh. Proceed?')) {
         return;
       }
       try {
@@ -3935,7 +4578,7 @@ function setupEventListeners() {
         });
         const data = await res.json();
         if (data.status === 'ok') {
-          showToast(`Saved ${data.mappings_count} mappings (${data.ungrouped_count} ungrouped) to telemetry_mappings.yaml! Clean slate active.`);
+          showToast(`Saved ${data.mappings_count || data.groups_count || ''} mappings (${data.ungrouped_count || 0} ungrouped) to groupings.yaml! Clean slate active.`);
           closeExportModal();
           await fetchExportYaml();
           if (typeof fetchCompareData === 'function') {
@@ -3956,7 +4599,7 @@ function setupEventListeners() {
   // Compare Table Event Delegation for Grouping Actions
   if (el.compareTableBody) {
     el.compareTableBody.addEventListener('click', async (e) => {
-      const btn = e.target.closest('.btn-group-action');
+      const btn = e.target.closest('.btn-group-action, .btn-sync-sample-pair');
       if (btn) {
         e.stopPropagation();
         const action = btn.dataset.action;
@@ -3965,7 +4608,10 @@ function setupEventListeners() {
         const conceptKey = btn.dataset.conceptKey;
         const conceptLabel = btn.dataset.conceptLabel;
 
-        if (action === 'ungroup') {
+        if (action === 'sync-sample-pair') {
+          const fieldKeys = JSON.parse(btn.dataset.fieldKeys || '[]');
+          await syncSampleAction(fieldKeys, sn, conceptKey, btn);
+        } else if (action === 'ungroup') {
           await ungroupFieldAction(sn, fieldKey);
         } else if (action === 'group-with') {
           openGroupingModal(sn, fieldKey, conceptKey, conceptLabel);
@@ -4012,7 +4658,13 @@ function setupEventListeners() {
 // Polarity Selection Helper for Inverted Telemetry Pairs
 function promptPolaritySelection({ suggestion, onSelect }) {
   if (!el.polarityModal) {
-    onSelect('negate');
+    onSelect({
+      transform: 'negate',
+      negateFieldKey: suggestion.negative_field_key,
+      positiveFieldKey: suggestion.positive_field_key,
+      negativeFieldKey: suggestion.negative_field_key,
+      polarityConvention: 'positive',
+    });
     return;
   }
   const posKey = suggestion.positive_field_key || 'Positive Register';
@@ -4040,19 +4692,37 @@ function promptPolaritySelection({ suggestion, onSelect }) {
   if (el.btnPolarityPositive) {
     el.btnPolarityPositive.onclick = () => {
       cleanup();
-      onSelect('negate');
+      onSelect({
+        transform: 'negate',
+        negateFieldKey: suggestion.negative_field_key,
+        positiveFieldKey: suggestion.positive_field_key,
+        negativeFieldKey: suggestion.negative_field_key,
+        polarityConvention: 'positive',
+      });
     };
   }
   if (el.btnPolarityNegative) {
     el.btnPolarityNegative.onclick = () => {
       cleanup();
-      onSelect('negate');
+      onSelect({
+        transform: 'negate',
+        negateFieldKey: suggestion.positive_field_key,
+        positiveFieldKey: suggestion.positive_field_key,
+        negativeFieldKey: suggestion.negative_field_key,
+        polarityConvention: 'negative',
+      });
     };
   }
   if (el.btnPolarityDirect) {
     el.btnPolarityDirect.onclick = () => {
       cleanup();
-      onSelect('none');
+      onSelect({
+        transform: 'none',
+        negateFieldKey: null,
+        positiveFieldKey: suggestion.positive_field_key,
+        negativeFieldKey: suggestion.negative_field_key,
+        polarityConvention: 'none',
+      });
     };
   }
   if (el.btnClosePolarityModal) el.btnClosePolarityModal.onclick = cleanup;
@@ -4125,6 +4795,8 @@ async function openGroupingModal(deviceSn, fieldKey, currentConceptKey, currentC
       const isCurrent = !isGenericOrStandalone && g.concept_key === cleanConceptKey;
       const opt = document.createElement('option');
       opt.value = g.concept_key;
+      opt.dataset.label = g.label || g.concept_key;
+      opt.dataset.sources = JSON.stringify((g.sources || []).map(s => s.field_key).filter(Boolean));
       opt.textContent = `${g.label || g.concept_key} (${g.concept_key})${isCurrent ? ' [Current]' : ''}`;
       if (isCurrent) opt.selected = true;
       el.groupingTargetConceptSelect.appendChild(opt);
@@ -4150,12 +4822,27 @@ async function saveGroupingAction() {
 
   let targetConcept = null;
   let customLabel = null;
+  let memberFieldKeys = [fieldKey];
 
   if (el.radioGroupExisting.checked) {
     targetConcept = el.groupingTargetConceptSelect.value;
     if (!targetConcept) {
       alert('Please select an existing concept from the dropdown, or choose "Create a new custom concept".');
       return;
+    }
+    const selectedOpt = el.groupingTargetConceptSelect.selectedOptions ? el.groupingTargetConceptSelect.selectedOptions[0] : null;
+    if (selectedOpt) {
+      if (selectedOpt.dataset.label) {
+        customLabel = selectedOpt.dataset.label;
+      }
+      if (selectedOpt.dataset.sources) {
+        try {
+          const parsed = JSON.parse(selectedOpt.dataset.sources);
+          if (Array.isArray(parsed)) {
+            memberFieldKeys.push(...parsed);
+          }
+        } catch (e) {}
+      }
     }
   } else if (el.radioGroupNew.checked) {
     targetConcept = el.groupingNewConceptKey.value.trim().toLowerCase().replace(/[\s-]+/g, '_');
@@ -4183,6 +4870,7 @@ async function saveGroupingAction() {
       body: JSON.stringify({
         device_sn: deviceSn,
         field_key: fieldKey,
+        member_field_keys: memberFieldKeys,
         target_concept: targetConcept,
         custom_label: customLabel,
         transform: transform,
@@ -4206,8 +4894,125 @@ async function saveGroupingAction() {
   }
 }
 
-async function ungroupFieldAction(deviceSn, fieldKey) {
-  const sn = deviceSn || (state.activeDevice ? state.activeDevice.serial_number : '') || compareState.selectedDevice || '';
+async function syncSampleAction(fieldKeys, deviceSn, conceptKey, btnElement) {
+  if (!fieldKeys || fieldKeys.length === 0) return;
+  const originalHtml = btnElement ? btnElement.innerHTML : '';
+  if (btnElement) {
+    btnElement.disabled = true;
+    btnElement.innerHTML = '⏳ Sampling...';
+  }
+
+  try {
+    const res = await fetch(apiPath('api/compare/sync_sample'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        field_keys: fieldKeys,
+        device_sn: deviceSn,
+        concept_key: conceptKey,
+      }),
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      const skewMsg = typeof data.skew_seconds === 'number'
+        ? ` (Δt ${data.skew_seconds < 1 ? `${Math.round(data.skew_seconds * 1000)}ms` : `${data.skew_seconds.toFixed(2)}s`} skew)`
+        : '';
+      showToast(`⚡ Sampled ${fieldKeys.length} fields together${skewMsg}`);
+
+      // If comparison row was returned, update comparison data cache
+      if (data.comparison && compareState.data) {
+        const rows = Array.isArray(compareState.data) ? compareState.data : (compareState.data.comparisons || []);
+        const targetId = data.comparison.id || `${data.comparison.device_sn || ''}:${data.comparison.concept_key || ''}`;
+        const idx = rows.findIndex(r => (r.id === targetId) || (r.concept_key === data.comparison.concept_key && r.device_sn === data.comparison.device_sn));
+        if (idx >= 0) {
+          rows[idx] = data.comparison;
+        }
+        if (compareState.activeTab !== 'suggestions') {
+          renderCompareTableRows(rows);
+        }
+      }
+
+      // If suggestions tab is active, update candidate source values in-place
+      if (compareState.suggestions && compareState.suggestions.length > 0 && Array.isArray(data.sources)) {
+        let suggestionUpdated = false;
+        compareState.suggestions.forEach(s => {
+          (s.sources || []).forEach(src => {
+            const updated = data.sources.find(u => u.field_key === src.field_key);
+            if (updated) {
+              src.value = updated.value;
+              src.raw_value = updated.raw_value;
+              src.last_updated = updated.last_updated;
+              suggestionUpdated = true;
+            }
+          });
+        });
+        if (suggestionUpdated && compareState.activeTab === 'suggestions') {
+          renderCompareSuggestions(compareState.suggestions);
+        }
+      }
+
+      // Also refresh main table active fields if open
+      if (state.activeFields && Array.isArray(data.sources)) {
+        data.sources.forEach(u => {
+          const f = state.activeFields.find(af => af.key === u.field_key);
+          if (f) {
+            f.value = u.value;
+            f.raw_value = u.raw_value;
+            f.last_updated = u.last_updated;
+          }
+        });
+        if (state.unifiedFields) {
+          state.unifiedFields.forEach(g => {
+            let matched = false;
+            (g.sources || []).forEach(s => {
+              const u = data.sources.find(src => src.field_key === s.field_key);
+              if (u) {
+                s.value = u.value;
+                s.raw_value = u.raw_value;
+                s.last_updated = u.last_updated;
+                matched = true;
+              }
+            });
+            if (matched) {
+              const activeKey = state.preferredSources[g.id] || g.active_source_key;
+              const activeSrc = (g.sources || []).find(s => s.field_key === activeKey);
+              if (activeSrc) {
+                g.latest_value = activeSrc.value;
+                g.latest_updated = activeSrc.last_updated;
+              }
+            }
+          });
+        }
+        renderFieldTable();
+      }
+    } else {
+      alert(`Failed to sync sample: ${data.error || 'Unknown error'}`);
+    }
+  } catch (err) {
+    alert(`Sync sample failed: ${err}`);
+  } finally {
+    if (btnElement) {
+      btnElement.disabled = false;
+      btnElement.innerHTML = originalHtml;
+    }
+  }
+}
+
+async function ungroupFieldAction(deviceSnOrKey, fieldKeyOrSn) {
+  let sn = '';
+  let fieldKey = '';
+  if (deviceSnOrKey && fieldKeyOrSn) {
+    if (deviceSnOrKey.includes('.') || deviceSnOrKey.startsWith('inverter') || deviceSnOrKey.startsWith('battery') || deviceSnOrKey.startsWith('rebus')) {
+      fieldKey = deviceSnOrKey;
+      sn = fieldKeyOrSn;
+    } else {
+      sn = deviceSnOrKey;
+      fieldKey = fieldKeyOrSn;
+    }
+  } else {
+    fieldKey = deviceSnOrKey || fieldKeyOrSn;
+    sn = (state.activeDevice ? state.activeDevice.serial_number : '') || compareState.selectedDevice || '';
+  }
   if (!fieldKey) {
     alert('Error: field_key is required to ungroup field');
     return;
@@ -4224,7 +5029,7 @@ async function ungroupFieldAction(deviceSn, fieldKey) {
     });
     const data = await res.json();
     if (data.status === 'ok') {
-      showToast(`Ungrouped ${fieldKey}`);
+      showToast(`Removed ${fieldKey} from group`);
       await refreshAfterGroupingChange(sn);
     } else {
       alert(`Error ungrouping field: ${data.error || 'Unknown error'}`);
@@ -4329,9 +5134,9 @@ function updateExportFormatUI() {
   } else {
     if (el.btnFormatGeneralized) el.btnFormatGeneralized.classList.remove('active');
     if (el.btnFormatTelemetry) el.btnFormatTelemetry.classList.add('active');
-    if (el.exportTargetFilename) el.exportTargetFilename.textContent = 'telemetry_mappings.yaml';
-    if (el.exportTargetLocation) el.exportTargetLocation.textContent = 'Place in pwrcell/data/telemetry_mappings.yaml or use to submit a PR';
-    currentExportFilename = 'telemetry_mappings.yaml';
+    if (el.exportTargetFilename) el.exportTargetFilename.textContent = 'groupings.yaml';
+    if (el.exportTargetLocation) el.exportTargetLocation.textContent = 'Place in pwrcell/data/groupings.yaml or use to submit a PR';
+    currentExportFilename = 'groupings.yaml';
   }
 }
 
@@ -4401,8 +5206,8 @@ async function fetchAndRenderCompare(forceSuggestions = false) {
     if (el.cntCmpMatches) el.cntCmpMatches.textContent = matchCount;
     if (el.cntCmpAll) el.cntCmpAll.textContent = allCount;
 
-    // Fetch and sync grouping suggestions only when requested, on suggestions tab, or on initial load
-    const shouldFetchSuggestions = forceSuggestions || compareState.activeTab === 'suggestions' || !compareState.hasInitializedTab;
+    // Fetch and sync grouping suggestions only when explicitly requested or on initial load
+    const shouldFetchSuggestions = forceSuggestions || (!compareState.suggestions || compareState.suggestions.length === 0) || !compareState.hasInitializedTab;
     if (shouldFetchSuggestions) {
       try {
         const suggRes = await fetch(apiPath('api/grouping/suggestions'));
@@ -4631,6 +5436,7 @@ function renderCompareSuggestions(suggestions) {
                   <div class="compare-source-value-group">
                     <span class="compare-source-value">${valDisplay}</span>
                     ${rawDisplay}
+                    ${src.last_updated ? `<span class="compare-source-time" title="Read at ${formatTimestamp(src.last_updated)}">🕒 ${formatTimestamp(src.last_updated)}</span>` : ''}
                   </div>
                 </div>
               </div>
@@ -4639,6 +5445,7 @@ function renderCompareSuggestions(suggestions) {
                 ${src.model_id ? `<span class="expanded-meta-item"><strong>Model ID:</strong> ${escapeHtml(String(src.model_id))}</span>` : ''}
                 ${src.units || s.units ? `<span class="expanded-meta-item"><strong>Units:</strong> ${escapeHtml(src.units || s.units)}</span>` : ''}
                 ${src.raw_value !== null && src.raw_value !== undefined ? `<span class="expanded-meta-item"><strong>Raw Reg Value:</strong> ${formatFieldValue(src.raw_value)}</span>` : ''}
+                ${src.last_updated ? `<span class="expanded-meta-item"><strong>Last Updated:</strong> ${formatTimestamp(src.last_updated)} (${formatDataAge(src.last_updated)})</span>` : ''}
                 <span class="expanded-meta-item"><strong>Device:</strong> ${escapeHtml(dg.name || s.device_sn || '')}</span>
               </div>
             </div>
@@ -4658,6 +5465,7 @@ function renderCompareSuggestions(suggestions) {
               <div class="compare-source-value-group">
                 <span class="compare-source-value">${valDisplay}</span>
                 ${rawDisplay}
+                ${src.last_updated ? `<span class="compare-source-time" title="Read at ${formatTimestamp(src.last_updated)}">🕒 ${formatTimestamp(src.last_updated)}</span>` : ''}
               </div>
             </div>
           </div>
@@ -4692,6 +5500,14 @@ function renderCompareSuggestions(suggestions) {
               </button>
             </div>
             <div class="suggestion-actions">
+              <button class="btn-sync-sample-suggestion"
+                      data-action="sync-sample-suggestion"
+                      data-id="${escapeHtml(s.id)}"
+                      data-sn="${escapeHtml(s.device_sn)}"
+                      data-field-keys="${fieldKeysJson}"
+                      title="Read both candidate fields together right now to compare their values at a closer point in time">
+                ⚡ Sync Sample
+              </button>
               <button class="btn-approve-suggestion"
                       data-action="approve-suggestion"
                       data-id="${escapeHtml(s.id)}"
@@ -4745,6 +5561,10 @@ function renderCompareSuggestions(suggestions) {
       label: s.suggested_label,
       suggestion_id: s.id,
       transform: s.suggested_transform,
+      positive_field_key: s.positive_field_key || null,
+      negative_field_key: s.negative_field_key || null,
+      negate_field_key: s.negative_field_key || null,
+      polarity_convention: 'positive',
     }))));
 
     return `
@@ -4867,8 +5687,25 @@ function renderCompareTableRows(rows) {
       agreementHtml += `<div class="compare-delta-note">Δ ${deltaFormatted} ${escapeHtml(r.unit || '')} ${pctFormatted ? `(${pctFormatted})` : ''}</div>`;
     }
 
+    const validTimestamps = (r.sources || []).map(s => s.last_updated).filter(t => typeof t === 'number' && t > 0);
+    if (validTimestamps.length > 1) {
+      const minT = Math.min(...validTimestamps);
+      const maxT = Math.max(...validTimestamps);
+      const deltaSec = maxT - minT;
+      if (deltaSec >= 1.0) {
+        agreementHtml += `<div class="compare-skew-note"><span class="badge-skew-note" title="Difference in sample read times between sources">⏱️ Δt ${deltaSec < 60 ? `${deltaSec.toFixed(1)}s` : `${Math.round(deltaSec / 60)}m`} poll skew</span></div>`;
+      }
+    }
+
     // Device & Concept column content
     const sources = r.sources || [];
+    const fieldKeysJson = escapeHtml(JSON.stringify(sources.map(s => s.field_key)));
+    const syncPairBtn = sources.length > 1
+      ? `<div class="compare-sync-wrap"><button class="btn-sync-sample-pair" data-action="sync-sample-pair" data-sn="${escapeHtml(r.device_sn || '')}" data-concept-key="${escapeHtml(r.concept_key || '')}" data-field-keys="${fieldKeysJson}" title="Sample all sources in this comparison together at the exact same moment to eliminate polling skew"><span class="sync-icon">⚡</span> <span>Sync Sample</span></button></div>`
+      : '';
+    if (syncPairBtn) {
+      agreementHtml += syncPairBtn;
+    }
     const devBadge = r.device_name ? `<span class="compare-device-pill">${escapeHtml(r.device_name)}</span>` : '';
     const ungroupAllBtn = (sources.length > 1)
       ? `<button class="btn-group-action btn-ungroup-action" data-action="ungroup-all" data-sn="${escapeHtml(r.device_sn || '')}" data-concept-key="${escapeHtml(r.concept_key)}" style="margin-top: 5px; width: fit-content;" title="Ungroup all sources in this concept into standalone fields">✂️ Ungroup All</button>`
@@ -4901,6 +5738,9 @@ function renderCompareTableRows(rows) {
         const rawDisplay = (s.raw_value !== null && s.raw_value !== undefined && s.raw_value !== s.value)
           ? `<span class="compare-source-raw" title="Raw unscaled value">raw: ${formatFieldValue(s.raw_value)}</span>`
           : '';
+
+        const sTime = formatTimestamp(s.last_updated);
+        const sTimeHtml = sTime ? `<span class="compare-source-time" title="Read at ${sTime}">🕒 ${sTime}</span>` : '';
 
         const tfDisplay = s.transform
           ? `<span class="compare-source-tag transform" title="Transform: ${escapeHtml(s.transform)}">⚙ ${escapeHtml(s.transform)}</span>`
@@ -4944,6 +5784,7 @@ function renderCompareTableRows(rows) {
                   <div class="compare-source-value-group">
                     <span class="compare-source-value ${isDivergent ? 'val-divergent' : ''}">${valDisplay}</span>
                     ${rawDisplay}
+                    ${sTimeHtml}
                   </div>
                   ${tfDisplay}
                   ${optDisplay}
@@ -4961,6 +5802,7 @@ function renderCompareTableRows(rows) {
                 ${s.point_type ? `<span class="expanded-meta-item"><strong>Point Type:</strong> ${escapeHtml(s.point_type)}</span>` : ''}
                 ${s.offset !== null && s.offset !== undefined ? `<span class="expanded-meta-item"><strong>Offset:</strong> ${s.offset}</span>` : ''}
                 ${s.transform ? `<span class="expanded-meta-item"><strong>Transform:</strong> ${escapeHtml(s.transform)}</span>` : ''}
+                ${s.last_updated ? `<span class="expanded-meta-item"><strong>Last Updated:</strong> ${formatTimestamp(s.last_updated)} (${formatDataAge(s.last_updated)})</span>` : ''}
                 ${s.device_sn ? `<span class="expanded-meta-item"><strong>Device SN:</strong> ${escapeHtml(s.device_sn)}</span>` : ''}
               </div>
             </div>
@@ -4980,6 +5822,7 @@ function renderCompareTableRows(rows) {
               <div class="compare-source-value-group">
                 <span class="compare-source-value ${isDivergent ? 'val-divergent' : ''}">${valDisplay}</span>
                 ${rawDisplay}
+                ${sTimeHtml}
               </div>
               ${tfDisplay}
               ${optDisplay}
@@ -5072,7 +5915,12 @@ function openCompareModal(initialTab = null) {
   }
   fetchAndRenderCompare(true);
   if (compareTimer) clearInterval(compareTimer);
-  compareTimer = setInterval(() => fetchAndRenderCompare(false), 5000);
+  compareTimer = setInterval(() => {
+    // Only refresh telemetry comparison table on background timer; avoid re-rendering suggestions view
+    if (compareState.activeTab !== 'suggestions') {
+      fetchAndRenderCompare(false);
+    }
+  }, 5000);
 }
 
 function closeCompareModal() {

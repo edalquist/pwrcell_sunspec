@@ -73,13 +73,13 @@ class TestCorrelator(unittest.TestCase):
 
         # 2. Ingest matching Modbus points
         self.state.set_field(
-            device_sn=self.beacon.serial_number,
+            device_sn=self.inv.serial_number,
             name="SysMd",
             label="System Operating Mode",
-            description="Beacon SysMd",
+            description="Inverter SysMd",
             value=snapshot.system_mode,
             raw_value=snapshot.system_mode,
-            sub_group="REbus_dir",
+            sub_group="inverter_status",
         )
         self.state.set_field(
             device_sn=self.inv.serial_number,
@@ -186,27 +186,18 @@ class TestCorrelator(unittest.TestCase):
                 sub_group="model_64207",
             )
 
-        # Evaluate comparison rows
+        # Evaluate comparison rows - solar_power on inverter is single-source MQTT (no cross-device grouping)
         results = evaluate_comparisons(self.state)
         row_map = {r.mapping_id: r for r in results}
 
         self.assertIn("solar_power", row_map)
         solar_row = row_map["solar_power"]
-
         self.assertEqual(solar_row.mqtt_value, 978.0)
-        self.assertEqual(solar_row.modbus_value, 978.0)
-        self.assertEqual(solar_row.status, "EXACT")
-        self.assertEqual(solar_row.match_pct, 100.0)
-        self.assertEqual(solar_row.delta, 0.0)
-        self.assertIn("Sum across 5 devices", solar_row.notes)
 
         # Check compound view in StateStore
         c_view = self.state.get_compound_view("solar_power")
         self.assertIsNotNone(c_view)
-        self.assertEqual(c_view.modbus_value, 978.0)
         self.assertEqual(c_view.mqtt_value, 978.0)
-        self.assertEqual(c_view.match_pct, 100.0)
-        self.assertEqual(c_view.delta, 0.0)
 
         # Check heuristic scanner detects the 978.0 W sum
         matches = find_heuristic_matches(self.state, target_value=978.0, tolerance_pct=1.0)
@@ -452,7 +443,7 @@ class TestCorrelator(unittest.TestCase):
         self.assertIsNone(base_row, "Baseline row must be suppressed when all sources are ungrouped")
 
         # Both fields exist as standalone ungrouped rows
-        ungrouped_rows = [r for r in results if "Ungrouped" in r.label]
+        ungrouped_rows = [r for r in results if r.is_custom_override and not r.is_explicitly_grouped]
         self.assertGreaterEqual(len(ungrouped_rows), 2)
 
     def test_ungrouped_field_suppressed_from_compound_view(self):
