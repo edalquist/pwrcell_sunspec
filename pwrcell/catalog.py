@@ -728,28 +728,97 @@ class SunspecModelDef:
         return results
 
 
-def _load_point_abbreviations() -> Dict[str, str]:
-    from pathlib import Path
-    try:
-        import yaml
-        cfg_p = Path(__file__).resolve().parent / "data" / "point_abbreviations.yaml"
-        if cfg_p.exists():
-            with open(cfg_p, "r", encoding="utf-8") as f:
-                d = yaml.safe_load(f) or {}
-                return d.get("abbreviations", {})
-    except Exception:
-        pass
-    return {}
+DEVICE_TYPE_RULES: Dict[str, Dict[str, Any]] = {
+    "rebus_beacon": {
+        "label": "REbus Beacon",
+        "model_ids": [64200],
+        "keywords": ["beacon", "rebus dir"],
+    },
+    "inverter": {
+        "label": "Inverter",
+        "model_ids": [101, 102, 103, 64208, 64202, 64203],
+        "keywords": ["inverter"],
+    },
+    "battery": {
+        "label": "Battery",
+        "model_ids": [802, 804, 64209, 64252],
+        "keywords": ["battery"],
+    },
+    "pv_link": {
+        "label": "PV Link",
+        "model_ids": [401, 404, 64251, 64258, 64263, 64264],
+        "keywords": ["pv link", "pv"],
+    },
+    "icm": {
+        "label": "Inverter Control Module",
+        "model_ids": [],
+        "keywords": ["icm"],
+    },
+}
 
 
-_COMMON_ABBREVIATIONS: Optional[Dict[str, str]] = None
+def classify_device_type(supported_models: Optional[List[int]] = None, model_name: str = "") -> str:
+    """Classify a discovered PWRcell device by its SunSpec model IDs and model name."""
+    models_set = set(supported_models or [])
+    # 1. Match by model IDs
+    for dev_type, info in DEVICE_TYPE_RULES.items():
+        req_ids = set(info["model_ids"])
+        if req_ids and (models_set & req_ids):
+            return dev_type
+    # 2. Match by model name keywords
+    md_lower = (model_name or "").lower()
+    for dev_type, info in DEVICE_TYPE_RULES.items():
+        if any(kw in md_lower for kw in info["keywords"]):
+            return dev_type
+    return "unknown"
+
+
+def get_device_type_label(device_type: str) -> str:
+    """Get user-friendly display label for a device type."""
+    return DEVICE_TYPE_RULES.get(device_type, {}).get("label", device_type.replace("_", " ").title())
+
+
+_DEFAULT_POINT_ABBREVIATIONS: Dict[str, str] = {
+    "CTPow": "Current Transformer Power",
+    "SysMd": "System Operating Mode",
+    "Px1": "Phase A (P1) Real Power",
+    "Px2": "Phase B (P2) Real Power",
+    "Px3": "Phase C (P3) Real Power",
+    "WhIn": "Total Energy In",
+    "WhOut": "Total Energy Out",
+    "AHRtg": "Amp-Hour Capacity Rating",
+    "WHRtg": "Watt-Hour Capacity Rating",
+    "WChaRteMax": "Max Battery Charge Rate",
+    "WDisChaRteMax": "Max Battery Discharge Rate",
+    "ReConn_Tms": "Reconnect Time",
+    "ReConnMinV": "Reconnect Min Voltage",
+    "ReConnMaxV": "Reconnect Max Voltage",
+    "ReConnMinHz": "Reconnect Min Frequency",
+    "ReConnMaxHz": "Reconnect Max Frequency",
+    "VWLatchTms": "Volt Latch Time",
+    "FWLatchTms": "Frequency Latch Time",
+    "Hz": "Line Frequency",
+    "VA": "AC Apparent Power",
+    "VAr": "AC Reactive Power",
+    "VAR": "AC Reactive Power",
+    "PF": "AC Power Factor",
+    "DCA": "DC Current",
+    "DCV": "DC Voltage",
+    "DCW": "DC Power",
+    "DCWh": "DC Accumulated Energy",
+    "DCAMax": "Max DC Current Rating",
+    "Tmp": "Temperature",
+    "Evt": "Operating Events",
+    "St": "Operating State",
+    "Conn": "Connection Status",
+    "A": "Total DC Current",
+    "V": "Total DC Voltage",
+    "W": "Total DC Power",
+}
 
 
 def get_point_abbreviations() -> Dict[str, str]:
-    global _COMMON_ABBREVIATIONS
-    if _COMMON_ABBREVIATIONS is None:
-        _COMMON_ABBREVIATIONS = _load_point_abbreviations()
-    return _COMMON_ABBREVIATIONS
+    return _DEFAULT_POINT_ABBREVIATIONS
 
 
 class ModelCatalog:

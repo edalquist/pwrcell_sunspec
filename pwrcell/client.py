@@ -623,48 +623,8 @@ class PwrcellClient:
     @staticmethod
     def _classify_device_type(supported_models: List[int], model_name: str = "") -> str:
         """Classify a discovered PWRcell device by its supported SunSpec model IDs first, then model name."""
-        from pathlib import Path
-        try:
-            import yaml
-            cfg_path = Path(__file__).resolve().parent / "data" / "device_types.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    rules = yaml.safe_load(f).get("device_types", {})
-                models_set = set(supported_models)
-                # 1. Model ID matching
-                for dev_type, info in rules.items():
-                    req_ids = set(info.get("model_ids", []))
-                    if req_ids and (models_set & req_ids):
-                        return dev_type
-                # 2. Keyword matching on model_name
-                md_lower = (model_name or "").lower()
-                for dev_type, info in rules.items():
-                    keywords = info.get("model_keywords", [])
-                    if any(kw in md_lower for kw in keywords):
-                        return dev_type
-        except Exception:
-            pass
-
-        models_set = set(supported_models)
-        if MODEL_REBUS_DIR in models_set:
-            return "rebus_beacon"
-        if models_set & {MODEL_INVERTER_SPLIT_PHASE, MODEL_INVERTER_STATUS, MODEL_REBUS_ARB, MODEL_RECONNECT}:
-            return "inverter"
-        if models_set & {MODEL_BATTERY_BASE, MODEL_BATTERY_STATUS, MODEL_BATTERY_WARRANTY, MODEL_LITHIUM_ION_STRING}:
-            return "battery"
-        if models_set & {MODEL_STRING_COMBINER, MODEL_PVLINK_STATUS, MODEL_PVRSS_CONFIG, MODEL_PVRSS_TELEMETRY, MODEL_FLASH_READER}:
-            return "pv_link"
-
-        md_lower = (model_name or "").lower()
-        if "beacon" in md_lower:
-            return "rebus_beacon"
-        if "inverter" in md_lower:
-            return "inverter"
-        if "battery" in md_lower:
-            return "battery"
-        if "pv" in md_lower:
-            return "pv_link"
-        return "icm"
+        from .catalog import classify_device_type
+        return classify_device_type(supported_models, model_name)
 
 
 @contextmanager

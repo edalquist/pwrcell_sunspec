@@ -85,32 +85,8 @@ def resolve_device_type(model_name: str) -> str:
     """Map device model string to canonical device type identifier."""
     if not model_name:
         return "unknown"
-    from pathlib import Path
-    try:
-        import yaml
-        cfg_path = Path(__file__).resolve().parent / "data" / "device_types.yaml"
-        if cfg_path.exists():
-            with open(cfg_path, "r", encoding="utf-8") as f:
-                rules = yaml.safe_load(f).get("device_types", {})
-            md_lower = model_name.lower()
-            for dev_type, info in rules.items():
-                keywords = info.get("model_keywords", [])
-                if any(kw in md_lower for kw in keywords):
-                    return dev_type
-    except Exception:
-        pass
-
-    if model_name == "REbus Beacon":
-        return "rebus_beacon"
-    if model_name == "ICM":
-        return "icm"
-    if model_name == "PV Link":
-        return "pv_link"
-    if "Inverter" in model_name:
-        return "inverter"
-    if "Battery" in model_name:
-        return "battery"
-    return "unknown"
+    from .catalog import classify_device_type
+    return classify_device_type(model_name=model_name)
 
 
 class MockFixtureLoader:

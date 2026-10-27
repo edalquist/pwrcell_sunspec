@@ -335,27 +335,8 @@ def get_device_info(
         "sw_version": device.version or "1.0",
     }
 
-    friendly_type_labels = {
-        "pv_link": "PV Link",
-        "battery": "Battery",
-        "inverter": "Inverter",
-        "rebus_beacon": "REbus Beacon",
-        "icm": "Inverter Control Module",
-    }
-    try:
-        from pathlib import Path
-        import yaml
-        dev_cfg = Path(__file__).resolve().parent / "data" / "device_types.yaml"
-        if dev_cfg.exists():
-            with open(dev_cfg, "r", encoding="utf-8") as f:
-                d_types = yaml.safe_load(f).get("device_types", {})
-                for dt, info in d_types.items():
-                    if "label" in info:
-                        friendly_type_labels[dt] = info["label"]
-    except Exception:
-        pass
-
-    dev_label = friendly_type_labels.get(device.device_type, device.model_name)
+    from .catalog import get_device_type_label
+    dev_label = get_device_type_label(device.device_type) if device.device_type else device.model_name
     if device.device_type == "rebus_beacon":
         dev_info["name"] = f"PWRcell {dev_label}"
     else:
