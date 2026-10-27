@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Set
 import yaml
 
 from . import __version__
-from .catalog import get_suggested_precision
+from .catalog import get_suggested_precision, normalize_ha_unit, is_diagnostic_point
 from .config import data_dir, is_addon_data_env
 from .state import FieldSource, StateField, StateStore, UnifiedDevice
 
@@ -365,6 +365,53 @@ def get_device_info(
     return dev_info
 
 
+def generate_gateway_discovery_payload(
+    gateway: UnifiedDevice,
+    base_topic: str = "pwrcell",
+    ha_prefix: str = "homeassistant",
+) -> Dict[str, Any]:
+    """Generate Home Assistant MQTT Discovery configuration for the top-level parent gateway device node."""
+    gw_sn_lower = gateway.serial_number.strip().lower()
+    gw_dev_info = get_device_info(gateway, gateway_device=None)
+    gw_node_id = f"pwrcell_{gw_sn_lower}"
+    gw_obj_id = "status"
+    gw_config_topic = f"{ha_prefix}/binary_sensor/{gw_node_id}/{gw_obj_id}/config"
+    gw_state_topic = f"{base_topic}/{gw_sn_lower}/status"
+    gw_payload = {
+        "has_entity_name": True,
+        "name": "Status",
+        "unique_id": f"pwrcell_{gw_sn_lower}_{gw_obj_id}",
+        "object_id": f"{gateway.device_type}_{gw_sn_lower}_{gw_obj_id}",
+        "state_topic": gw_state_topic,
+        "payload_on": "online",
+        "payload_off": "offline",
+        "device_class": "connectivity",
+        "entity_category": "diagnostic",
+        "device": gw_dev_info,
+        "origin": ORIGIN_INFO,
+        "availability": [
+            {
+                "topic": f"{base_topic}/status",
+                "payload_available": "online",
+                "payload_not_available": "offline",
+            }
+        ],
+    }
+    return {
+        "config_topic": gw_config_topic,
+        "state_topic": gw_state_topic,
+        "attributes_topic": None,
+        "command_topic": None,
+        "old_sensor_topic": None,
+        "legacy_config_topics": [],
+        "suggested_display_precision": None,
+        "availability_topic": f"{base_topic}/status",
+        "device_availability_topic": gw_state_topic,
+        "platform": "binary_sensor",
+        "payload": gw_payload,
+    }
+
+
 def generate_discovery_payload(
     field: Any,
     device: UnifiedDevice,
@@ -426,10 +473,41 @@ def generate_discovery_payload(
 
     device_info = get_device_info(device, gateway_device=gateway_device)
 
+    raw_label = getattr(field, "label", None) or getattr(field, "name", "")
+    name_clean = str(raw_label).strip()
+
+    sub_key_lower = sub_key.lower()
+    pt_name_lower = str(getattr(field, "name", "")).lower()
+
+    # Friendly entity naming instead of raw SunSpec unit names
+    if name_clean in ("Watts", "W") or sub_key_lower in ("inverter_w", "w"):
+        name_clean = "Active Power"
+    elif name_clean in ("Amps", "A") or sub_key_lower in ("inverter_a", "string_combiner_dca"):
+        if device.device_type == "pv_link" or "string" in sub_key_lower or "dca" in sub_key_lower:
+            name_clean = "String Current"
+        else:
+            name_clean = "AC Output Current"
+    elif name_clean in ("Amps PhaseA", "AphA") or sub_key_lower in ("inverter_apha", "apha"):
+        name_clean = "Phase A Current"
+    elif name_clean in ("Amps PhaseB", "AphB") or sub_key_lower in ("inverter_aphb", "aphb"):
+        name_clean = "Phase B Current"
+    elif name_clean in ("Amps PhaseC", "AphC") or sub_key_lower in ("inverter_aphc", "aphc"):
+        name_clean = "Phase C Current"
+    elif name_clean.startswith("Phase Voltage AN") or sub_key_lower in ("inverter_phvpha", "phvpha"):
+        name_clean = "Phase A Voltage"
+    elif name_clean.startswith("Phase Voltage BN") or sub_key_lower in ("inverter_phvphb", "phvphb"):
+        name_clean = "Phase B Voltage"
+    elif name_clean.startswith("Phase Voltage CN") or sub_key_lower in ("inverter_phvphc", "phvphc"):
+        name_clean = "Phase C Voltage"
+    elif name_clean == "REbus Voltage " or sub_key_lower.endswith("rebus_status_v"):
+        name_clean = "REbus Voltage"
+    elif sub_key_lower in ("battery_soc", "state_of_charge") and name_clean.lower() in ("battery soc", "soc"):
+        name_clean = "State of Charge"
+
     # Modern HA naming: has_entity_name=True ensures entity name is clean and prefixed by device name in HA UI
     payload: Dict[str, Any] = {
         "has_entity_name": True,
-        "name": field.label,
+        "name": name_clean,
         "unique_id": unique_id,
         "object_id": f"{device.device_type}_{clean_sn}_{object_id}",
         "state_topic": state_topic,
@@ -460,8 +538,9 @@ def generate_discovery_payload(
         elif platform == "number":
             payload["command_topic"] = command_topic
             payload["mode"] = "auto"
-            if field.ha_unit or field.units:
-                payload["unit_of_measurement"] = field.ha_unit or field.units
+            u_raw = field.ha_unit or field.units
+            if u_raw:
+                payload["unit_of_measurement"] = normalize_ha_unit(u_raw)
             if field.ha_device_class:
                 payload["device_class"] = field.ha_device_class
             bounds = field.get_bounds() if hasattr(field, "get_bounds") else {}
@@ -476,8 +555,9 @@ def generate_discovery_payload(
                 payload["device_class"] = field.ha_device_class
             if field.ha_state_class:
                 payload["state_class"] = field.ha_state_class
-            if field.ha_unit or field.units:
-                payload["unit_of_measurement"] = field.ha_unit or field.units
+            u_raw = field.ha_unit or field.units
+            if u_raw:
+                payload["unit_of_measurement"] = normalize_ha_unit(u_raw)
             if (platform == "select" or getattr(field, "ha_device_class", None) == "enum") and getattr(field, "ha_options", None):
                 payload["options"] = field.ha_options
     elif field.ha_hint:
@@ -496,8 +576,9 @@ def generate_discovery_payload(
         elif platform == "number":
             payload["command_topic"] = command_topic
             payload["mode"] = "auto"
-            if hint.unit_of_measurement or field.units:
-                payload["unit_of_measurement"] = hint.unit_of_measurement or field.units
+            u_raw = hint.unit_of_measurement or field.units
+            if u_raw:
+                payload["unit_of_measurement"] = normalize_ha_unit(u_raw)
             if hint.device_class:
                 payload["device_class"] = hint.device_class
             sf_val = device.get_scale_factor_value(field) if hasattr(device, "get_scale_factor_value") else None
@@ -518,8 +599,9 @@ def generate_discovery_payload(
                 payload["device_class"] = hint.device_class
             if hint.state_class:
                 payload["state_class"] = hint.state_class
-            if hint.unit_of_measurement or field.units:
-                payload["unit_of_measurement"] = hint.unit_of_measurement or field.units
+            u_raw = hint.unit_of_measurement or field.units
+            if u_raw:
+                payload["unit_of_measurement"] = normalize_ha_unit(u_raw)
             if hint.entity_category:
                 payload["entity_category"] = hint.entity_category
             if hint.icon:
@@ -538,7 +620,7 @@ def generate_discovery_payload(
             payload["command_topic"] = command_topic
             payload["mode"] = "auto"
             if field.units:
-                payload["unit_of_measurement"] = field.units
+                payload["unit_of_measurement"] = normalize_ha_unit(field.units)
             sf_val = device.get_scale_factor_value(field) if hasattr(device, "get_scale_factor_value") else None
             bounds = field.get_bounds(sf_value=sf_val) if hasattr(field, "get_bounds") else {}
             if bounds.get("min_value") is not None:
@@ -548,7 +630,109 @@ def generate_discovery_payload(
             if isinstance(bounds.get("step"), (int, float)):
                 payload["step"] = bounds["step"]
     elif field.units:
-        payload["unit_of_measurement"] = field.units
+        payload["unit_of_measurement"] = normalize_ha_unit(field.units)
+
+    # 1. Temperature device_class and unit enforcement
+    if (
+        sub_key_lower.endswith(("_tmpcab", "_tmpsnk", "_tmptrns", "_tmpot", "_modtmpavg", "_modtmpmax", "_modtmpmin", "_celltmpavg", "_celltmpmax", "_celltmpmin"))
+        or sub_key_lower in ("inverter_tmpcab", "inverter_tmpsnk", "inverter_tmptrns", "inverter_tmpot", "rebus_status_t")
+        or pt_name_lower in ("t", "tmpcab", "tmpsnk", "tmptrns", "tmpot", "modtmpavg", "modtmpmax", "modtmpmin")
+        or payload.get("device_class") == "temperature"
+        or payload.get("unit_of_measurement") in ("°C", "C", "Deg C")
+    ):
+        payload["device_class"] = "temperature"
+        payload["unit_of_measurement"] = "°C"
+        if platform == "sensor":
+            payload["state_class"] = "measurement"
+
+    # 2. Electrical sensor device_class enforcement
+    if sub_key_lower in ("inverter_va", "va") or pt_name_lower == "va":
+        payload["device_class"] = "apparent_power"
+        payload["unit_of_measurement"] = "VA"
+        if platform == "sensor":
+            payload["state_class"] = "measurement"
+
+    if sub_key_lower in ("inverter_var", "var") or pt_name_lower in ("var", "var_sf"):
+        payload["device_class"] = "reactive_power"
+        payload["unit_of_measurement"] = "var"
+        if platform == "sensor":
+            payload["state_class"] = "measurement"
+
+    if sub_key_lower in ("inverter_pf", "pf") or pt_name_lower == "pf":
+        payload["device_class"] = "power_factor"
+        payload["unit_of_measurement"] = "%"
+        if platform == "sensor":
+            payload["state_class"] = "measurement"
+
+    # 3. Battery SoC device_class and unit enforcement
+    if sub_key_lower in ("battery_soc", "state_of_charge") or pt_name_lower in ("battery_soc", "soc", "state_of_charge"):
+        payload["device_class"] = "battery"
+        payload["unit_of_measurement"] = "%"
+        if platform == "sensor":
+            payload["state_class"] = "measurement"
+
+    # 4. Number configuration entity bounds and device classes
+    if platform == "number":
+        norm_u = normalize_ha_unit(payload.get("unit_of_measurement"))
+        if norm_u:
+            payload["unit_of_measurement"] = norm_u
+        if norm_u == "A" and not payload.get("device_class"):
+            payload["device_class"] = "current"
+        if norm_u == "%" or any(k in sub_key_lower for k in ("socmax", "socrsvmax", "socrsvmin", "socmin", "minrsvpct")):
+            payload["mode"] = "slider"
+            payload["step"] = 1
+            if payload.get("max") is not None and payload["max"] > 100:
+                payload["max"] = 100
+            if payload.get("min") is not None and payload["min"] < 0:
+                payload["min"] = 0
+
+    # 5. Diagnostic entity categorization
+    if not is_writable:
+        if device.device_type == "pv_link" and (
+            pt_name_lower in ("p", "e", "dcw", "dcwh", "dca")
+            or sub_key_lower in ("rebus_status_p", "rebus_status_e", "string_combiner_dca", "string_combiner_dcw", "string_combiner_dcwh")
+        ):
+            payload.pop("entity_category", None)
+        elif is_diagnostic_point(getattr(field, "name", ""), getattr(field, "model_id", None), device_type=device.device_type) or is_diagnostic_point(sub_key_lower, device_type=device.device_type):
+            payload["entity_category"] = "diagnostic"
+
+    # 6. Raw SunSpec & redundant live push layers: disabled by default to keep dashboards clean
+    if not is_compound and not is_writable:
+        sub_group = getattr(field, "sub_group", None) or getattr(field, "model_name", None)
+        if device.device_type == "pv_link":
+            # For PV Links, keep primary production sensors enabled by default
+            is_pv_primary = (
+                pt_name_lower in ("p", "e", "dcw", "dcwh", "dca")
+                or sub_key_lower in ("rebus_status_p", "rebus_status_e", "string_combiner_dca", "string_combiner_dcw", "string_combiner_dcwh")
+            )
+            if not is_pv_primary:
+                payload["enabled_by_default"] = False
+        else:
+            if sub_group and sub_group not in ("live", "compound", "concept"):
+                payload["enabled_by_default"] = False
+
+    # 6b. When compound views are the primary dashboard layer, disable redundant live metrics by default
+    sub_grp = (
+        getattr(field, "sub_group", None)
+        or getattr(field, "model_name", None)
+        or (field.key.split(".")[1] if hasattr(field, "key") and "." in getattr(field, "key", "") else None)
+    )
+    if not is_compound and (sub_grp == "live" or sub_key_lower.startswith("live_")):
+        redundant_live_keys = {
+            "grid_power_w", "inverter_output_power_w", "solar_power_w",
+            "storage_ac_charged_energy_wh", "storage_ac_discharged_energy_wh",
+            "inverter_output_exported_energy_wh",
+        }
+        if getattr(field, "name", "") in redundant_live_keys or sub_key_lower in (
+            "live_grid_power_w", "live_inverter_output_power_w", "live_solar_power_w",
+            "live_storage_ac_charged_energy_wh", "live_storage_ac_discharged_energy_wh",
+            "live_inverter_output_exported_energy_wh",
+        ):
+            payload["enabled_by_default"] = False
+
+    # 7. HA schema validation: enum device_class requires options
+    if payload.get("device_class") == "enum" and not payload.get("options"):
+        payload.pop("device_class", None)
 
     precision = None
     if platform == "sensor":

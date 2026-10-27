@@ -27,8 +27,6 @@ selected_fields:
 - battery.live.state_of_health
 - battery.live.storage_ac_charged_energy_wh
 - battery.live.storage_ac_discharged_energy_wh
-- battery.standalone.storage_ac_charged_energy_wh_None
-- battery.standalone.storage_ac_discharged_energy_wh_None
 - inverter.REbus_exp.Px1
 - inverter.REbus_exp.Px2
 - inverter.REbus_exp.Whin
@@ -39,11 +37,6 @@ selected_fields:
 - inverter.compound.grid_exported_energy
 - inverter.compound.grid_imported_energy
 - inverter.compound.inverter_output_power
-- inverter.concept.ac_frequency
-- inverter.concept.grid_exported_energy_wh
-- inverter.concept.grid_imported_energy_wh
-- inverter.concept.inverter_output_power
-- inverter.concept.inverter_output_power_w
 - inverter.inverter.A
 - inverter.inverter.AphA
 - inverter.inverter.AphB
@@ -77,8 +70,8 @@ selected_fields:
 - pv_link.REbus_status.St
 - pv_link.REbus_status.T
 - pv_link.REbus_status.V
-- pv_link.concept.iin
 - pv_link.string_combiner.DCA
+- rebus_beacon.REbus_dir.SysMd
 controllable_fields:
 - system_mode
 - SysMd

@@ -320,8 +320,10 @@ class TestWebExplorerApi(unittest.TestCase):
         resp = self.test_client.get("/api/ha/preview")
         self.assertEqual(resp.status_code, 200)
         preview = resp.get_json()
-        self.assertEqual(len(preview), 1)
-        item = preview[0]
+        # Preview includes top-level parent gateway device node plus selected fields
+        gw_item = next((p for p in preview if p.get("field_key") == "rebus_beacon.status"), None)
+        self.assertIsNotNone(gw_item, "Gateway node must be included in preview")
+        item = next(p for p in preview if p.get("field_key") == "rebus_beacon.REbus_dir.SysMd")
         self.assertEqual(item["platform"], "select")
         self.assertIn("options", item["payload"])
         self.assertIn("CLEAN_BACKUP", item["payload"]["options"])

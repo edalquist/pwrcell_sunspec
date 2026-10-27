@@ -10,6 +10,7 @@ from flask import Blueprint, Response, jsonify, request
 from ...client import PwrcellClient
 from ...ha import (
     generate_discovery_payload,
+    generate_gateway_discovery_payload,
     get_recommended_field_keys,
     is_field_selected,
     load_ha_config,
@@ -187,6 +188,21 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         selected = load_ha_config()
         preview_list = []
         gateway = client.state.get_beacon() or client.state.get_inverter()
+
+        # Include parent gateway device node so via_device is never orphaned
+        if gateway:
+            gw_payload_info = generate_gateway_discovery_payload(gateway)
+            preview_list.append({
+                "field_key": f"{gateway.device_type}.status",
+                "device_serial": gateway.serial_number,
+                "device_name": gateway.model_name,
+                "field_label": "Gateway Status",
+                "config_topic": gw_payload_info["config_topic"],
+                "state_topic": gw_payload_info["state_topic"],
+                "command_topic": gw_payload_info["command_topic"],
+                "platform": gw_payload_info["platform"],
+                "payload": gw_payload_info["payload"],
+            })
 
         for dev in client.state.get_devices_snapshot():
             # Include compound fields

@@ -67,6 +67,9 @@ def validate_field_value(
     if value is None:
         return None
 
+    if is_scale_factor_point(name) or (name or "").lower().endswith("_sf") or (name or "").lower().startswith("sf_"):
+        return value
+
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if math.isnan(value) or math.isinf(value):
             return None
@@ -160,6 +163,7 @@ def _load_mqtt_telemetry_specs():
             state_class=s.get("state_class"),
             unit_of_measurement=s.get("units"),
             entity_category=s.get("entity_category"),
+            options=s.get("options"),
         )
         snapshots.append((
             s["device"], s["name"], s["label"], s["description"],
@@ -179,6 +183,7 @@ def _load_mqtt_telemetry_specs():
                 state_class=s.get("state_class"),
                 unit_of_measurement=s.get("units"),
                 entity_category=s.get("entity_category"),
+                options=s.get("options"),
             )
             specs.append((
                 s["device"], s["name"], s["label"], s["description"],
@@ -438,6 +443,18 @@ class StateField:
                 unit_str = f" {self.units}" if self.units else ""
                 desc = f"{raw_min:,} to {raw_max:,}{unit_str}"
 
+            calc_min = scaled_min if scaled_min is not None else raw_min
+            calc_max = scaled_max if scaled_max is not None else raw_max
+
+            from .catalog import normalize_ha_unit
+            norm_u = normalize_ha_unit(self.units)
+            pt_lower = self.name.lower()
+            if norm_u == "%" or any(k in pt_lower for k in ("socmax", "socrsvmax", "socrsvmin", "socmin", "minrsvpct")):
+                if calc_max is not None and calc_max > 100:
+                    calc_max = 100 if isinstance(step, int) else 100.0
+                if calc_min is not None and calc_min < 0:
+                    calc_min = 0 if isinstance(step, int) else 0.0
+
             return self._apply_custom_bounds({
                 "category": "numeric",
                 "point_type": p_type,
@@ -445,8 +462,8 @@ class StateField:
                 "raw_max": raw_max,
                 "scaled_min": scaled_min,
                 "scaled_max": scaled_max,
-                "min_value": scaled_min if scaled_min is not None else raw_min,
-                "max_value": scaled_max if scaled_max is not None else raw_max,
+                "min_value": calc_min,
+                "max_value": calc_max,
                 "step": step,
                 "units": self.units,
                 "sf": self.scale_factor_point,
@@ -1191,16 +1208,23 @@ class StateStore:
                 merged_flags = existing.bitmask_flags
 
         merged_pt_type = pick(point_type, "point_type")
-        merged_units = pick(units, "units")
+        raw_units = pick(units, "units")
+        from .catalog import normalize_ha_unit, is_diagnostic_point
+        merged_units = normalize_ha_unit(raw_units)
+        if merged_label:
+            merged_label = merged_label.strip()
+
         merged_ha_hint = pick(ha_hint, "ha_hint")
         if not merged_ha_hint:
             inf_d, inf_s = infer_ha_classes(units=merged_units, name=name, platform="sensor")
-            if inf_d or inf_s:
+            cat = "diagnostic" if is_diagnostic_point(name, model_id) else None
+            if inf_d or inf_s or cat:
                 merged_ha_hint = HomeAssistantHint(
                     platform="sensor",
                     device_class=inf_d,
                     state_class=inf_s,
                     unit_of_measurement=merged_units,
+                    entity_category=cat,
                 )
 
         return StateField(
@@ -1401,9 +1425,15 @@ class StateStore:
             model_label = "Push Telemetry"
             source = FieldSource.MQTT_PUSH
             if name == "system_mode":
-                ha_hint = HomeAssistantHint(platform="select")
+                from .mqtt import SYSTEM_MODE_NAMES
+                sys_opts = sorted(list(set(SYSTEM_MODE_NAMES.values()))) if SYSTEM_MODE_NAMES else None
+                ha_hint = HomeAssistantHint(platform="sensor", device_class="enum" if sys_opts else None, options=sys_opts)
+            elif name == "inverter_state_name":
+                from .mqtt import INVERTER_STATE_NAMES
+                inv_opts = sorted(list(set(INVERTER_STATE_NAMES.values()))) if INVERTER_STATE_NAMES else None
+                ha_hint = HomeAssistantHint(platform="sensor", device_class="enum" if inv_opts else None, options=inv_opts, entity_category="diagnostic")
             elif "state" in name or "status" in name:
-                ha_hint = HomeAssistantHint(platform="sensor", device_class="enum")
+                ha_hint = HomeAssistantHint(platform="sensor", entity_category="diagnostic")
             else:
                 d_class, s_class = infer_ha_classes(units=units, name=name, platform="sensor")
                 if not units:

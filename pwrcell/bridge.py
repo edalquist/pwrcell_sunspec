@@ -24,11 +24,14 @@ from .client import PwrcellClient
 from .config import AppConfig, MqttConfig
 from .ha import (
     generate_discovery_payload,
+    generate_gateway_discovery_payload,
     get_default_ha_config_path,
+    get_device_info,
     get_recommended_field_keys,
     is_field_selected,
     load_ha_config,
     qualify_legacy_ha_config,
+    ORIGIN_INFO,
 )
 from .state import StateField
 
@@ -306,6 +309,10 @@ class HomeAssistantBridge:
             for c_view in self.client.state.get_compound_views(dev.serial_number):
                 if is_field_selected(c_view.key, dev.serial_number, selected_set, c_view.mqtt_key):
                     new_active_compounds.add(f"{sn_clean}:{c_view.key}")
+                    if getattr(c_view, "mqtt_key", None):
+                        new_active_member_keys.add(f"{sn_clean}:{c_view.mqtt_key}")
+                    for cand in getattr(c_view, "modbus_candidates", []):
+                        new_active_member_keys.add(f"{sn_clean}:{cand}")
                     for s in getattr(c_view, "sources", []):
                         if getattr(s, "field_key", None):
                             new_active_member_keys.add(f"{sn_clean}:{s.field_key}")
@@ -411,6 +418,19 @@ class HomeAssistantBridge:
                     # Publish initial state if value exists
                     if field.value is not None:
                         self._publish_field_state(field, payload_info, retain=True)
+
+        # 3. Ensure top-level parent gateway device node (via_device) exists in Home Assistant
+        if gateway:
+            gw_payload_info = generate_gateway_discovery_payload(
+                gateway,
+                base_topic=self.base_topic,
+                ha_prefix=self.discovery_prefix,
+            )
+            gw_config_topic = gw_payload_info["config_topic"]
+            self._mqttc.publish(gw_config_topic, json.dumps(gw_payload_info["payload"]), retain=True)
+            self._mqttc.publish(gw_payload_info["state_topic"], "online", retain=True)
+            current_discovery_topics.add(gw_config_topic)
+            published_count += 1
 
         with self._lock:
             self._command_topic_to_field = new_command_map

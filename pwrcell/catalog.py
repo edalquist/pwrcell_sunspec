@@ -124,6 +124,49 @@ def get_suggested_precision(
     return None
 
 
+def normalize_ha_unit(unit: Optional[str]) -> Optional[str]:
+    """Normalize SunSpec raw units into canonical Home Assistant units of measurement."""
+    if not unit:
+        return unit
+    u = unit.strip()
+    if u in ("%WHRtg", "%WH", "%Pct", "%SoC", "Pct"):
+        return "%"
+    if u in ("C", "Deg C", "degC", "deg C", "°C"):
+        return "°C"
+    if u == "Secs":
+        return "s"
+    return u
+
+
+def is_diagnostic_point(name: Optional[str], model_id: Optional[int] = None, device_type: Optional[str] = None) -> bool:
+    """Check if a point represents an internal engineering or diagnostic metric."""
+    if not name:
+        return False
+    n_lower = name.lower()
+
+    # On PV Links, string power (P), energy (E), and current (DCA) are primary operational metrics
+    if device_type == "pv_link" and n_lower in ("p", "e", "dcw", "dcwh", "dca", "string_combiner_dca", "rebus_status_p", "rebus_status_e"):
+        return False
+
+    if any(k in n_lower for k in (
+        "tmpcab", "tmpsnk", "tmptrns", "tmpot", "modtmp", "celltmp",
+        "auxtmp", "thsin", "maxcellt", "mincellt", "dcv", "hz",
+        "cellvmax", "cellvmin", "err", "fault", "warn", "status",
+        "rebus_status", "rebus_exp", "px1", "px2", "whin", "derate"
+    )):
+        return True
+    if model_id in (64207, 64208, 64209, 64252):
+        if n_lower in ("t", "v", "i", "st"):
+            return True
+        if n_lower in ("p", "e") and device_type != "pv_link":
+            return True
+    if n_lower in ("t", "st", "i", "v"):
+        return True
+    if n_lower == "dca" and device_type != "pv_link":
+        return True
+    return False
+
+
 def infer_ha_classes(
     units: Optional[str] = None,
     name: Optional[str] = None,
@@ -136,30 +179,37 @@ def infer_ha_classes(
     if platform and platform not in ("sensor", "number"):
         return None, None
 
-    u = (units or "").strip()
-    if u in ("%WHRtg", "%WH", "%Pct"):
-        u = "%"
-    elif u == "Secs":
-        u = "s"
-
+    u = normalize_ha_unit(units) or ""
     u_lower = u.lower()
     n_lower = (name or "").lower()
 
     if u in ("Wh", "kWh") or u_lower in ("wh", "kwh") or n_lower.endswith("_wh") or "energy" in n_lower or n_lower.endswith("_e"):
         return "energy", "total_increasing"
+    if u in ("VA", "kVA") or u_lower in ("va", "kva") or n_lower in ("va", "kva") or "apparent" in n_lower:
+        return "apparent_power", "measurement"
+    if u in ("var", "VAr", "VAR", "kvar", "kVAr", "kVAR") or u_lower in ("var", "kvar") or n_lower in ("var", "kvar") or "reactive" in n_lower:
+        return "reactive_power", "measurement"
+    if n_lower in ("pf", "pfa", "pfb", "pfc") or "power_factor" in n_lower or (u_lower in ("%", "pct") and n_lower.endswith("pf")):
+        return "power_factor", "measurement"
     if u in ("W", "kW") or u_lower in ("w", "kw") or n_lower.endswith("_w") or "power" in n_lower or n_lower.endswith("_power") or n_lower.endswith("_p"):
         return "power", "measurement"
     if u in ("V", "mV", "kV") or u_lower in ("v", "mv", "kv") or n_lower.endswith("_v") or "voltage" in n_lower or n_lower.endswith("_dcv"):
         return "voltage", "measurement"
-    if u in ("A", "mA") or u_lower in ("a", "ma") or n_lower.endswith("_a") or "current" in n_lower or n_lower.endswith("_dca"):
-        return "current", "measurement"
+    if u in ("A", "mA") or u_lower in ("a", "ma") or n_lower.endswith("_a") or "current" in n_lower or n_lower.endswith("_dca") or "achamax" in n_lower or "adischamax" in n_lower:
+        return "current", ("measurement" if platform != "number" else None)
     if u in ("Hz", "kHz") or u_lower in ("hz", "khz") or n_lower.endswith("_hz") or "frequency" in n_lower:
         return "frequency", "measurement"
-    if u in ("C", "°C", "F", "°F") or u_lower in ("c", "°c", "f", "°f", "deg_c") or n_lower.endswith(("_deg_c", "_c", "_temp", "_tmpsnk", "_tmpcab")):
+    if (
+        u in ("C", "°C", "F", "°F", "Deg C", "deg C", "degC")
+        or u_lower in ("c", "°c", "f", "°f", "deg_c", "deg c", "degc")
+        or n_lower.endswith(("_deg_c", "_c", "_temp", "_tmpsnk", "_tmpcab"))
+        or n_lower in ("t", "tmp", "temp", "tmpcab", "tmpsnk", "tmptrns", "tmpot", "modtmpavg", "modtmpmax", "modtmpmin", "celltmpavg", "celltmpmax", "celltmpmin", "thsin", "maxcellt", "mincellt")
+    ):
         return "temperature", "measurement"
-    if u == "%" or u_lower in ("%", "pct", "percent"):
-        dev_class = "battery" if any(k in n_lower for k in ("soc", "soh", "charge", "health", "battery")) else None
-        return dev_class, "measurement"
+    if not (is_scale_factor_point(name) or n_lower.endswith("_sf") or n_lower.startswith("sf_")):
+        if u == "%" or u_lower in ("%", "pct", "percent") or any(k in n_lower for k in ("soc", "soh", "battery_soc", "state_of_charge")):
+            dev_class = "battery" if any(k in n_lower for k in ("soc", "soh", "charge", "health", "battery")) else None
+            return dev_class, ("measurement" if platform != "number" else None)
     if u in ("s", "sec", "seconds", "min", "minutes", "h", "hours"):
         return "duration", "measurement"
 
@@ -453,6 +503,17 @@ class SunspecPointDef:
                 unit_str = f" {self.units}" if self.units else ""
                 desc = f"{raw_min:,} to {raw_max:,}{unit_str}"
 
+            calc_min = scaled_min if scaled_min is not None else raw_min
+            calc_max = scaled_max if scaled_max is not None else raw_max
+
+            norm_u = normalize_ha_unit(self.units)
+            pt_lower = self.name.lower()
+            if norm_u == "%" or any(k in pt_lower for k in ("socmax", "socrsvmax", "socrsvmin", "socmin", "minrsvpct")):
+                if calc_max is not None and calc_max > 100:
+                    calc_max = 100 if isinstance(step, int) else 100.0
+                if calc_min is not None and calc_min < 0:
+                    calc_min = 0 if isinstance(step, int) else 0.0
+
             return {
                 "category": "numeric",
                 "point_type": self.type,
@@ -460,8 +521,8 @@ class SunspecPointDef:
                 "raw_max": raw_max,
                 "scaled_min": scaled_min,
                 "scaled_max": scaled_max,
-                "min_value": scaled_min if scaled_min is not None else raw_min,
-                "max_value": scaled_max if scaled_max is not None else raw_max,
+                "min_value": calc_min,
+                "max_value": calc_max,
                 "step": step,
                 "units": self.units,
                 "sf": self.sf,
@@ -811,9 +872,15 @@ _DEFAULT_POINT_ABBREVIATIONS: Dict[str, str] = {
     "Evt": "Operating Events",
     "St": "Operating State",
     "Conn": "Connection Status",
-    "A": "Total DC Current",
-    "V": "Total DC Voltage",
-    "W": "Total DC Power",
+    "A": "AC Output Current",
+    "AphA": "Phase A Current",
+    "AphB": "Phase B Current",
+    "AphC": "Phase C Current",
+    "PhVphA": "Phase A Voltage",
+    "PhVphB": "Phase B Voltage",
+    "PhVphC": "Phase C Voltage",
+    "V": "AC Voltage",
+    "W": "Active Power",
 }
 
 
@@ -967,9 +1034,23 @@ class ModelCatalog:
                 desc = p_raw.get("desc", "").strip()
                 pt_type = p_raw.get("type", "uint16")
 
-                # Infer human-friendly label if missing or equal to identifier
-                label = raw_label
-                if not label or label == pt_name or label.startswith("Model "):
+                # Infer human-friendly label if missing, raw unit, or unhelpful
+                RAW_UNIT_LABELS = {
+                    "Watts": "Active Power",
+                    "Amps": "String Current" if (group_prefix == "string_combiner" or pt_name.startswith("DC")) else "AC Output Current",
+                    "Volts": "AC Voltage",
+                    "Amps PhaseA": "Phase A Current",
+                    "Amps PhaseB": "Phase B Current",
+                    "Amps PhaseC": "Phase C Current",
+                    "Phase Voltage AN": "Phase A Voltage",
+                    "Phase Voltage BN": "Phase B Voltage",
+                    "Phase Voltage CN": "Phase C Voltage",
+                    "REbus Voltage": "REbus Voltage",
+                }
+                label = (raw_label or "").strip()
+                if label in RAW_UNIT_LABELS:
+                    label = RAW_UNIT_LABELS[label]
+                elif not label or label == pt_name or label.startswith("Model "):
                     if pt_name in COMMON_ABBREVIATIONS:
                         label = COMMON_ABBREVIATIONS[pt_name]
                     elif desc and len(desc) < 45 and not desc.lower().startswith(("an ", "the ", "this ", "miscellaneous ")):
@@ -982,6 +1063,7 @@ class ModelCatalog:
                             label = clean_d.title()
                     else:
                         label = pt_name
+                label = label.strip()
 
                 pt_def = SunspecPointDef(
                     name=pt_name,
@@ -1047,10 +1129,7 @@ class ModelCatalog:
         canonical_units = raw_units
 
         # Clean unit notations
-        if raw_units in ("%WHRtg", "%WH", "%Pct"):
-            canonical_units = "%"
-        elif raw_units == "Secs":
-            canonical_units = "s"
+        canonical_units = normalize_ha_unit(point.units)
 
         # 1. Writable select entities (RW enum)
         if point.is_writable and point.is_enum:
@@ -1064,8 +1143,10 @@ class ModelCatalog:
         # 2. Writable numeric entities (RW number)
         if point.is_writable and point.is_numeric and not point.is_scale_factor:
             bounds = point.get_bounds(sf_value=sf_value)
+            dev_class, _ = infer_ha_classes(units=canonical_units, name=point.name, platform="number")
             return HomeAssistantHint(
                 platform="number",
+                device_class=dev_class,
                 unit_of_measurement=canonical_units if canonical_units else None,
                 entity_category="config",
                 min_value=bounds.get("min_value"),
@@ -1078,7 +1159,7 @@ class ModelCatalog:
             return HomeAssistantHint(
                 platform="sensor",
                 device_class="enum",
-                entity_category="diagnostic" if "status" in point.name.lower() or "err" in point.name.lower() else None,
+                entity_category="diagnostic" if is_diagnostic_point(point.name, model_id) else None,
                 options=[s.name for s in sorted(point.symbols, key=lambda x: x.value)],
             )
 
@@ -1109,6 +1190,7 @@ class ModelCatalog:
             device_class=device_class,
             state_class=state_class,
             unit_of_measurement=canonical_units if canonical_units else None,
+            entity_category="diagnostic" if is_diagnostic_point(point.name, model_id) else None,
             icon=icon,
             suggested_display_precision=precision,
         )

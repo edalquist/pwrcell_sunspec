@@ -647,12 +647,13 @@ class TestStateAndControls(unittest.TestCase):
         self.assertIsNotNone(socmax_field)
         self.assertEqual(socmax_field.value, 90.0)
 
-        # Verify HA discovery payload uses real scaled bounds (min=0.0, max=6553.5, step=0.1)
+        # Verify HA discovery payload uses percentage bounds capped at 100.0 with responsive slider (min=0.0, max=100.0, step=1, mode='slider')
         disc = generate_discovery_payload(socmax_field, self.bat)
         self.assertEqual(disc["platform"], "number")
-        self.assertEqual(disc["payload"]["step"], 0.1)
-        self.assertEqual(disc["payload"]["min"], 0.0)
-        self.assertEqual(disc["payload"]["max"], 6553.5)
+        self.assertEqual(disc["payload"]["mode"], "slider")
+        self.assertEqual(disc["payload"]["step"], 1)
+        self.assertEqual(disc["payload"]["min"], 0)
+        self.assertEqual(disc["payload"]["max"], 100)
 
         # Attach mock modbus client to verify what value is sent to write_point_value
         mock_mb = MagicMock()

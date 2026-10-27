@@ -48,6 +48,15 @@ snapshot_fields:
   entity_category: null
   condition: always
   converter: same
+  options:
+    - UNKNOWN
+    - GRID_TIE
+    - SELF_SUPPLY
+    - CLEAN_BACKUP
+    - PRIORITY_BACKUP
+    - REMOTE_ARBITRAGE
+    - SELL
+    - SAFETY_SHUTDOWN
 - device: inv
   name: inverter_state
   label: Inverter State
@@ -72,6 +81,41 @@ snapshot_fields:
   entity_category: diagnostic
   condition: notnone
   converter: same
+  options:
+    - UNKNOWN
+    - DISABLED
+    - ESTOP_ACTIVE
+    - INITIALIZING
+    - POWERING_UP
+    - CONNECTING_BUS
+    - DISCONNECTING_BUS
+    - TESTING_BUS
+    - LOW_BUS_VOLTAGE
+    - STANDBY
+    - WAITING
+    - WAITING_NO_INPUT
+    - WAITING_HEARTBEAT
+    - CONNECTING_GRID
+    - DISCONNECTING_GRID
+    - GRID_CONNECTED
+    - ISLANDED
+    - CONNECTING_GENERATOR
+    - GENERATOR_PARALLEL
+    - DISCONNECTING_GENERATOR
+    - ISLAND_OVERLOAD
+    - ISLANDED_WITH_ACCPV
+    - ISLANDED_WITHOUT_ACCPV
+    - SCHEDULER_DISABLED
+    - GROUND_FAULT
+    - GROUND_FAULT_LOCKOUT
+    - BUS_OVER_VOLTAGE
+    - ERROR_GENERIC
+    - ERROR_REBUS_FAULT
+    - ERROR_INTERNAL_BUS_FAULT
+    - CONFIGURATION_ERROR
+    - BAD_RESET_ERROR
+    - WIRING_ERROR
+    - ERROR_FUSE_BLOWN
 - device: inv
   name: inverter_id
   label: Inverter Serial Number

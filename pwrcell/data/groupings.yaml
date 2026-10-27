@@ -251,6 +251,7 @@ groups:
     name: Battery State of Charge
     device_type: battery
     synonyms: [soc, state_of_charge]
+    unit: "%"
     fields:
       - battery.live.state_of_charge
       - battery.battery.SoC

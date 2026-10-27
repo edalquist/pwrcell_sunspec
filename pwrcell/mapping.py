@@ -88,6 +88,7 @@ class FieldGroupDef:
     fields: List[GroupMemberDef] = field(default_factory=list)
     device_type: Optional[str] = None
     synonyms: List[str] = field(default_factory=list)
+    unit: Optional[str] = None
 
     def to_mapping_def(self) -> TelemetryMappingDef:
         mqtt_fields: List[str] = []
@@ -121,7 +122,10 @@ class FieldGroupDef:
         if not d_type:
             d_type = "inverter"
 
-        d_class, s_class = infer_ha_classes(units=None, name=self.id)
+        grp_unit = self.unit
+        if not grp_unit and "soc" in self.id.lower():
+            grp_unit = "%"
+        d_class, s_class = infer_ha_classes(units=grp_unit, name=self.id)
         return TelemetryMappingDef(
             id=self.id,
             label=self.name,
@@ -130,6 +134,7 @@ class FieldGroupDef:
             modbus_fields=modbus_fields,
             synonyms=list(self.synonyms),
             transform=grp_transform,
+            unit=grp_unit or "",
             ha_device_class=d_class,
             ha_state_class=s_class,
         )
@@ -442,7 +447,14 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
                             g_id = g_dict.get("id")
                             g_name = g_dict.get("name", g_id)
                             fields = [GroupMemberDef.from_item(item) for item in g_dict.get("fields", [])]
-                            g_def = FieldGroupDef(id=g_id, name=g_name, fields=fields, device_type=g_dict.get("device_type"))
+                            g_def = FieldGroupDef(
+                                id=g_id,
+                                name=g_name,
+                                fields=fields,
+                                device_type=g_dict.get("device_type"),
+                                synonyms=g_dict.get("synonyms", []),
+                                unit=g_dict.get("unit"),
+                            )
                             mappings.append(g_def.to_mapping_def())
                         return mappings
                     items = data.get("mappings", [])
