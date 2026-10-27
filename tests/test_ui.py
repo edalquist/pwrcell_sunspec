@@ -581,7 +581,7 @@ class TestWebExplorerApi(unittest.TestCase):
             self.assertIn(f"{sn}:pv_link.REbus_status.P", qualified)
 
     def test_ha_config_with_null_selected_fields(self):
-        """Verify GET /api/ha/config gracefully handles ha_config.yaml with null/empty selected_fields."""
+        """Verify GET /api/ha/config gracefully seeds from ha_default_config when ha_config.yaml has null/empty selected_fields."""
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
@@ -592,7 +592,10 @@ class TestWebExplorerApi(unittest.TestCase):
             with patch("pwrcell.ha.get_default_ha_config_path", return_value=cfg_path):
                 resp = self.test_client.get("/api/ha/config")
                 self.assertEqual(resp.status_code, 200)
-                self.assertEqual(resp.get_json(), {"selected_fields": []})
+                selected = resp.get_json().get("selected_fields", [])
+                self.assertGreater(len(selected), 0)
+                inv_sn = self.client.state.get_inverter().serial_number.strip().upper()
+                self.assertIn(f"{inv_sn}:inverter.live.grid_power_w", selected)
 
     def test_export_default_config_api_and_helpers(self):
         """Verify unqualify_ha_config and export_default_config helper and API endpoint."""

@@ -43,7 +43,7 @@ def _load_ha_security_config() -> tuple[Set[str], Set[str]]:
     default_excluded = {"SAFETY_SHUTDOWN"}
     try:
         import yaml
-        for p in (get_ha_config_path(), get_default_seed_config_path()):
+        for p in (get_default_ha_config_path(), get_default_seed_config_path()):
             if p.exists():
                 with open(p, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
@@ -93,6 +93,8 @@ def get_default_ha_config_path() -> Path:
         return repo_root / "config" / DEFAULT_HA_CONFIG_FILE
     if (repo_root / DEFAULT_HA_CONFIG_FILE).exists():
         return repo_root / DEFAULT_HA_CONFIG_FILE
+    if (repo_root / "config").exists():
+        return repo_root / "config" / DEFAULT_HA_CONFIG_FILE
     return data_dir() / DEFAULT_HA_CONFIG_FILE
 
 
@@ -128,30 +130,34 @@ def load_ha_config(
 ) -> List[str]:
     """Load list of selected field keys from ha_config.yaml.
 
-    If the file does not exist and allow_default_seed is True, falls back to
-    ha_default_config.yaml as an initial seed.
+    If the file does not exist or contains no selected fields, and allow_default_seed is True,
+    falls back to ha_default_config.yaml as an initial seed.
     """
     path = Path(config_path) if config_path else get_default_ha_config_path()
-    if not path.exists():
-        if allow_default_seed and not config_path:
-            seed_path = get_default_seed_config_path()
-            if seed_path.exists():
-                try:
-                    with open(seed_path, "r", encoding="utf-8") as f:
-                        data = yaml.safe_load(f) or {}
-                        raw_fields = data.get("selected_fields")
-                        return [str(x).strip() for x in raw_fields if x is not None] if raw_fields else []
-                except Exception as e:
-                    logger.error("Failed to load default seed %s: %s", seed_path, e)
-        return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-            raw_fields = data.get("selected_fields")
-            return [str(x).strip() for x in raw_fields if x is not None] if raw_fields else []
-    except Exception as e:
-        logger.error("Failed to load %s: %s", path, e)
-        return []
+    fields: List[str] = []
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+                raw_fields = data.get("selected_fields")
+                if raw_fields:
+                    fields = [str(x).strip() for x in raw_fields if x is not None and str(x).strip()]
+        except Exception as e:
+            logger.error("Failed to load %s: %s", path, e)
+
+    if not fields and allow_default_seed:
+        seed_path = get_default_seed_config_path()
+        if seed_path.exists():
+            try:
+                with open(seed_path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                    raw_fields = data.get("selected_fields")
+                    if raw_fields:
+                        fields = [str(x).strip() for x in raw_fields if x is not None and str(x).strip()]
+            except Exception as e:
+                logger.error("Failed to load default seed %s: %s", seed_path, e)
+
+    return fields
 
 
 def qualify_legacy_ha_config(selected_field_keys: Optional[List[str]], state_store: StateStore) -> List[str]:

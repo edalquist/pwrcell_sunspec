@@ -77,7 +77,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             bat.fields.get("battery.live.state_of_health").value if (bat and "battery.live.state_of_health" in bat.fields) else None
         )
 
-        ha_selected = load_ha_config()
+        ha_selected = qualify_legacy_ha_config(load_ha_config(), client.state)
 
         return jsonify({
             "is_mock": client.is_mock,
@@ -130,7 +130,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
 
         fields_dict = dev.serialize_fields()
         compound_views = [c.to_dict() for c in client.state.get_compound_views(serial_number)]
-        ha_selected = set(load_ha_config())
+        ha_selected = set(qualify_legacy_ha_config(load_ha_config(), client.state))
         clean_sn = (serial_number or "").strip().upper()
         dev_ha_selected = _filter_ha_selected_for_device(ha_selected, clean_sn)
         unified_groups = [g.to_dict() for g in client.state.get_unified_fields(serial_number, ha_selected_keys=dev_ha_selected)]
@@ -147,7 +147,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         dev = client.state.get_device(serial_number)
         if not dev:
             return jsonify({"error": "Device not found"}), 404
-        ha_selected = set(load_ha_config())
+        ha_selected = set(qualify_legacy_ha_config(load_ha_config(), client.state))
         clean_sn = (serial_number or "").strip().upper()
         dev_ha_selected = _filter_ha_selected_for_device(ha_selected, clean_sn)
         groups = client.state.get_unified_fields(serial_number, ha_selected_keys=dev_ha_selected)
@@ -170,7 +170,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         preferred_sources = body.get("preferred_sources", {})
 
         clean_sn = (serial_number or "").strip().upper()
-        raw_selected = set(incoming_selected) if incoming_selected is not None else set(load_ha_config())
+        raw_selected = set(incoming_selected) if incoming_selected is not None else set(qualify_legacy_ha_config(load_ha_config(), client.state))
         dev_ha_selected = _filter_ha_selected_for_device(raw_selected, clean_sn)
 
         groups = client.state.get_unified_fields(
