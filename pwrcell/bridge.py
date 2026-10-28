@@ -234,7 +234,7 @@ class HomeAssistantBridge:
 
     def reload_config_and_republish(self):
         """Reload selected entities and category overrides from ha_config.yaml and republish discovery."""
-        raw_keys = load_ha_config()
+        raw_keys = load_ha_config(self.ha_config_path)
         self.selected_field_keys = qualify_legacy_ha_config(raw_keys, self.client.state)
         self._selected_set = set(self.selected_field_keys)
         self.category_overrides = load_ha_category_overrides(self.ha_config_path)

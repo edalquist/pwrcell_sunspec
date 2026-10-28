@@ -616,9 +616,13 @@ function isFieldDiagnostic(f) {
     return null;
   };
 
-  const o = checkOverride(f.id) || checkOverride(f.key) || checkOverride(f.concept_key) || checkOverride(f.active_source_key) || checkOverride(f.mqtt_key);
+  const o = checkOverride(f.active_source_key) || checkOverride(f.key) || checkOverride(f.id) || checkOverride(f.concept_key) || checkOverride(f.mqtt_key);
   if (o) {
     return o === 'diagnostic';
+  }
+  for (const s of (f.sources || [])) {
+    const so = checkOverride(s.field_key) || checkOverride(s.key);
+    if (so) return so === 'diagnostic';
   }
   return f.ha_category === 'diagnostic' || f.is_diagnostic === true;
 }
@@ -635,7 +639,13 @@ function hasCategoryOverride(f) {
     return !!overrides[k];
   };
 
-  return checkOverride(f.id) || checkOverride(f.key) || checkOverride(f.concept_key) || checkOverride(f.active_source_key) || checkOverride(f.mqtt_key);
+  if (checkOverride(f.active_source_key) || checkOverride(f.key) || checkOverride(f.id) || checkOverride(f.concept_key) || checkOverride(f.mqtt_key)) {
+    return true;
+  }
+  for (const s of (f.sources || [])) {
+    if (checkOverride(s.field_key) || checkOverride(s.key)) return true;
+  }
+  return false;
 }
 
 // Render HTML badge button for toggling entity category in table
@@ -646,7 +656,7 @@ function renderCatToggleHtml(f) {
   const catLabel = isDiag ? 'Diagnostic' : 'Primary';
   const catIcon = isDiag ? '🏷️' : '⚡';
   const overrideMarker = isOverride ? ' <span class="cat-override-indicator" title="Custom user override">*</span>' : '';
-  const keyToUse = f.id || f.key || f.concept_key || '';
+  const keyToUse = f.active_source_key || f.key || f.id || f.concept_key || '';
   const snToUse = getFieldDeviceSn(f);
 
   return `
@@ -661,32 +671,51 @@ function renderCatToggleHtml(f) {
 }
 
 // Action to toggle or reset entity category override
-async function toggleFieldCategoryAction(deviceSn, fieldKey, targetCategory, label) {
+async function toggleFieldCategoryAction(deviceSn, fieldKey, targetCategory, label, f) {
   try {
     const sn = (deviceSn || state.activeDevice?.serial_number || '').trim().toUpperCase();
     const cleanKey = (fieldKey || '').trim();
-    if (!cleanKey) return;
+    if (!cleanKey && !f) return;
 
-    // Optimistic in-memory update
-    const qualKey = sn ? `${sn}:${cleanKey}` : cleanKey;
+    // Collect all associated keys so overrides stay in lockstep across concept and raw views
+    const associatedKeys = new Set();
+    if (cleanKey) associatedKeys.add(cleanKey);
+    if (f) {
+      if (f.active_source_key) associatedKeys.add(f.active_source_key);
+      if (f.key) associatedKeys.add(f.key);
+      if (f.id) associatedKeys.add(f.id);
+      if (f.concept_key) associatedKeys.add(f.concept_key);
+      if (f.mqtt_key) associatedKeys.add(f.mqtt_key);
+      for (const s of (f.sources || [])) {
+        if (s.field_key) associatedKeys.add(s.field_key);
+        if (s.key) associatedKeys.add(s.key);
+      }
+    }
+
     if (!state.haCategoryOverrides) state.haCategoryOverrides = {};
 
-    if (targetCategory === 'reset' || !targetCategory) {
-      delete state.haCategoryOverrides[qualKey];
-      delete state.haCategoryOverrides[cleanKey];
-    } else {
-      state.haCategoryOverrides[qualKey] = targetCategory;
-    }
+    // Optimistic in-memory update for all associated keys
+    associatedKeys.forEach(k => {
+      const qualKey = sn ? `${sn}:${k}` : k;
+      if (targetCategory === 'reset' || !targetCategory) {
+        delete state.haCategoryOverrides[qualKey];
+        delete state.haCategoryOverrides[k];
+      } else {
+        state.haCategoryOverrides[qualKey] = targetCategory;
+      }
+    });
 
     renderFieldTable();
     updateFilterCounts();
 
+    const targetKey = cleanKey || Array.from(associatedKeys)[0];
     const res = await fetch(apiPath('api/ha/category_override'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         device_serial: sn,
-        field_key: cleanKey,
+        field_key: targetKey,
+        field_keys: Array.from(associatedKeys),
         category: targetCategory === 'reset' ? 'reset' : targetCategory,
       }),
     });
@@ -701,7 +730,7 @@ async function toggleFieldCategoryAction(deviceSn, fieldKey, targetCategory, lab
     }
 
     const catName = targetCategory === 'diagnostic' ? 'Diagnostic' : (targetCategory === 'reset' ? 'Default' : 'Primary sensor');
-    showToast(`${label || cleanKey} set to ${catName} in Home Assistant`);
+    showToast(`${label || targetKey} set to ${catName} in Home Assistant`);
     renderFieldTable();
     updateFilterCounts();
   } catch (err) {
@@ -1969,8 +1998,8 @@ function renderFieldTable() {
           const currentIsDiag = isFieldDiagnostic(f);
           const targetCat = currentIsDiag ? 'primary' : 'diagnostic';
           const sn = getFieldDeviceSn(f);
-          const fKey = f.id || f.key || f.concept_key;
-          await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name);
+          const fKey = f.active_source_key || f.key || f.id || f.concept_key;
+          await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name, f);
         });
       }
 
@@ -1980,8 +2009,8 @@ function renderFieldTable() {
           e.stopPropagation();
           dropdownMenu.classList.remove('show');
           const sn = getFieldDeviceSn(f);
-          const fKey = f.id || f.key || f.concept_key;
-          await toggleFieldCategoryAction(sn, fKey, 'reset', f.label || f.name);
+          const fKey = f.active_source_key || f.key || f.id || f.concept_key;
+          await toggleFieldCategoryAction(sn, fKey, 'reset', f.label || f.name, f);
         });
       }
     }
@@ -1993,8 +2022,8 @@ function renderFieldTable() {
         const currentIsDiag = isFieldDiagnostic(f);
         const targetCat = currentIsDiag ? 'primary' : 'diagnostic';
         const sn = getFieldDeviceSn(f);
-        const fKey = f.id || f.key || f.concept_key;
-        await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name);
+        const fKey = f.active_source_key || f.key || f.id || f.concept_key;
+        await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name, f);
       });
     }
 
@@ -2450,8 +2479,8 @@ function renderFieldTable() {
           const currentIsDiag = isFieldDiagnostic(f);
           const targetCat = currentIsDiag ? 'primary' : 'diagnostic';
           const sn = getFieldDeviceSn(f);
-          const fKey = f.id || f.key || f.concept_key;
-          await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name);
+          const fKey = f.active_source_key || f.key || f.id || f.concept_key;
+          await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name, f);
         });
       }
 
@@ -2461,8 +2490,8 @@ function renderFieldTable() {
           e.stopPropagation();
           dropdownMenu.classList.remove('show');
           const sn = getFieldDeviceSn(f);
-          const fKey = f.id || f.key || f.concept_key;
-          await toggleFieldCategoryAction(sn, fKey, 'reset', f.label || f.name);
+          const fKey = f.active_source_key || f.key || f.id || f.concept_key;
+          await toggleFieldCategoryAction(sn, fKey, 'reset', f.label || f.name, f);
         });
       }
     }
@@ -2474,8 +2503,8 @@ function renderFieldTable() {
         const currentIsDiag = isFieldDiagnostic(f);
         const targetCat = currentIsDiag ? 'primary' : 'diagnostic';
         const sn = getFieldDeviceSn(f);
-        const fKey = f.id || f.key || f.concept_key;
-        await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name);
+        const fKey = f.active_source_key || f.key || f.id || f.concept_key;
+        await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name, f);
       });
     }
 
@@ -4075,8 +4104,8 @@ function renderFieldDetailsModal(data) {
     catSelect.addEventListener('change', async (e) => {
       const targetCat = e.target.value;
       const sn = dev ? dev.serial_number : getFieldDeviceSn(f);
-      const fKey = f.id || f.key || f.concept_key || fieldKey;
-      await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name);
+      const fKey = f.active_source_key || f.key || f.id || f.concept_key || fieldKey;
+      await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name, f);
     });
   }
 }
@@ -4341,27 +4370,62 @@ function setupEventListeners() {
       const selectedFields = state.activeFields.filter(f => isFieldSelected(f));
       const typeLabel = formatDeviceTypePlural(devType);
 
-      // Copy selections to all peer devices in state.selectedHaKeys
+      // Collect all category overrides for active device
+      const activeOverrides = {};
+      const activePfx = `${activeSn}:`;
+      for (const [k, v] of Object.entries(state.haCategoryOverrides || {})) {
+        if (k.startsWith(activePfx)) {
+          const subKey = k.slice(activePfx.length);
+          activeOverrides[subKey] = v;
+        }
+      }
+      // Also ensure any field on activeDevice with category override is included
+      state.activeFields.forEach(f => {
+        if (hasCategoryOverride(f)) {
+          const catVal = isFieldDiagnostic(f) ? 'diagnostic' : 'primary';
+          const keys = [f.active_source_key, f.key, f.id, f.concept_key].filter(Boolean);
+          keys.forEach(k => {
+            activeOverrides[k] = catVal;
+          });
+        }
+      });
+
+      // Copy selections and category overrides to all peer devices
       peerDevices.forEach(peer => {
         const peerSn = (peer.serial_number || '').trim().toUpperCase();
         if (peerSn) {
           state.modifiedDeviceSerials.add(peerSn);
         }
 
-        // Clear existing selections for this peer device
+        // 1. Clear existing selections for this peer device
         for (const k of Array.from(state.selectedHaKeys)) {
           if (k.startsWith(`${peerSn}:`)) {
             state.selectedHaKeys.delete(k);
           }
         }
 
-        // Apply selected fields to this peer device
+        // 2. Clear existing category overrides for this peer device
+        for (const k of Object.keys(state.haCategoryOverrides || {})) {
+          if (k.startsWith(`${peerSn}:`)) {
+            delete state.haCategoryOverrides[k];
+          }
+        }
+
+        // 3. Apply selected fields to this peer device
         selectedFields.forEach(f => {
-          state.selectedHaKeys.add(`${peerSn}:${f.key}`);
+          const pk = f.active_source_key || f.key || f.id;
+          state.selectedHaKeys.add(`${peerSn}:${pk}`);
+          if (f.key) state.selectedHaKeys.add(`${peerSn}:${f.key}`);
+          if (f.id && f.sources) state.selectedHaKeys.add(`${peerSn}:${f.id}`);
           if (f.mqtt_key) {
             state.selectedHaKeys.add(`${peerSn}:${f.mqtt_key}`);
           }
         });
+
+        // 4. Apply category overrides to this peer device
+        for (const [subKey, catVal] of Object.entries(activeOverrides)) {
+          state.haCategoryOverrides[`${peerSn}:${subKey}`] = catVal;
+        }
       });
 
       // Clean up any legacy unqualified keys for this device type to prevent ambiguity
@@ -4374,10 +4438,12 @@ function setupEventListeners() {
       updateFilterCounts();
       renderFieldTable();
 
-      if (selectedFields.length === 0) {
-        showToast(`Cleared selections across all ${peerDevices.length} ${typeLabel}`);
+      const overrideCount = Object.keys(activeOverrides).length;
+      const catMsg = overrideCount > 0 ? ` and ${overrideCount} category setting${overrideCount === 1 ? '' : 's'}` : '';
+      if (selectedFields.length === 0 && overrideCount === 0) {
+        showToast(`Cleared selections and category settings across all ${peerDevices.length} ${typeLabel}`);
       } else {
-        showToast(`Applied ${selectedFields.length} selected field${selectedFields.length === 1 ? '' : 's'} to all ${peerDevices.length} ${typeLabel}`);
+        showToast(`Applied ${selectedFields.length} selected field${selectedFields.length === 1 ? '' : 's'}${catMsg} to all ${peerDevices.length} ${typeLabel}`);
       }
     });
   }

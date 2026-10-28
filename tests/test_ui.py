@@ -1075,18 +1075,20 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertIsNone(tmpcab_field.get("ha_category"))
         self.assertFalse(tmpcab_field.get("is_diagnostic"))
 
-        # Reset category override
+        # Reset category override with field_keys list
         reset_resp = self.test_client.post(
             "/api/ha/category_override",
             json={
                 "device_serial": inv_sn,
                 "field_key": "inverter.inverter.TmpCab",
+                "field_keys": ["inverter.concept.cabinet_temperature", "inverter.inverter.TmpCab"],
                 "category": "reset",
             },
         )
         self.assertEqual(reset_resp.status_code, 200)
         reset_data = reset_resp.get_json()
         self.assertNotIn(f"{inv_sn}:inverter.inverter.TmpCab", reset_data.get("category_overrides", {}))
+        self.assertNotIn(f"{inv_sn}:inverter.concept.cabinet_temperature", reset_data.get("category_overrides", {}))
 
     def test_safety_blocked_fields_api(self):
         resp = self.test_client.get("/api/safety/blocked_fields")

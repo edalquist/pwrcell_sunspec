@@ -377,10 +377,39 @@ class TestHaDiscoveryAudit(unittest.TestCase):
             diag_payload = generate_discovery_payload(c_view, self.inv, category_overrides=loaded)["payload"]
             self.assertEqual(diag_payload.get("entity_category"), "diagnostic")
 
+            # Test concept ID override matching raw field
+            concept_overrides = {f"{self.inv.serial_number}:inverter.concept.cabinet_temperature": "primary"}
+            self.assertIsNone(get_effective_ha_category(f_tmpcab, self.inv, category_overrides=concept_overrides))
+
+            # Test standalone ID override matching raw model point (Model 64207 point I on PV Link)
+            f_i = self.pv.fields.get("pv_link.REbus_status.I")
+            if f_i:
+                self.assertEqual(get_effective_ha_category(f_i, self.pv), "diagnostic")
+                sa_overrides = {f"{self.pv.serial_number}:pv_link.standalone.i_64207": "primary"}
+                self.assertIsNone(get_effective_ha_category(f_i, self.pv, category_overrides=sa_overrides))
+
+            # Test save_ha_category_override with field_keys list
+            multi_overrides = save_ha_category_override(
+                self.inv.serial_number,
+                "inverter.inverter.TmpCab",
+                "primary",
+                config_path=cfg_path,
+                field_keys=["inverter.concept.cabinet_temperature", "inverter.inverter.TmpCab"]
+            )
+            self.assertIn(f"{self.inv.serial_number}:inverter.concept.cabinet_temperature", multi_overrides)
+            self.assertIn(f"{self.inv.serial_number}:inverter.inverter.TmpCab", multi_overrides)
+
             # Clear override
-            save_ha_category_override(self.inv.serial_number, "inverter.inverter.TmpCab", "reset", config_path=cfg_path)
+            save_ha_category_override(
+                self.inv.serial_number,
+                "inverter.inverter.TmpCab",
+                "reset",
+                config_path=cfg_path,
+                field_keys=["inverter.concept.cabinet_temperature", "inverter.inverter.TmpCab"],
+            )
             loaded = load_ha_category_overrides(cfg_path)
             self.assertNotIn(f"{self.inv.serial_number}:inverter.inverter.TmpCab", loaded)
+            self.assertNotIn(f"{self.inv.serial_number}:inverter.concept.cabinet_temperature", loaded)
             reset_payload = generate_discovery_payload(f_tmpcab, self.inv, category_overrides=loaded)["payload"]
             self.assertEqual(reset_payload.get("entity_category"), "diagnostic")
 

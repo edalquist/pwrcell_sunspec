@@ -300,19 +300,30 @@ def save_ha_category_override(
     field_key: str,
     category: Optional[str],
     config_path: Optional[Path | str] = None,
+    field_keys: Optional[List[str]] = None,
 ) -> Dict[str, str]:
-    """Save or remove a single entity category override in ha_config.yaml."""
+    """Save or remove entity category override(s) in ha_config.yaml."""
     overrides = load_ha_category_overrides(config_path)
     sn_clean = (device_sn or "").strip().upper()
-    qualified_key = f"{sn_clean}:{field_key.strip()}" if sn_clean else field_key.strip()
+
+    target_keys = list(field_keys) if field_keys else []
+    if field_key and field_key not in target_keys:
+        target_keys.insert(0, field_key)
 
     cat_norm = (category or "").strip().lower()
-    if not cat_norm or cat_norm in ("default", "none", "auto", "reset"):
-        overrides.pop(qualified_key, None)
-        if ":" in qualified_key:
-            overrides.pop(field_key.strip(), None)
-    else:
-        overrides[qualified_key] = cat_norm
+    is_reset = not cat_norm or cat_norm in ("default", "none", "auto", "reset")
+
+    for fk in target_keys:
+        fk_clean = str(fk).strip()
+        if not fk_clean:
+            continue
+        qualified_key = f"{sn_clean}:{fk_clean}" if sn_clean else fk_clean
+        if is_reset:
+            overrides.pop(qualified_key, None)
+            if ":" in qualified_key:
+                overrides.pop(fk_clean, None)
+        else:
+            overrides[qualified_key] = cat_norm
 
     selected = load_ha_config(config_path, allow_default_seed=True)
     save_ha_config(selected, category_overrides=overrides, config_path=config_path)
@@ -335,28 +346,62 @@ def get_effective_ha_category(
     # 1. Check user overrides
     if category_overrides:
         f_key = getattr(field, "key", getattr(field, "field_key", None)) or getattr(field, "id", "")
-        concept_key = getattr(field, "concept_key", None)
+        f_id = getattr(field, "id", None)
+        concept_key = getattr(field, "concept_key", None) or getattr(field, "compound_key", None)
         pt_name = getattr(field, "name", "")
-        mqtt_k = getattr(field, "mqtt_key", None)
+        model_id = getattr(field, "model_id", None)
+        mqtt_k = getattr(field, "mqtt_key", None) or getattr(field, "mqtt_equivalent", None)
+        active_src = getattr(field, "active_source_key", None)
 
-        candidates = []
-        if dev_sn:
-            if f_key:
-                candidates.append(f"{dev_sn}:{f_key}")
-            if concept_key:
-                candidates.append(f"{dev_sn}:{concept_key}")
-            if pt_name:
-                candidates.append(f"{dev_sn}:{pt_name}")
-            if mqtt_k:
-                candidates.append(f"{dev_sn}:{mqtt_k}")
+        raw_candidates: List[str] = []
         if f_key:
-            candidates.append(f_key)
+            raw_candidates.append(f_key)
+        if f_id:
+            raw_candidates.append(f_id)
         if concept_key:
-            candidates.append(concept_key)
+            raw_candidates.append(concept_key)
+            if dev_type:
+                raw_candidates.append(f"{dev_type}.concept.{concept_key}")
+                raw_candidates.append(f"{dev_type}.compound.{concept_key}")
+        if active_src:
+            raw_candidates.append(active_src)
         if pt_name:
-            candidates.append(pt_name)
+            raw_candidates.append(pt_name)
+            if model_id and dev_type:
+                raw_candidates.append(f"{dev_type}.standalone.{pt_name.lower()}_{model_id}")
+                raw_candidates.append(f"{pt_name.lower()}_{model_id}")
         if mqtt_k:
-            candidates.append(mqtt_k)
+            raw_candidates.append(mqtt_k)
+
+        # Sources if present (for ConceptView / CompoundFieldView)
+        for s in getattr(field, "sources", []):
+            sk = getattr(s, "field_key", None) or getattr(s, "key", None)
+            if sk:
+                raw_candidates.append(sk)
+
+        # Check mapping registry for concept id
+        try:
+            from .mapping import MappingRegistry
+            reg = MappingRegistry.get_instance()
+            mapped = (
+                reg.find_mapping_for_modbus(f_key)
+                or (reg.find_concept(dev_type, pt_name, model_id) if dev_type and pt_name else None)
+            )
+            if mapped and mapped.id:
+                raw_candidates.append(mapped.id)
+                if dev_type:
+                    raw_candidates.append(f"{dev_type}.concept.{mapped.id}")
+                    raw_candidates.append(f"{dev_type}.compound.{mapped.id}")
+        except Exception:
+            pass
+
+        unique_raw = list(dict.fromkeys(c for c in raw_candidates if c))
+
+        candidates: List[str] = []
+        if dev_sn:
+            for c in unique_raw:
+                candidates.append(f"{dev_sn}:{c}")
+        candidates.extend(unique_raw)
 
         for c in candidates:
             if c in category_overrides:

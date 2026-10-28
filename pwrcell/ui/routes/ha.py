@@ -104,11 +104,18 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             body = request.get_json() or {}
             dev_sn = body.get("device_serial")
             field_key = body.get("field_key")
+            field_keys = body.get("field_keys") or []
             category = body.get("category")
-            if not field_key:
-                return jsonify({"error": "field_key is required"}), 400
+            if not field_key and not field_keys:
+                return jsonify({"error": "field_key or field_keys is required"}), 400
 
-            overrides = save_ha_category_override(dev_sn, field_key, category)
+            target_key = field_key or (field_keys[0] if field_keys else "")
+            overrides = save_ha_category_override(
+                dev_sn,
+                target_key,
+                category,
+                field_keys=field_keys if field_keys else None,
+            )
             if hasattr(client, "bridge") and client.bridge:
                 try:
                     client.bridge.reload_config_and_republish()
@@ -118,7 +125,8 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             return jsonify({
                 "success": True,
                 "device_serial": dev_sn,
-                "field_key": field_key,
+                "field_key": target_key,
+                "field_keys": field_keys,
                 "category": category,
                 "category_overrides": overrides,
             })
