@@ -225,6 +225,7 @@ class StateField:
     is_enum: bool = False
     is_bitfield: bool = False
     bitmask_flags: Optional[List[str]] = None
+    substate: Optional[int] = None
     source: FieldSource = FieldSource.MODBUS_POLL
     access: str = "R"  # "R" or "RW"
     symbols: Optional[List[Any]] = None  # Enum/bitfield symbol defs or names
@@ -515,7 +516,11 @@ class StateField:
             "description": f"Type: {p_type}",
         }, sf_value=sf_value)
 
-    def to_dict(self, sf_value: Optional[int] = None) -> dict:
+    def get_ha_category(self, category_overrides: Optional[Dict[str, str]] = None) -> Optional[str]:
+        from .ha import get_effective_ha_category
+        return get_effective_ha_category(self, self.device_sn, category_overrides=category_overrides)
+
+    def to_dict(self, sf_value: Optional[int] = None, category_overrides: Optional[Dict[str, str]] = None) -> dict:
         serialized_symbols = None
         if self.symbols:
             serialized_symbols = []
@@ -565,6 +570,7 @@ class StateField:
             "is_bitfield": self.is_bitfield,
             "bitmask_flags": self.bitmask_flags or (self.active_flags if self.is_bitfield else None),
             "flags_dict": self.flags_dict if self.is_bitfield else None,
+            "substate": self.substate,
             "source": self.source.value,
             "access": self.access,
             "is_writable": self.is_writable,
@@ -582,7 +588,8 @@ class StateField:
             "ha_device_class": self.ha_hint.device_class if self.ha_hint else None,
             "ha_state_class": self.ha_hint.state_class if self.ha_hint else None,
             "ha_unit": self.ha_hint.unit_of_measurement if self.ha_hint else self.units,
-            "ha_category": self.ha_hint.entity_category if self.ha_hint else None,
+            "ha_category": self.get_ha_category(category_overrides=category_overrides),
+            "is_diagnostic": self.get_ha_category(category_overrides=category_overrides) == "diagnostic",
             "ha_options": self.ha_hint.options if self.ha_hint else None,
             "model_id": self.model_id,
             "model_name": self.model_name,
@@ -623,10 +630,10 @@ class UnifiedDevice:
                 return int(f.value)
         return None
 
-    def serialize_fields(self) -> Dict[str, dict]:
+    def serialize_fields(self, category_overrides: Optional[Dict[str, str]] = None) -> Dict[str, dict]:
         fields_items = list(self.fields.items())
         return {
-            f_key: f.to_dict(sf_value=self.get_scale_factor_value(f))
+            f_key: f.to_dict(sf_value=self.get_scale_factor_value(f), category_overrides=category_overrides)
             for f_key, f in fields_items
         }
 
@@ -1047,6 +1054,9 @@ class StateStore:
             ha_options=options,
             ha_suggested_display_precision=precision,
         )
+        from .ha import get_effective_ha_category
+        c_view.ha_category = get_effective_ha_category(c_view, target_dev)
+        return c_view
 
     def get_compound_views(self, device_sn: Optional[str] = None) -> List[CompoundFieldView]:
         """Compute all compound views, optionally filtered by device_sn."""
@@ -1064,6 +1074,7 @@ class StateStore:
         device_sn: str,
         preferred_sources: Optional[Dict[str, str]] = None,
         ha_selected_keys: Optional[Set[str]] = None,
+        category_overrides: Optional[Dict[str, str]] = None,
     ) -> List[Any]:
         """Compute unified semantic field groups for a device, grouping duplicate metrics across models."""
         from .optimizer import group_device_fields
@@ -1082,6 +1093,7 @@ class StateStore:
                 mapping_registry=MappingRegistry.get_instance(),
                 ha_selected_keys=ha_selected_keys,
                 preferred_sources=preferred_sources,
+                category_overrides=category_overrides,
             )
 
     def subscribe_compound(self, listener: Callable[[CompoundFieldView], None]):
@@ -1182,7 +1194,7 @@ class StateStore:
     def _build_field(dev, key, existing, *, name, label, description, value, raw_value, units, source,
                      access, symbols, point_type, is_enum, is_bitfield, bitmask_flags, is_scale_factor,
                      scale_factor_point, offset, size, ha_hint, model_id, model_name, model_label,
-                     mqtt_eq, c_key) -> StateField:
+                     mqtt_eq, c_key, substate=None) -> StateField:
         """Create a new StateField, or merge incoming metadata over an existing one."""
         def pick(new, old_attr):
             if new is not None or existing is None:
@@ -1214,6 +1226,18 @@ class StateStore:
         if merged_label:
             merged_label = merged_label.strip()
 
+        merged_substate = pick(substate, "substate")
+        if merged_substate is None and isinstance(raw_value, int) and (pick(is_enum, "is_enum") or (symbols and not merged_bitfield)):
+            sym_list = pick(symbols, "symbols")
+            if sym_list:
+                non_zero = []
+                for s in sym_list:
+                    s_v = s.get("value") if isinstance(s, dict) else getattr(s, "value", None)
+                    if s_v is not None and s_v != 0:
+                        non_zero.append(s_v)
+                if non_zero and all(v % 16 == 0 for v in non_zero):
+                    merged_substate = raw_value & 0x000F
+
         merged_ha_hint = pick(ha_hint, "ha_hint")
         if not merged_ha_hint:
             inf_d, inf_s = infer_ha_classes(units=merged_units, name=name, platform="sensor")
@@ -1241,6 +1265,7 @@ class StateStore:
             is_enum=bool(pick(is_enum, "is_enum")),
             is_bitfield=merged_bitfield,
             bitmask_flags=merged_flags,
+            substate=merged_substate,
             source=pick(source, "source"),
             access=merged_access,
             symbols=pick(symbols, "symbols"),
@@ -1279,6 +1304,7 @@ class StateStore:
         is_enum: Optional[bool] = None,
         is_bitfield: Optional[bool] = None,
         bitmask_flags: Optional[List[str]] = None,
+        substate: Optional[int] = None,
         is_scale_factor: bool = False,
         scale_factor_point: Optional[str] = None,
         offset: Optional[int] = None,
@@ -1310,6 +1336,26 @@ class StateStore:
                 raw_value = None
             if raw_value is None and value is not None:
                 raw_value = value
+
+            # Resolve enum symbol name for integer value if enum/symbols defined
+            if (is_enum or (symbols and not is_bitfield)) and isinstance(value, int):
+                sym_list = symbols or []
+                sym_by_val = {}
+                for s in sym_list:
+                    s_v = s.get("value") if isinstance(s, dict) else getattr(s, "value", None)
+                    s_n = s.get("name") if isinstance(s, dict) else getattr(s, "name", None)
+                    if s_v is not None and s_n:
+                        sym_by_val[s_v] = s_n
+                if value in sym_by_val:
+                    value = sym_by_val[value]
+                else:
+                    non_zero = [v for v in sym_by_val.keys() if v != 0]
+                    if non_zero and all(v % 16 == 0 for v in non_zero):
+                        base_v = value & ~0x000F
+                        if base_v in sym_by_val:
+                            if substate is None:
+                                substate = value & 0x000F
+                            value = sym_by_val[base_v]
 
             model_id, model_name, model_label = self._resolve_model_metadata(
                 sub_group, model_id, model_name, model_label
@@ -1344,7 +1390,7 @@ class StateStore:
                 is_scale_factor=is_scale_factor, scale_factor_point=scale_factor_point,
                 offset=offset, size=size, ha_hint=ha_hint,
                 model_id=model_id, model_name=model_name, model_label=model_label,
-                mqtt_eq=mqtt_eq, c_key=c_key,
+                mqtt_eq=mqtt_eq, c_key=c_key, substate=substate,
             )
             dev.fields[key] = field_obj
 
@@ -1624,19 +1670,14 @@ class StateStore:
             # If enum, lookup against enum symbols:
             # scaled_val becomes the enum symbol name, while raw_val remains the integer register value
             is_sentinel = raw_val is None or is_sunspec_sentinel(raw_val, pt_type)
+            substate = None
             if pt_def and pt_def.is_enum and not is_sentinel:
-                sym = None
-                if isinstance(raw_val, int):
-                    sym = pt_def.symbols_by_value.get(raw_val)
-                elif isinstance(raw_val, str) and (raw_val.isdigit() or (raw_val.startswith("-") and raw_val[1:].isdigit())):
-                    sym = pt_def.symbols_by_value.get(int(raw_val))
-                elif isinstance(raw_val, str) and raw_val in pt_def.symbols_by_name:
-                    sym = pt_def.symbols_by_name[raw_val]
-                elif isinstance(scaled_val, int):
-                    sym = pt_def.symbols_by_value.get(scaled_val)
-
+                lookup_val = raw_val if raw_val is not None else scaled_val
+                sym = pt_def.lookup_symbol(lookup_val)
                 if sym is not None:
                     scaled_val = sym.name
+                if pt_def.has_substate_encoding:
+                    substate = pt_def.get_substate(lookup_val)
 
             # If bitfield, decode integer bitmask into list of active symbol names:
             # scaled_val becomes the list of active flag names, while raw_val remains the integer register value
@@ -1686,6 +1727,7 @@ class StateStore:
                 bitmask_flags=bitmask_flags,
                 is_scale_factor=is_sf,
                 scale_factor_point=pt_def.sf if pt_def else None,
+                substate=substate,
                 offset=pt_def.offset if pt_def else None,
                 size=pt_def.size if pt_def else 1,
                 ha_hint=ha_hint,

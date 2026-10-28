@@ -914,6 +914,47 @@ class TestStateAndControls(unittest.TestCase):
             self.assertEqual(f.value, exp_val)
             self.assertEqual(f.raw_value, exp_raw)
 
+    def test_rebus_status_substate_handling(self):
+        """PV Link REbus_status.St reporting substate 12546 (0x3102) must resolve to LOW_SUN with substate 2."""
+        pv = self.state.register_device(
+            serial_number="000100034AC7",
+            slave_id=3,
+            device_type="pv_link",
+            model_name="PWRcell PV Link",
+        )
+
+        # 1. Test update_from_modbus_points with raw 12546
+        self.state.update_from_modbus_points(
+            serial_number="000100034AC7",
+            model_id=64207,
+            raw_values={"St": 12546, "V": 3800, "VT_sf": -1},
+            computed_values={"V": 380.0},
+        )
+        st_field = pv.fields.get("pv_link.REbus_status.St")
+        self.assertIsNotNone(st_field)
+        self.assertEqual(st_field.value, "LOW_SUN")
+        self.assertEqual(st_field.raw_value, 12546)
+        self.assertEqual(st_field.substate, 2)
+        field_dict = st_field.to_dict()
+        self.assertEqual(field_dict["substate"], 2)
+        self.assertEqual(field_dict["value"], "LOW_SUN")
+        self.assertEqual(field_dict["raw_value"], 12546)
+
+        # 2. Test set_field directly with integer value
+        f_direct = self.state.set_field(
+            device_sn="000100034AC7",
+            name="St",
+            value=12546,
+            raw_value=12546,
+            model_id=64207,
+            sub_group="REbus_status",
+            is_enum=True,
+            symbols=[s.to_dict() for s in self.catalog.get_model(64207).points["St"].symbols],
+        )
+        self.assertEqual(f_direct.value, "LOW_SUN")
+        self.assertEqual(f_direct.raw_value, 12546)
+        self.assertEqual(f_direct.substate, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

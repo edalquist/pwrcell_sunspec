@@ -294,6 +294,58 @@ class SunspecPointDef:
         return self.type in ("bitfield16", "bitfield32")
 
     @property
+    def has_substate_encoding(self) -> bool:
+        """Return True if this enum point uses 4-bit substate encoding (lower nibble)."""
+        if not self.is_enum or not self.symbols:
+            return False
+        non_zero = [s.value for s in self.symbols if s.value != 0]
+        return bool(non_zero and all(v % 16 == 0 for v in non_zero))
+
+    def lookup_symbol(self, val: Any) -> Optional[SunspecSymbol]:
+        """Lookup SunspecSymbol for enum point, supporting 4-bit sub-state masking if applicable."""
+        if not self.is_enum or val is None:
+            return None
+
+        # Check string name lookup first
+        if isinstance(val, str):
+            if val in self.symbols_by_name:
+                return self.symbols_by_name[val]
+            val_upper = val.strip().upper()
+            if val_upper in self.symbols_by_name:
+                return self.symbols_by_name[val_upper]
+            if val.isdigit() or (val.startswith("-") and val[1:].isdigit()):
+                val = int(val)
+            else:
+                return None
+
+        if not isinstance(val, int):
+            return None
+
+        # 1. Exact match
+        sym = self.symbols_by_value.get(val)
+        if sym is not None:
+            return sym
+
+        # 2. Check for 4-bit sub-state masking (lower nibble)
+        if self.has_substate_encoding:
+            base_val = val & ~0x000F
+            sym = self.symbols_by_value.get(base_val)
+            if sym is not None:
+                return sym
+
+        return None
+
+    def get_substate(self, val: Any) -> Optional[int]:
+        """Extract integer sub-state (lower 4 bits) if this point has sub-state encoding."""
+        if not self.has_substate_encoding or val is None:
+            return None
+        if isinstance(val, str) and (val.isdigit() or (val.startswith("-") and val[1:].isdigit())):
+            val = int(val)
+        if isinstance(val, int):
+            return val & 0x000F
+        return None
+
+    @property
     def symbols_by_bit(self) -> Dict[int, SunspecSymbol]:
         """For bitfield points, mapping of bit index to SunspecSymbol."""
         return self.symbols_by_value
@@ -399,6 +451,7 @@ class SunspecPointDef:
             "static": self.static,
             "is_writable": self.is_writable,
             "is_enum": self.is_enum,
+            "has_substate_encoding": self.has_substate_encoding,
             "is_bitfield": self.is_bitfield,
             "is_numeric": self.is_numeric,
             "is_scale_factor": self.is_scale_factor,
@@ -626,9 +679,9 @@ class SunspecPointDef:
                     f"Invalid value '{input_val}' for '{self.name}'. Expected enum symbol or integer in: {valid_opts}"
                 )
 
-            sym = self.symbols_by_value.get(int_val)
+            sym = self.lookup_symbol(int_val)
             if sym is not None:
-                return sym.value, sym.name
+                return int_val, sym.name
 
             valid_opts = [f"{s.name} ({s.value})" for s in self.symbols]
             raise ValueError(
@@ -693,6 +746,11 @@ class SunspecPointDef:
             return str_val, str_val
 
         return input_val, input_val
+
+    def resolve_enum_value(self, input_val: Any) -> tuple[int, str]:
+        """Validate and resolve an enum input (name string or integer) into (int_value, symbol_name)."""
+        raw, val = self.validate_and_convert(input_val, ignore_access=True)
+        return int(raw), str(val)
 
 
 @dataclass

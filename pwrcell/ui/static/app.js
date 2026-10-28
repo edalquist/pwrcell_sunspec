@@ -22,6 +22,7 @@ const state = {
   optimizationPlan: null,
   activeFields: [],
   selectedHaKeys: new Set(),
+  haCategoryOverrides: {}, // { '<SN>:<KEY>': 'primary' | 'diagnostic' }
   modifiedDeviceSerials: new Set(),
   activeFilter: 'all',
   hideScaleFactors: true,
@@ -205,6 +206,8 @@ const el = {
     selected: document.getElementById('countSelected'),
     sensor: document.getElementById('countSensors'),
     writable: document.getElementById('countWritable'),
+    primary: document.getElementById('countPrimary'),
+    diagnostic: document.getElementById('countDiagnostic'),
     push: document.getElementById('countPush'),
     modbus: document.getElementById('countModbus'),
     scalefactor: document.getElementById('countScaleFactor'),
@@ -298,6 +301,7 @@ async function fetchHaConfig() {
     const res = await fetch(apiPath('api/ha/config'));
     const data = await res.json();
     state.selectedHaKeys = new Set(data.selected_fields || []);
+    state.haCategoryOverrides = data.category_overrides || {};
     updateHaCounter();
     updateFilterCounts();
     if (state.activeDevice) {
@@ -578,6 +582,114 @@ function isFieldSelected(f) {
   return false;
 }
 
+// Check if a field is classified as a Home Assistant Diagnostic entity
+function isFieldDiagnostic(f) {
+  if (!f) return false;
+  const sn = getFieldDeviceSn(f);
+  const overrides = state.haCategoryOverrides || {};
+
+  const checkOverride = (k) => {
+    if (!k) return null;
+    if (sn && overrides[`${sn}:${k}`]) return String(overrides[`${sn}:${k}`]).toLowerCase();
+    if (overrides[k]) return String(overrides[k]).toLowerCase();
+    return null;
+  };
+
+  const o = checkOverride(f.id) || checkOverride(f.key) || checkOverride(f.concept_key) || checkOverride(f.active_source_key) || checkOverride(f.mqtt_key);
+  if (o) {
+    return o === 'diagnostic';
+  }
+  return f.ha_category === 'diagnostic' || f.is_diagnostic === true;
+}
+
+// Check if a field has a user category override
+function hasCategoryOverride(f) {
+  if (!f || !state.haCategoryOverrides) return false;
+  const sn = getFieldDeviceSn(f);
+  const overrides = state.haCategoryOverrides;
+
+  const checkOverride = (k) => {
+    if (!k) return false;
+    if (sn && overrides[`${sn}:${k}`]) return true;
+    return !!overrides[k];
+  };
+
+  return checkOverride(f.id) || checkOverride(f.key) || checkOverride(f.concept_key) || checkOverride(f.active_source_key) || checkOverride(f.mqtt_key);
+}
+
+// Render HTML badge button for toggling entity category in table
+function renderCatToggleHtml(f) {
+  const isDiag = isFieldDiagnostic(f);
+  const isOverride = hasCategoryOverride(f);
+  const isSelected = isFieldSelected(f);
+  const catLabel = isDiag ? 'Diagnostic' : 'Primary';
+  const catIcon = isDiag ? '🏷️' : '⚡';
+  const overrideMarker = isOverride ? ' <span class="cat-override-indicator" title="Custom user override">*</span>' : '';
+  const keyToUse = f.id || f.key || f.concept_key || '';
+  const snToUse = getFieldDeviceSn(f);
+
+  return `
+    <button type="button" class="badge-cat-toggle ${isDiag ? 'is-diagnostic' : 'is-primary'} ${isOverride ? 'has-override' : ''} ${!isSelected ? 'is-dimmed' : ''}"
+            data-key="${escapeHtml(keyToUse)}"
+            data-sn="${escapeHtml(snToUse)}"
+            title="Home Assistant Category: ${catLabel}${isOverride ? ' (User Override)' : ' (Default)'}\nClick to toggle category (${isDiag ? 'Switch to Primary' : 'Switch to Diagnostic'})${!isSelected ? '\n(Field is currently not selected for HA export)' : ''}">
+      <span class="cat-icon">${catIcon}</span>
+      <span class="cat-text">${catLabel}</span>${overrideMarker}
+    </button>
+  `;
+}
+
+// Action to toggle or reset entity category override
+async function toggleFieldCategoryAction(deviceSn, fieldKey, targetCategory, label) {
+  try {
+    const sn = (deviceSn || state.activeDevice?.serial_number || '').trim().toUpperCase();
+    const cleanKey = (fieldKey || '').trim();
+    if (!cleanKey) return;
+
+    // Optimistic in-memory update
+    const qualKey = sn ? `${sn}:${cleanKey}` : cleanKey;
+    if (!state.haCategoryOverrides) state.haCategoryOverrides = {};
+
+    if (targetCategory === 'reset' || !targetCategory) {
+      delete state.haCategoryOverrides[qualKey];
+      delete state.haCategoryOverrides[cleanKey];
+    } else {
+      state.haCategoryOverrides[qualKey] = targetCategory;
+    }
+
+    renderFieldTable();
+    updateFilterCounts();
+
+    const res = await fetch(apiPath('api/ha/category_override'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        device_serial: sn,
+        field_key: cleanKey,
+        category: targetCategory === 'reset' ? 'reset' : targetCategory,
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      throw new Error(data.error || 'Failed updating category');
+    }
+
+    if (data.category_overrides) {
+      state.haCategoryOverrides = data.category_overrides;
+    }
+
+    const catName = targetCategory === 'diagnostic' ? 'Diagnostic' : (targetCategory === 'reset' ? 'Default' : 'Primary sensor');
+    showToast(`${label || cleanKey} set to ${catName} in Home Assistant`);
+    renderFieldTable();
+    updateFilterCounts();
+  } catch (err) {
+    console.error('Failed toggling HA category:', err);
+    showToast(`Error: ${err.message}`, 'error');
+    await fetchHaConfig();
+  }
+}
+
 // Toggle Home Assistant Field Selection (scoped by device)
 function toggleHaSelection(f, isSelected) {
   const sn = getFieldDeviceSn(f);
@@ -676,7 +788,8 @@ function getSourceSortValue(f) {
 }
 
 function getTypeSortValue(f) {
-  return `${f.ha_platform || ''} ${f.ha_device_class || ''}`.trim().toLowerCase();
+  const isDiag = isFieldDiagnostic(f);
+  return `${f.ha_platform || ''} ${isDiag ? 'diagnostic' : 'primary'} ${f.ha_device_class || ''}`.trim().toLowerCase();
 }
 
 // Multi-column comparator
@@ -1457,6 +1570,10 @@ function renderFieldTable() {
           return isFieldSelected(f);
         case 'sensor':
           return f.ha_platform === 'sensor';
+        case 'primary':
+          return !isFieldDiagnostic(f);
+        case 'diagnostic':
+          return isFieldDiagnostic(f);
         case 'writable':
           return f.is_writable;
         case 'push':
@@ -1504,6 +1621,10 @@ function renderFieldTable() {
           return isFieldSelected(f);
         case 'sensor':
           return f.ha_platform === 'sensor';
+        case 'primary':
+          return !isFieldDiagnostic(f);
+        case 'diagnostic':
+          return isFieldDiagnostic(f);
         case 'writable':
           return f.is_writable;
         case 'push':
@@ -1640,7 +1761,10 @@ function renderFieldTable() {
         ${activeBadge}
       </td>
       <td>
-        <span class="type-tag">${f.ha_platform}${f.ha_device_class ? ': ' + f.ha_device_class : ''}</span>
+        <div class="type-cell-wrap">
+          <span class="type-tag">${f.ha_platform}${f.ha_device_class ? ': ' + f.ha_device_class : ''}</span>
+          ${renderCatToggleHtml(f)}
+        </div>
       </td>
       <td class="text-right">
         <div class="action-cell-container">
@@ -1653,6 +1777,8 @@ function renderFieldTable() {
               ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${targetFieldRef.key}">✏️ Edit Value</button>` : ''}
               ${(f.is_writable || f.bounds) ? `<button class="action-menu-item item-bounds" data-key="${targetFieldRef.key}">📏 Configure Bounds...</button>` : ''}
               <button class="action-menu-item item-copy" data-key="${targetFieldRef.key}">📄 Copy Key</button>
+              <button class="action-menu-item item-toggle-cat" data-key="${targetFieldRef.key}">${isFieldDiagnostic(f) ? '⚡ Set as Primary Sensor' : '🏷️ Set as Diagnostic'}</button>
+              ${hasCategoryOverride(f) ? `<button class="action-menu-item item-reset-cat" data-key="${targetFieldRef.key}">↺ Reset Category to Default</button>` : ''}
               ${!isScaleFactorField(f) && !isScaleFactorField(targetFieldRef) ? `
                 <button class="action-menu-item item-group-with" data-key="${targetFieldRef.key}">🔗 Group with Concept...</button>
                 ${(f.sources && f.sources.length > 1) ? `<button class="action-menu-item item-ungroup" data-key="${targetFieldRef.key}">✂️ Ungroup Field</button>` : ''}
@@ -1809,6 +1935,42 @@ function renderFieldTable() {
           await resetGroupingAction(devSn, fKey);
         });
       }
+
+      const menuToggleCat = dropdownMenu.querySelector('.item-toggle-cat');
+      if (menuToggleCat) {
+        menuToggleCat.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          const currentIsDiag = isFieldDiagnostic(f);
+          const targetCat = currentIsDiag ? 'primary' : 'diagnostic';
+          const sn = getFieldDeviceSn(f);
+          const fKey = f.id || f.key || f.concept_key;
+          await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name);
+        });
+      }
+
+      const menuResetCat = dropdownMenu.querySelector('.item-reset-cat');
+      if (menuResetCat) {
+        menuResetCat.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          const sn = getFieldDeviceSn(f);
+          const fKey = f.id || f.key || f.concept_key;
+          await toggleFieldCategoryAction(sn, fKey, 'reset', f.label || f.name);
+        });
+      }
+    }
+
+    const catBtn = tr.querySelector('.badge-cat-toggle');
+    if (catBtn) {
+      catBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const currentIsDiag = isFieldDiagnostic(f);
+        const targetCat = currentIsDiag ? 'primary' : 'diagnostic';
+        const sn = getFieldDeviceSn(f);
+        const fKey = f.id || f.key || f.concept_key;
+        await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name);
+      });
     }
 
     const expandBtn = tr.querySelector('.btn-group-expand');
@@ -2072,7 +2234,10 @@ function renderFieldTable() {
           <span class="source-tag compound" title="Latest update from ${latestSrcName}">⚡ Compound</span>
         </td>
         <td>
-          <span class="type-tag">${f.ha_platform}${f.ha_device_class ? ': ' + f.ha_device_class : ''}</span>
+          <div class="type-cell-wrap">
+            <span class="type-tag">${f.ha_platform}${f.ha_device_class ? ': ' + f.ha_device_class : ''}</span>
+            ${renderCatToggleHtml(f)}
+          </div>
         </td>
         <td class="text-right">
           <div class="action-cell-container">
@@ -2085,6 +2250,8 @@ function renderFieldTable() {
                 ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${f.key}">✏️ Edit Value</button>` : ''}
                 ${(f.is_writable || f.bounds) ? `<button class="action-menu-item item-bounds" data-key="${f.key}">📏 Configure Bounds...</button>` : ''}
                 <button class="action-menu-item item-copy" data-key="${f.key}">📄 Copy Key</button>
+                <button class="action-menu-item item-toggle-cat" data-key="${f.key}">${isFieldDiagnostic(f) ? '⚡ Set as Primary Sensor' : '🏷️ Set as Diagnostic'}</button>
+                ${hasCategoryOverride(f) ? `<button class="action-menu-item item-reset-cat" data-key="${f.key}">↺ Reset Category to Default</button>` : ''}
                 ${!isScaleFactorField(f) ? `
                   <button class="action-menu-item item-group-with" data-key="${f.key}">🔗 Group with Concept...</button>
                   ${f.is_custom_override ? `<button class="action-menu-item item-reset-group" data-key="${f.key}">↩️ Reset Grouping</button>` : ''}
@@ -2131,7 +2298,10 @@ function renderFieldTable() {
           <span class="source-tag ${sourceClass}">${sourceLabel}</span>
         </td>
         <td>
-          <span class="type-tag">${f.ha_platform}${f.ha_device_class ? ': ' + f.ha_device_class : ''}</span>
+          <div class="type-cell-wrap">
+            <span class="type-tag">${f.ha_platform}${f.ha_device_class ? ': ' + f.ha_device_class : ''}</span>
+            ${renderCatToggleHtml(f)}
+          </div>
         </td>
         <td class="text-right">
           <div class="action-cell-container">
@@ -2144,6 +2314,8 @@ function renderFieldTable() {
                 ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${f.key}">✏️ Edit Value</button>` : ''}
                 ${(f.is_writable || f.bounds) ? `<button class="action-menu-item item-bounds" data-key="${f.key}">📏 Configure Bounds...</button>` : ''}
                 <button class="action-menu-item item-copy" data-key="${f.key}">📄 Copy Key</button>
+                <button class="action-menu-item item-toggle-cat" data-key="${f.key}">${isFieldDiagnostic(f) ? '⚡ Set as Primary Sensor' : '🏷️ Set as Diagnostic'}</button>
+                ${hasCategoryOverride(f) ? `<button class="action-menu-item item-reset-cat" data-key="${f.key}">↺ Reset Category to Default</button>` : ''}
                 ${!isScaleFactorField(f) ? `
                   <button class="action-menu-item item-group-with" data-key="${f.key}">🔗 Group with Concept...</button>
                   ${f.is_custom_override ? `<button class="action-menu-item item-reset-group" data-key="${f.key}">↩️ Reset Grouping</button>` : ''}
@@ -2244,6 +2416,42 @@ function renderFieldTable() {
           await resetGroupingAction(f.device_sn, f.key);
         });
       }
+
+      const menuToggleCat = dropdownMenu.querySelector('.item-toggle-cat');
+      if (menuToggleCat) {
+        menuToggleCat.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          const currentIsDiag = isFieldDiagnostic(f);
+          const targetCat = currentIsDiag ? 'primary' : 'diagnostic';
+          const sn = getFieldDeviceSn(f);
+          const fKey = f.id || f.key || f.concept_key;
+          await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name);
+        });
+      }
+
+      const menuResetCat = dropdownMenu.querySelector('.item-reset-cat');
+      if (menuResetCat) {
+        menuResetCat.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          dropdownMenu.classList.remove('show');
+          const sn = getFieldDeviceSn(f);
+          const fKey = f.id || f.key || f.concept_key;
+          await toggleFieldCategoryAction(sn, fKey, 'reset', f.label || f.name);
+        });
+      }
+    }
+
+    const catBtn = tr.querySelector('.badge-cat-toggle');
+    if (catBtn) {
+      catBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const currentIsDiag = isFieldDiagnostic(f);
+        const targetCat = currentIsDiag ? 'primary' : 'diagnostic';
+        const sn = getFieldDeviceSn(f);
+        const fKey = f.id || f.key || f.concept_key;
+        await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name);
+      });
     }
 
     // Edit button
@@ -2581,6 +2789,8 @@ function updateFilterCounts() {
     if (el.counts.selected) el.counts.selected.textContent = fields.filter(f => isFieldSelected(f)).length;
     if (el.counts.sensor) el.counts.sensor.textContent = fields.filter(f => f.ha_platform === 'sensor').length;
     if (el.counts.writable) el.counts.writable.textContent = fields.filter(f => f.is_writable).length;
+    if (el.counts.primary) el.counts.primary.textContent = fields.filter(f => !isFieldDiagnostic(f)).length;
+    if (el.counts.diagnostic) el.counts.diagnostic.textContent = fields.filter(f => isFieldDiagnostic(f)).length;
     if (el.counts.push) el.counts.push.textContent = fields.filter(f => f.sources && f.sources.some(s => s.source_type === 'MQTT')).length;
     if (el.counts.modbus) el.counts.modbus.textContent = fields.filter(f => f.sources && f.sources.some(s => s.source_type === 'SUNSPEC')).length;
     if (el.counts.scalefactor) el.counts.scalefactor.textContent = fields.filter(f => isScaleFactorField(f)).length;
@@ -2593,6 +2803,8 @@ function updateFilterCounts() {
     if (el.counts.selected) el.counts.selected.textContent = fields.filter(f => isFieldSelected(f)).length;
     if (el.counts.sensor) el.counts.sensor.textContent = fields.filter(f => f.ha_platform === 'sensor').length;
     if (el.counts.writable) el.counts.writable.textContent = fields.filter(f => f.is_writable).length;
+    if (el.counts.primary) el.counts.primary.textContent = fields.filter(f => !isFieldDiagnostic(f)).length;
+    if (el.counts.diagnostic) el.counts.diagnostic.textContent = fields.filter(f => isFieldDiagnostic(f)).length;
     if (el.counts.push) el.counts.push.textContent = fields.filter(f => f.source === 'MQTT_PUSH' && !f.is_compound).length;
     if (el.counts.modbus) el.counts.modbus.textContent = fields.filter(f => (f.source === 'MODBUS_POLL' || f.source === 'MODBUS_CONFIG') && !f.is_compound).length;
     if (el.counts.scalefactor) el.counts.scalefactor.textContent = fields.filter(f => isScaleFactorField(f)).length;
@@ -3785,6 +3997,19 @@ function renderFieldDetailsModal(data) {
             <td class="def-prop-key">Home Assistant Mapping</td>
             <td class="def-prop-val"><code>${escapeHtml(f.ha_platform || 'sensor')}${f.ha_device_class ? ' (' + escapeHtml(f.ha_device_class) + ')' : ''}</code></td>
           </tr>
+          <tr>
+            <td class="def-prop-key">Home Assistant Category</td>
+            <td class="def-prop-val">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <select id="detailsModalCatSelect" style="font-size: 12px; padding: 3px 8px; border-radius: var(--radius-sm, 4px); background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color);">
+                  <option value="reset" ${!hasCategoryOverride(f) ? 'selected' : ''}>Default (${isFieldDiagnostic(f) && !hasCategoryOverride(f) ? 'Diagnostic' : 'Primary'})</option>
+                  <option value="primary" ${hasCategoryOverride(f) && !isFieldDiagnostic(f) ? 'selected' : ''}>⚡ Primary Sensor</option>
+                  <option value="diagnostic" ${hasCategoryOverride(f) && isFieldDiagnostic(f) ? 'selected' : ''}>🏷️ Diagnostic</option>
+                </select>
+                <span class="text-muted" style="font-size: 11px;">${hasCategoryOverride(f) ? 'Custom Override Active' : 'Default Automatic Heuristic'}</span>
+              </div>
+            </td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -3815,6 +4040,16 @@ function renderFieldDetailsModal(data) {
         bounds: bounds,
         point_type: f.point_type || pt.type,
       });
+    });
+  }
+
+  const catSelect = el.detailsModalBody.querySelector('#detailsModalCatSelect');
+  if (catSelect) {
+    catSelect.addEventListener('change', async (e) => {
+      const targetCat = e.target.value;
+      const sn = dev ? dev.serial_number : getFieldDeviceSn(f);
+      const fKey = f.id || f.key || f.concept_key || fieldKey;
+      await toggleFieldCategoryAction(sn, fKey, targetCat, f.label || f.name);
     });
   }
 }
@@ -4137,6 +4372,7 @@ function setupEventListeners() {
           selected_fields: keys,
           device_serials: targetSerials,
           device_serial: activeSn,
+          category_overrides: state.haCategoryOverrides,
           merge: true,
         }),
       });
@@ -4203,6 +4439,7 @@ function setupEventListeners() {
         const data = await res.json();
         if (data.success) {
           state.modifiedDeviceSerials.clear();
+          state.haCategoryOverrides = {};
           if (Array.isArray(data.selected_fields)) {
             state.selectedHaKeys = new Set(data.selected_fields);
             updateHaCounter();

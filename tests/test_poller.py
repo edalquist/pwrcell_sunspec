@@ -322,6 +322,13 @@ class TestTieredModbusPoller(unittest.TestCase):
         self.assertIsNotNone(rb_field)
         self.assertIn("HEARTBEAT_GOOD", rb_field.active_flags)
 
+        # Enum St should be decoded to LOW_SUN with substate 2
+        st_field = dev.fields.get("pv_link.REbus_status.St")
+        self.assertIsNotNone(st_field)
+        self.assertEqual(st_field.value, "LOW_SUN")
+        self.assertEqual(st_field.raw_value, 12546)
+        self.assertEqual(st_field.substate, 2)
+
     def test_default_tier_models_match_default_paths(self):
         """Verify DEFAULT_*_MODELS are consistently derived from DEFAULT_*_PATHS."""
         from pwrcell.poller import (

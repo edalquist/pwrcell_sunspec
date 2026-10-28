@@ -1560,6 +1560,13 @@ body {
 }
 
 
+.type-cell-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+
 .type-tag {
   font-size: 11px;
   font-weight: 500;
@@ -1567,6 +1574,66 @@ body {
   border-radius: var(--radius-sm);
   background-color: var(--bg-tertiary);
   color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.badge-cat-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
+  line-height: 1.2;
+  white-space: nowrap;
+  font-family: inherit;
+  background: none;
+}
+
+.badge-cat-toggle.is-diagnostic {
+  background-color: rgba(234, 179, 8, 0.14);
+  color: #eab308;
+  border-color: rgba(234, 179, 8, 0.35);
+}
+
+.badge-cat-toggle.is-diagnostic:hover {
+  background-color: rgba(234, 179, 8, 0.25);
+  border-color: rgba(234, 179, 8, 0.6);
+  transform: translateY(-1px);
+}
+
+.badge-cat-toggle.is-primary {
+  background-color: rgba(59, 130, 246, 0.14);
+  color: #3b82f6;
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+.badge-cat-toggle.is-primary:hover {
+  background-color: rgba(59, 130, 246, 0.25);
+  border-color: rgba(59, 130, 246, 0.6);
+  transform: translateY(-1px);
+}
+
+.badge-cat-toggle.has-override {
+  box-shadow: 0 0 0 1px currentColor;
+}
+
+.badge-cat-toggle.is-dimmed {
+  opacity: 0.6;
+}
+
+.badge-cat-toggle.is-dimmed:hover {
+  opacity: 1;
+}
+
+.cat-override-indicator {
+  font-size: 11px;
+  font-weight: bold;
+  color: inherit;
 }
 
 .ha-checkbox {

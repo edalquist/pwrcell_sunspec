@@ -168,6 +168,39 @@ class TestModelCatalog(unittest.TestCase):
         self.assertIn("StrA", m.points)
         self.assertIn("string.StrA", m.points)
 
+    def test_enum_substate_lookup_and_encoding(self):
+        """Points with 4-bit substate encoding (e.g. Model 64207 St) should resolve substate integers to base symbol names."""
+        rebus_status = self.catalog.get_model(64207)
+        self.assertIsNotNone(rebus_status)
+        st_pt = rebus_status.points.get("St")
+        self.assertIsNotNone(st_pt)
+        self.assertTrue(st_pt.is_enum)
+        self.assertTrue(st_pt.has_substate_encoding)
+
+        # Exact match
+        sym_exact = st_pt.lookup_symbol(12544)
+        self.assertIsNotNone(sym_exact)
+        self.assertEqual(sym_exact.name, "LOW_SUN")
+        self.assertEqual(st_pt.get_substate(12544), 0)
+
+        # Value with substate 2 (12544 + 2 = 12546, 0x3102)
+        sym_sub = st_pt.lookup_symbol(12546)
+        self.assertIsNotNone(sym_sub)
+        self.assertEqual(sym_sub.name, "LOW_SUN")
+        self.assertEqual(st_pt.get_substate(12546), 2)
+
+        # resolve_enum_value with substate
+        int_val, sym_name = st_pt.resolve_enum_value(12546)
+        self.assertEqual(int_val, 12546)
+        self.assertEqual(sym_name, "LOW_SUN")
+
+        # Standard enum without 4-bit substate encoding (Model 102 St)
+        inv_model = self.catalog.get_model(102)
+        inv_st = inv_model.points.get("St")
+        self.assertIsNotNone(inv_st)
+        self.assertTrue(inv_st.is_enum)
+        self.assertFalse(inv_st.has_substate_encoding)
+
 
 if __name__ == "__main__":
     unittest.main()

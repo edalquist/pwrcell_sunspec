@@ -213,7 +213,7 @@ class MockFixtureLoader:
                 bitmask_flags = None
                 is_bitfield = pt_def.is_bitfield if pt_def else False
                 if pt_def and pt_def.is_enum and isinstance(raw_val, int):
-                    sym = pt_def.symbols_by_value.get(raw_val)
+                    sym = pt_def.lookup_symbol(raw_val)
                     if sym:
                         sym_name = sym.name
                 elif is_bitfield and isinstance(raw_val, int):

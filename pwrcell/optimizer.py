@@ -354,6 +354,7 @@ def group_device_fields(
     ha_selected_keys: Optional[Set[str]] = None,
     preferred_sources: Optional[Dict[str, str]] = None,
     custom_groupings: Optional[Dict[str, Any]] = None,
+    category_overrides: Optional[Dict[str, str]] = None,
 ) -> List[UnifiedFieldGroup]:
     """Group all fields of a device into unified semantic rows with minimal model solving.
 
@@ -889,6 +890,8 @@ def group_device_fields(
             ),
             is_custom_override=any(s.is_custom_override for s in sources) or meta.get("is_custom_override", False),
         )
+        from .ha import get_effective_ha_category
+        group.ha_category = get_effective_ha_category(group, dev, category_overrides=category_overrides)
         groups.append(group)
 
     # 3. Solve Set Cover across all groups (or selected groups)

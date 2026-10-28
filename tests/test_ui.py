@@ -1040,6 +1040,54 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertIn(404, data["models_avoided"])
         self.assertEqual(data["stats"]["total_items"], 6)
 
+    def test_ha_category_override_endpoints(self):
+        """Verify POST /api/ha/category_override and GET /api/ha/config category overrides."""
+        inv_sn = "0001000714E9"
+
+        # Check GET /api/ha/config returns category_overrides dictionary
+        cfg_resp = self.test_client.get("/api/ha/config")
+        self.assertEqual(cfg_resp.status_code, 200)
+        cfg_data = cfg_resp.get_json()
+        self.assertIn("category_overrides", cfg_data)
+
+        # Set category override via POST /api/ha/category_override
+        post_resp = self.test_client.post(
+            "/api/ha/category_override",
+            json={
+                "device_serial": inv_sn,
+                "field_key": "inverter.inverter.TmpCab",
+                "category": "primary",
+            },
+        )
+        self.assertEqual(post_resp.status_code, 200)
+        data = post_resp.get_json()
+        self.assertTrue(data.get("success"))
+        self.assertEqual(data.get("category_overrides", {}).get(f"{inv_sn}:inverter.inverter.TmpCab"), "primary")
+
+        # Verify device details reflects category override
+        dev_resp = self.test_client.get(f"/api/devices/{inv_sn}")
+        self.assertEqual(dev_resp.status_code, 200)
+        dev_data = dev_resp.get_json()
+        self.assertIn("category_overrides", dev_data)
+        self.assertEqual(dev_data["category_overrides"].get(f"{inv_sn}:inverter.inverter.TmpCab"), "primary")
+        tmpcab_field = dev_data["fields"].get("inverter.inverter.TmpCab")
+        self.assertIsNotNone(tmpcab_field)
+        self.assertIsNone(tmpcab_field.get("ha_category"))
+        self.assertFalse(tmpcab_field.get("is_diagnostic"))
+
+        # Reset category override
+        reset_resp = self.test_client.post(
+            "/api/ha/category_override",
+            json={
+                "device_serial": inv_sn,
+                "field_key": "inverter.inverter.TmpCab",
+                "category": "reset",
+            },
+        )
+        self.assertEqual(reset_resp.status_code, 200)
+        reset_data = reset_resp.get_json()
+        self.assertNotIn(f"{inv_sn}:inverter.inverter.TmpCab", reset_data.get("category_overrides", {}))
+
 
 if __name__ == "__main__":
     unittest.main()

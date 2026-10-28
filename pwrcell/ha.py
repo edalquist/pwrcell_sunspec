@@ -234,29 +234,161 @@ def reset_ha_config_to_defaults(
     if not raw_seed:
         raw_seed = get_recommended_field_keys(state_store)
     qualified = qualify_legacy_ha_config(raw_seed, state_store)
-    save_ha_config(qualified, config_path=config_path)
+    save_ha_config(qualified, category_overrides={}, config_path=config_path)
     return qualified
 
 
-def save_ha_config(selected_field_keys: Optional[List[str]], config_path: Optional[Path | str] = None):
-    """Save list of selected field keys to ha_config.yaml."""
+def load_ha_category_overrides(config_path: Optional[Path | str] = None) -> Dict[str, str]:
+    """Load dictionary of entity category overrides from ha_config.yaml.
+
+    Returns mapping of '<SERIAL>:<FIELD_KEY>' (or '<FIELD_KEY>') -> 'primary' | 'diagnostic' | 'config'.
+    """
+    path = Path(config_path) if config_path else get_default_ha_config_path()
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+                raw_overrides = data.get("category_overrides") or data.get("entity_categories")
+                if isinstance(raw_overrides, dict):
+                    return {str(k).strip(): str(v).strip().lower() for k, v in raw_overrides.items() if k and v}
+        except Exception as e:
+            logger.error("Failed to load category overrides from %s: %s", path, e)
+    return {}
+
+
+def save_ha_config(
+    selected_field_keys: Optional[List[str]],
+    category_overrides: Optional[Dict[str, str]] = None,
+    config_path: Optional[Path | str] = None,
+):
+    """Save list of selected field keys and category overrides to ha_config.yaml."""
     path = Path(config_path) if config_path else get_default_ha_config_path()
     clean_keys = sorted(list({str(k).strip() for k in (selected_field_keys or []) if k is not None and str(k).strip()}))
+
+    clean_overrides: Dict[str, str] = {}
+    if category_overrides is not None:
+        clean_overrides = {str(k).strip(): str(v).strip().lower() for k, v in category_overrides.items() if k and v}
+    else:
+        clean_overrides = load_ha_category_overrides(path)
+
+    doc: Dict[str, Any] = {"selected_fields": clean_keys}
+    if clean_overrides:
+        doc["category_overrides"] = dict(sorted(clean_overrides.items()))
+
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(".tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
             yaml.dump(
-                {"selected_fields": clean_keys},
+                doc,
                 f,
                 default_flow_style=False,
                 sort_keys=False,
             )
         tmp_path.replace(path)
-        logger.info("Saved %d entities to %s", len(clean_keys), path)
+        logger.info("Saved %d entities and %d category overrides to %s", len(clean_keys), len(clean_overrides), path)
     except Exception as e:
         logger.error("Failed to save %s: %s", path, e)
         raise e
+
+
+def save_ha_category_override(
+    device_sn: Optional[str],
+    field_key: str,
+    category: Optional[str],
+    config_path: Optional[Path | str] = None,
+) -> Dict[str, str]:
+    """Save or remove a single entity category override in ha_config.yaml."""
+    overrides = load_ha_category_overrides(config_path)
+    sn_clean = (device_sn or "").strip().upper()
+    qualified_key = f"{sn_clean}:{field_key.strip()}" if sn_clean else field_key.strip()
+
+    cat_norm = (category or "").strip().lower()
+    if not cat_norm or cat_norm in ("default", "none", "auto", "reset"):
+        overrides.pop(qualified_key, None)
+        if ":" in qualified_key:
+            overrides.pop(field_key.strip(), None)
+    else:
+        overrides[qualified_key] = cat_norm
+
+    selected = load_ha_config(config_path, allow_default_seed=True)
+    save_ha_config(selected, category_overrides=overrides, config_path=config_path)
+    return overrides
+
+
+def get_effective_ha_category(
+    field: Any,
+    device: Any,
+    category_overrides: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """Determine the effective Home Assistant entity_category ('diagnostic', 'config', or None for primary).
+
+    Respects user overrides from category_overrides first. Otherwise evaluates
+    is_diagnostic_point heuristics, pv_link overrides, and explicit field hints.
+    """
+    dev_sn = getattr(device, "serial_number", str(device) if isinstance(device, str) else "").strip().upper()
+    dev_type = getattr(device, "device_type", None)
+
+    # 1. Check user overrides
+    if category_overrides:
+        f_key = getattr(field, "key", getattr(field, "field_key", None)) or getattr(field, "id", "")
+        concept_key = getattr(field, "concept_key", None)
+        pt_name = getattr(field, "name", "")
+        mqtt_k = getattr(field, "mqtt_key", None)
+
+        candidates = []
+        if dev_sn:
+            if f_key:
+                candidates.append(f"{dev_sn}:{f_key}")
+            if concept_key:
+                candidates.append(f"{dev_sn}:{concept_key}")
+            if pt_name:
+                candidates.append(f"{dev_sn}:{pt_name}")
+            if mqtt_k:
+                candidates.append(f"{dev_sn}:{mqtt_k}")
+        if f_key:
+            candidates.append(f_key)
+        if concept_key:
+            candidates.append(concept_key)
+        if pt_name:
+            candidates.append(pt_name)
+        if mqtt_k:
+            candidates.append(mqtt_k)
+
+        for c in candidates:
+            if c in category_overrides:
+                val = str(category_overrides[c]).strip().lower()
+                if val in ("primary", "sensor", "none", "null", ""):
+                    return None
+                if val in ("diagnostic", "config"):
+                    return val
+
+    # 2. Default logic
+    is_writable = is_ha_writable_allowed(field)
+    if is_writable:
+        hint = getattr(field, "ha_hint", None)
+        if hint and getattr(hint, "entity_category", None):
+            return hint.entity_category
+        return getattr(field, "entity_category", None)
+
+    f_key = getattr(field, "key", getattr(field, "field_key", None)) or getattr(field, "id", "")
+    sub_key = str(f_key).split(".", 1)[-1].replace(".", "_").lower() if f_key else ""
+    pt_name_lower = str(getattr(field, "name", "")).lower()
+
+    if dev_type == "pv_link" and (
+        pt_name_lower in ("p", "e", "dcw", "dcwh", "dca")
+        or sub_key in ("rebus_status_p", "rebus_status_e", "string_combiner_dca", "string_combiner_dcw", "string_combiner_dcwh")
+    ):
+        return None
+
+    if is_diagnostic_point(getattr(field, "name", ""), getattr(field, "model_id", None), device_type=dev_type) or is_diagnostic_point(sub_key, device_type=dev_type):
+        return "diagnostic"
+
+    hint = getattr(field, "ha_hint", None)
+    if hint and getattr(hint, "entity_category", None):
+        return hint.entity_category
+
+    return getattr(field, "entity_category", None)
 
 
 def unqualify_ha_config(selected_field_keys: Optional[List[str]]) -> List[str]:
@@ -458,6 +590,7 @@ def generate_discovery_payload(
     gateway_device: Optional[UnifiedDevice] = None,
     base_topic: str = "pwrcell",
     ha_prefix: str = "homeassistant",
+    category_overrides: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Generate modern Home Assistant MQTT Discovery configuration dictionary and topics."""
     is_compound = field.is_compound
@@ -731,15 +864,12 @@ def generate_discovery_payload(
             if payload.get("min") is not None and payload["min"] < 0:
                 payload["min"] = 0
 
-    # 5. Diagnostic entity categorization
-    if not is_writable:
-        if device.device_type == "pv_link" and (
-            pt_name_lower in ("p", "e", "dcw", "dcwh", "dca")
-            or sub_key_lower in ("rebus_status_p", "rebus_status_e", "string_combiner_dca", "string_combiner_dcw", "string_combiner_dcwh")
-        ):
-            payload.pop("entity_category", None)
-        elif is_diagnostic_point(getattr(field, "name", ""), getattr(field, "model_id", None), device_type=device.device_type) or is_diagnostic_point(sub_key_lower, device_type=device.device_type):
-            payload["entity_category"] = "diagnostic"
+    # 5. Diagnostic entity categorization (honoring category_overrides and default heuristics)
+    eff_cat = get_effective_ha_category(field, device, category_overrides=category_overrides)
+    if eff_cat:
+        payload["entity_category"] = eff_cat
+    else:
+        payload.pop("entity_category", None)
 
     # 6. HA schema validation: enum device_class requires options
     if payload.get("device_class") == "enum" and not payload.get("options"):

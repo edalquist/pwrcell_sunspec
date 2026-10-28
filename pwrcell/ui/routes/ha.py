@@ -13,9 +13,11 @@ from ...ha import (
     generate_gateway_discovery_payload,
     get_recommended_field_keys,
     is_field_selected,
+    load_ha_category_overrides,
     load_ha_config,
     qualify_legacy_ha_config,
     reset_ha_config_to_defaults,
+    save_ha_category_override,
     save_ha_config,
 )
 
@@ -73,7 +75,8 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             else:
                 final_selected = sorted(list(set(qualify_legacy_ha_config(incoming, client.state))))
 
-            save_ha_config(final_selected)
+            cat_overrides = body.get("category_overrides")
+            save_ha_config(final_selected, category_overrides=cat_overrides)
             if hasattr(client, "bridge") and client.bridge:
                 try:
                     client.bridge.reload_config_and_republish()
@@ -83,13 +86,45 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                 "success": True,
                 "count": len(final_selected),
                 "selected_fields": final_selected,
+                "category_overrides": load_ha_category_overrides(),
             })
         else:
             selected = load_ha_config()
             qualified = qualify_legacy_ha_config(selected, client.state)
             if set(qualified) != set(selected):
                 save_ha_config(qualified)
-            return jsonify({"selected_fields": qualified})
+            return jsonify({
+                "selected_fields": qualified,
+                "category_overrides": load_ha_category_overrides(),
+            })
+
+    @bp.route("/api/ha/category_override", methods=["POST"])
+    def set_ha_category_override():
+        try:
+            body = request.get_json() or {}
+            dev_sn = body.get("device_serial")
+            field_key = body.get("field_key")
+            category = body.get("category")
+            if not field_key:
+                return jsonify({"error": "field_key is required"}), 400
+
+            overrides = save_ha_category_override(dev_sn, field_key, category)
+            if hasattr(client, "bridge") and client.bridge:
+                try:
+                    client.bridge.reload_config_and_republish()
+                except Exception as e:
+                    logger.warning("Failed dynamically updating HA bridge discovery: %s", e)
+
+            return jsonify({
+                "success": True,
+                "device_serial": dev_sn,
+                "field_key": field_key,
+                "category": category,
+                "category_overrides": overrides,
+            })
+        except Exception as e:
+            logger.error("Failed saving HA category override: %s", e)
+            return jsonify({"error": str(e)}), 500
 
     @bp.route("/api/ha/reset_defaults", methods=["POST"])
     def reset_ha_defaults():
@@ -272,6 +307,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
     @bp.route("/api/ha/preview")
     def get_ha_preview():
         selected = load_ha_config()
+        cat_overrides = load_ha_category_overrides()
         preview_list = []
         gateway = client.state.get_beacon() or client.state.get_inverter()
 
@@ -294,7 +330,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             # Include compound fields
             for c_view in client.state.get_compound_views(dev.serial_number):
                 if is_field_selected(c_view.key, dev.serial_number, selected, c_view.mqtt_key):
-                    payload_info = generate_discovery_payload(c_view, dev, gateway_device=gateway)
+                    payload_info = generate_discovery_payload(c_view, dev, gateway_device=gateway, category_overrides=cat_overrides)
                     preview_list.append({
                         "field_key": c_view.key,
                         "device_serial": dev.serial_number,
@@ -310,7 +346,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             # Include raw fields
             for f_key, f in list(dev.fields.items()):
                 if is_field_selected(f_key, dev.serial_number, selected):
-                    payload_info = generate_discovery_payload(f, dev, gateway_device=gateway)
+                    payload_info = generate_discovery_payload(f, dev, gateway_device=gateway, category_overrides=cat_overrides)
                     preview_list.append({
                         "field_key": f_key,
                         "device_serial": dev.serial_number,

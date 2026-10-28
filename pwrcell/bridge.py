@@ -29,6 +29,7 @@ from .ha import (
     get_device_info,
     get_recommended_field_keys,
     is_field_selected,
+    load_ha_category_overrides,
     load_ha_config,
     qualify_legacy_ha_config,
     ORIGIN_INFO,
@@ -84,11 +85,13 @@ class HomeAssistantBridge:
         published_topics_path: Optional[Path] = None,
         stale_timeout: float = 900.0,
         clock: Optional[ Any ] = None,
+        ha_config_path: Optional[Path] = None,
     ):
         self.client = client
         self.mqtt_config = mqtt_config or (client.config.mqtt if client.config else MqttConfig())
         self.discovery_prefix = discovery_prefix
         self.base_topic = base_topic
+        self.ha_config_path = ha_config_path
         self.published_topics_path = (
             published_topics_path if published_topics_path is not None else get_default_published_topics_path()
         )
@@ -96,6 +99,7 @@ class HomeAssistantBridge:
         self._clock = clock or time.time
         self.selected_field_keys: List[str] = []
         self._selected_set: set[str] = set()
+        self.category_overrides: Dict[str, str] = {}
         self._command_topic_to_field: Dict[str, Any] = {}
         self._published_discovery_topics: set[str] = set()
         self._active_compound_keys: set[str] = set()
@@ -229,10 +233,13 @@ class HomeAssistantBridge:
         logger.warning("Disconnected from Home Assistant MQTT broker: %s", reason_code)
 
     def reload_config_and_republish(self):
-        """Reload selected entities from ha_config.yaml and republish discovery."""
+        """Reload selected entities and category overrides from ha_config.yaml and republish discovery."""
         raw_keys = load_ha_config()
         self.selected_field_keys = qualify_legacy_ha_config(raw_keys, self.client.state)
         self._selected_set = set(self.selected_field_keys)
+        self.category_overrides = load_ha_category_overrides(self.ha_config_path)
+        with self._lock:
+            self._payload_info_cache.clear()
         if self.client.poller:
             self.client.poller.sync_ha_selected_fields(self.selected_field_keys)
         self.publish_discovery()
@@ -289,6 +296,9 @@ class HomeAssistantBridge:
         with self._lock:
             selected_keys = list(self.selected_field_keys)
             selected_set = set(self.selected_field_keys) | set(self._selected_set)
+            if not self.category_overrides:
+                self.category_overrides = load_ha_category_overrides(self.ha_config_path)
+            cat_overrides = dict(self.category_overrides)
 
         gateway = self.client.state.get_beacon() or self.client.state.get_inverter()
         published_count = 0
@@ -322,6 +332,7 @@ class HomeAssistantBridge:
                         gateway_device=gateway,
                         base_topic=self.base_topic,
                         ha_prefix=self.discovery_prefix,
+                        category_overrides=cat_overrides,
                     )
                     new_payload_cache[f"{sn_clean}:{c_view.key}"] = payload_info
                     config_topic = payload_info["config_topic"]
@@ -376,6 +387,7 @@ class HomeAssistantBridge:
                         gateway_device=gateway,
                         base_topic=self.base_topic,
                         ha_prefix=self.discovery_prefix,
+                        category_overrides=cat_overrides,
                     )
                     self._mqttc.publish(payload_info["config_topic"], "", retain=True)
                     if payload_info.get("state_topic"):
@@ -389,6 +401,7 @@ class HomeAssistantBridge:
                         gateway_device=gateway,
                         base_topic=self.base_topic,
                         ha_prefix=self.discovery_prefix,
+                        category_overrides=cat_overrides,
                     )
                     new_payload_cache[f"{sn_clean}:{f_key}"] = payload_info
 
@@ -522,6 +535,7 @@ class HomeAssistantBridge:
                 gateway_device=gateway,
                 base_topic=self.base_topic,
                 ha_prefix=self.discovery_prefix,
+                category_overrides=self.category_overrides,
             )
             with self._lock:
                 self._payload_info_cache[cache_key] = payload_info
@@ -572,6 +586,7 @@ class HomeAssistantBridge:
                 gateway_device=gateway,
                 base_topic=self.base_topic,
                 ha_prefix=self.discovery_prefix,
+                category_overrides=self.category_overrides,
             )
             with self._lock:
                 self._payload_info_cache[cache_key] = payload_info

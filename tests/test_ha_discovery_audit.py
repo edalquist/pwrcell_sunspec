@@ -338,6 +338,52 @@ class TestHaDiscoveryAudit(unittest.TestCase):
             finally:
                 client.stop()
 
+    def test_ha_category_overrides_and_persistence(self):
+        """User overrides must control entity_category in discovery and persist to ha_config.yaml."""
+        from pwrcell.ha import load_ha_category_overrides, save_ha_category_override, get_effective_ha_category
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cfg_path = Path(tmp_dir) / "ha_config.yaml"
+
+            # TmpCab is diagnostic by default
+            f_tmpcab = self.inv.fields["inverter.inverter.TmpCab"]
+            self.assertEqual(get_effective_ha_category(f_tmpcab, self.inv), "diagnostic")
+            default_payload = generate_discovery_payload(f_tmpcab, self.inv)["payload"]
+            self.assertEqual(default_payload.get("entity_category"), "diagnostic")
+
+            # Override TmpCab to 'primary'
+            overrides = save_ha_category_override(self.inv.serial_number, "inverter.inverter.TmpCab", "primary", config_path=cfg_path)
+            self.assertIn(f"{self.inv.serial_number}:inverter.inverter.TmpCab", overrides)
+            self.assertEqual(overrides[f"{self.inv.serial_number}:inverter.inverter.TmpCab"], "primary")
+
+            loaded = load_ha_category_overrides(cfg_path)
+            self.assertEqual(loaded.get(f"{self.inv.serial_number}:inverter.inverter.TmpCab"), "primary")
+
+            # Check effective category with override
+            self.assertIsNone(get_effective_ha_category(f_tmpcab, self.inv, category_overrides=loaded))
+            overridden_payload = generate_discovery_payload(f_tmpcab, self.inv, category_overrides=loaded)["payload"]
+            self.assertNotIn("entity_category", overridden_payload)
+
+            # Grid power is primary by default
+            c_view = self.state.get_compound_view("grid_power")
+            self.assertIsNotNone(c_view)
+            self.assertIsNone(get_effective_ha_category(c_view, self.inv))
+            self.assertNotIn("entity_category", generate_discovery_payload(c_view, self.inv)["payload"])
+
+            # Override grid power to 'diagnostic'
+            save_ha_category_override(self.inv.serial_number, c_view.key, "diagnostic", config_path=cfg_path)
+            loaded = load_ha_category_overrides(cfg_path)
+            self.assertEqual(get_effective_ha_category(c_view, self.inv, category_overrides=loaded), "diagnostic")
+            diag_payload = generate_discovery_payload(c_view, self.inv, category_overrides=loaded)["payload"]
+            self.assertEqual(diag_payload.get("entity_category"), "diagnostic")
+
+            # Clear override
+            save_ha_category_override(self.inv.serial_number, "inverter.inverter.TmpCab", "reset", config_path=cfg_path)
+            loaded = load_ha_category_overrides(cfg_path)
+            self.assertNotIn(f"{self.inv.serial_number}:inverter.inverter.TmpCab", loaded)
+            reset_payload = generate_discovery_payload(f_tmpcab, self.inv, category_overrides=loaded)["payload"]
+            self.assertEqual(reset_payload.get("entity_category"), "diagnostic")
+
 
 if __name__ == "__main__":
     unittest.main()

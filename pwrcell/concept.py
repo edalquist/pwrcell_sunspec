@@ -96,6 +96,7 @@ class ConceptView:
     ha_device_class: Optional[str] = None
     ha_state_class: Optional[str] = None
     ha_unit: Optional[str] = None
+    ha_category: Optional[str] = None
     ha_options: Optional[List[str]] = None
     ha_suggested_display_precision: Optional[int] = None
     is_writable: bool = False
@@ -326,6 +327,8 @@ class ConceptView:
             "ha_platform": self.ha_platform,
             "ha_device_class": self.ha_device_class,
             "ha_state_class": self.ha_state_class,
+            "ha_category": self.ha_category,
+            "is_diagnostic": self.ha_category == "diagnostic",
             "is_selected": self.is_selected,
             "bounds": self.get_bounds(),
             "point_type": self.point_type,

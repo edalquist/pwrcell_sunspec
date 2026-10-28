@@ -12,6 +12,7 @@ from ...ha import (
     generate_discovery_payload,
     get_recommended_field_keys,
     is_field_selected,
+    load_ha_category_overrides,
     load_ha_config,
     qualify_legacy_ha_config,
     save_ha_config,
@@ -128,18 +129,20 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                 for mid in target_models:
                     client.poller.poll_device_model(dev.slave_id, dev.serial_number, mid)
 
-        fields_dict = dev.serialize_fields()
+        cat_overrides = load_ha_category_overrides()
+        fields_dict = dev.serialize_fields(category_overrides=cat_overrides)
         compound_views = [c.to_dict() for c in client.state.get_compound_views(serial_number)]
         ha_selected = set(qualify_legacy_ha_config(load_ha_config(), client.state))
         clean_sn = (serial_number or "").strip().upper()
         dev_ha_selected = _filter_ha_selected_for_device(ha_selected, clean_sn)
-        unified_groups = [g.to_dict() for g in client.state.get_unified_fields(serial_number, ha_selected_keys=dev_ha_selected)]
+        unified_groups = [g.to_dict() for g in client.state.get_unified_fields(serial_number, ha_selected_keys=dev_ha_selected, category_overrides=cat_overrides)]
 
         return jsonify({
             **dev.to_dict(catalog=client.catalog),
             "fields": fields_dict,
             "compound_fields": compound_views,
             "unified_fields": unified_groups,
+            "category_overrides": cat_overrides,
         })
 
     @bp.route("/api/devices/<serial_number>/unified_fields")
@@ -147,15 +150,17 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         dev = client.state.get_device(serial_number)
         if not dev:
             return jsonify({"error": "Device not found"}), 404
+        cat_overrides = load_ha_category_overrides()
         ha_selected = set(qualify_legacy_ha_config(load_ha_config(), client.state))
         clean_sn = (serial_number or "").strip().upper()
         dev_ha_selected = _filter_ha_selected_for_device(ha_selected, clean_sn)
-        groups = client.state.get_unified_fields(serial_number, ha_selected_keys=dev_ha_selected)
+        groups = client.state.get_unified_fields(serial_number, ha_selected_keys=dev_ha_selected, category_overrides=cat_overrides)
         return jsonify({
             "device_sn": serial_number,
             "device_type": dev.device_type,
             "unified_fields": [g.to_dict() for g in groups],
             "total_count": len(groups),
+            "category_overrides": cat_overrides,
         })
 
     @bp.route("/api/devices/<serial_number>/optimize_polling", methods=["POST"])
