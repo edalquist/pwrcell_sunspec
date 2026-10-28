@@ -10,8 +10,10 @@ selected_fields:
 - battery.battery.AChaMax
 - battery.battery.ADisChaMax
 - battery.battery.SoCMax
+- battery.battery.SoCMin
 - battery.battery.SoCRsvMax
 - battery.battery.SoCRsvMin
+- battery.battery.SoH
 - battery.battery.State
 - battery.compound.battery_exported_energy
 - battery.compound.battery_imported_energy
@@ -27,6 +29,7 @@ selected_fields:
 - battery.live.state_of_health
 - battery.live.storage_ac_charged_energy_wh
 - battery.live.storage_ac_discharged_energy_wh
+- battery.standalone.socmin_802
 - inverter.REbus_exp.Px1
 - inverter.REbus_exp.Px2
 - inverter.REbus_exp.Whin
@@ -45,6 +48,7 @@ selected_fields:
 - inverter.inverter.PF
 - inverter.inverter.PhVphA
 - inverter.inverter.PhVphB
+- inverter.inverter.StVnd
 - inverter.inverter.TmpCab
 - inverter.inverter.TmpOt
 - inverter.inverter.TmpSnk
@@ -71,6 +75,7 @@ selected_fields:
 - pv_link.REbus_status.T
 - pv_link.REbus_status.V
 - pv_link.string_combiner.DCA
+- pv_link.string_combiner.DCV
 - rebus_beacon.REbus_dir.SysMd
 controllable_fields:
 - system_mode
@@ -89,3 +94,45 @@ custom_bounds:
     max: 35
 excluded_select_options:
 - SAFETY_SHUTDOWN
+category_overrides:
+  battery.REbus_status.I: primary
+  battery.REbus_status.St: primary
+  battery.REbus_status.V: primary
+  battery.lithium_ion_string.ModTmpAvg: primary
+  battery.lithium_ion_string.ModTmpMax: primary
+  battery.lithium_ion_string.ModTmpMin: primary
+  battery.standalone.i_64207: primary
+  battery.standalone.modtmpavg_804: primary
+  battery.standalone.modtmpmax_804: primary
+  battery.standalone.modtmpmin_804: primary
+  battery.standalone.st_64207: primary
+  battery.standalone.v_64207: primary
+  i_64207: primary
+  inverter.REbus_exp.Px1: primary
+  inverter.REbus_exp.Px2: primary
+  inverter.REbus_exp.Whin: primary
+  inverter.REbus_status.I: primary
+  inverter.inverter.TmpOt: primary
+  inverter.inverter.TmpSnk: primary
+  inverter.inverter.TmpTrns: primary
+  inverter.standalone.i_64207: primary
+  inverter.standalone.px1_64204: primary
+  inverter.standalone.px2_64204: primary
+  inverter.standalone.tmpot_102: primary
+  inverter.standalone.tmpsnk_102: primary
+  inverter.standalone.tmptrns_102: primary
+  inverter.standalone.whin_64204: primary
+  modtmpavg_804: primary
+  modtmpmax_804: primary
+  modtmpmin_804: primary
+  pv_link.standalone.i_64207: primary
+  pv_link.standalone.st_64207: primary
+  pv_link.standalone.v_64207: primary
+  px1_64204: primary
+  px2_64204: primary
+  st_64207: primary
+  tmpot_102: primary
+  tmpsnk_102: primary
+  tmptrns_102: primary
+  v_64207: primary
+  whin_64204: primary
