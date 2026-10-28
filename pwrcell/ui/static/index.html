@@ -58,6 +58,7 @@
         <button class="btn btn-secondary btn-sm suggestion-header-btn" id="btnOpenSuggestions" title="Review suggested field groupings" style="display: none;">
           💡 Suggestions (<span id="cntHeaderSuggestions">0</span>)
         </button>
+        <button class="btn btn-secondary btn-sm" id="btnOpenBlockedSafety" title="View Modbus registers protected by system safety policy">🔒 Safety Policy</button>
         <button class="btn btn-secondary btn-sm" id="btnSyncModbus" title="Trigger on-demand Modbus sync of keypad configs and setpoints">🔄 Sync Config</button>
         <span class="status-indicator live" id="liveIndicator">
           <span class="pulse-dot"></span>
@@ -176,6 +177,7 @@
             <button class="pill" data-filter="selected">Selected for HA (<span id="countSelected">0</span>)</button>
             <button class="pill" data-filter="sensor">Sensors (<span id="countSensors">0</span>)</button>
             <button class="pill" data-filter="writable">Controls & Selects (<span id="countWritable">0</span>)</button>
+            <button class="pill" data-filter="protected" title="Modbus registers blocked from mutation by safety configuration">🔒 Protected (<span id="countProtected">0</span>)</button>
             <button class="pill" data-filter="primary">⚡ Primary (<span id="countPrimary">0</span>)</button>
             <button class="pill" data-filter="diagnostic">🏷️ Diagnostic (<span id="countDiagnostic">0</span>)</button>
             <button class="pill" data-filter="push">MQTT Push (<span id="countPush">0</span>)</button>
@@ -245,6 +247,7 @@
         </div>
         <div class="footer-actions">
           <button class="btn btn-secondary" id="btnPreviewHA">Preview MQTT Discovery</button>
+          <button class="btn btn-secondary" id="btnExportHADefaults" title="Export current Home Assistant configuration for use as ha_default_config.yaml in the repo">📥 Export Defaults</button>
           <button class="btn btn-secondary" id="btnCleanHA" title="Scan MQTT broker and purge any orphaned or obsolete PWRcell discovery topics">🧹 Clean Stale MQTT</button>
           <button class="btn btn-secondary" id="btnResetHA" title="Reset all Home Assistant selections to default recommended configuration">↺ Reset to Defaults</button>
           <button class="btn btn-primary" id="btnSaveHA">Save to ha_config.yaml</button>
@@ -500,6 +503,7 @@
       <div class="modal-footer">
         <div class="details-footer-left">
           <button class="btn btn-secondary btn-sm" id="btnResetGroupingModal" title="Reset field to automatic default grouping heuristics">↩️ Reset to Default</button>
+          <button class="btn btn-secondary btn-sm" id="btnExportGroupingsFromModal" title="Export groupings to groupings.yaml for checking back into the repo">📥 Export groupings.yaml</button>
         </div>
         <div class="details-footer-actions">
           <button class="btn btn-secondary" id="btnCancelGroupingModal">Cancel</button>
@@ -554,6 +558,7 @@
       <div class="modal-footer">
         <button class="btn btn-secondary" id="btnCopyExportYaml">📋 Copy YAML</button>
         <button class="btn btn-primary" id="btnDownloadExportYaml">⬇️ Download File</button>
+        <button class="btn btn-success" id="btnSaveRepoGroupings" title="Save current groupings directly to groupings.yaml for checking back into the repo">💾 Save to groupings.yaml</button>
         <button class="btn btn-warning" id="btnApplyCleanSlate" title="Save this configuration directly to groupings.yaml and reset custom_groupings.yaml to start fresh">💾 Save to Mappings &amp; Clean Slate</button>
         <button class="btn btn-secondary" id="btnCloseExportFooter">Close</button>
       </div>
@@ -672,6 +677,93 @@
           <button class="btn btn-secondary" id="btnCancelBoundsModal">Cancel</button>
           <button class="btn btn-primary" id="btnSaveBoundsModal">Save Bounds</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export HA Defaults Modal -->
+  <div class="modal-backdrop" id="exportHADefaultsModal">
+    <div class="modal modal-lg export-ha-defaults-dialog">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-tag">HOME ASSISTANT DEFAULTS</span>
+          <h3>📥 Export ha_default_config.yaml</h3>
+        </div>
+        <button class="modal-close" id="btnCloseExportHAModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">
+          Export your current selected entities and category overrides into generic format (hardware serial numbers stripped) suitable for checking back into the repo as <code>ha_default_config.yaml</code>.
+        </p>
+        <div class="export-file-meta">
+          <span>Target File: <strong>ha_default_config.yaml</strong></span>
+          <span class="text-muted">Place in <code>config/ha_default_config.yaml</code> to update universal package defaults</span>
+        </div>
+        <div class="export-preview-container">
+          <pre class="export-code-block"><code id="exportHAYamlCode">Generating generic HA default config...</code></pre>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btnCopyHAYaml">📋 Copy YAML</button>
+        <button class="btn btn-primary" id="btnDownloadHAYaml">⬇️ Download File</button>
+        <button class="btn btn-success" id="btnSaveHADefaultsDirect" title="Save directly to config/ha_default_config.yaml on disk">💾 Save to ha_default_config.yaml</button>
+        <button class="btn btn-secondary" id="btnCloseExportHAFooter">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Safety Policy / Blocked Mutation Fields Modal -->
+  <div class="modal-backdrop" id="blockedSafetyModal">
+    <div class="modal modal-lg blocked-safety-dialog">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-tag">SAFETY ENFORCEMENT &amp; SECURITY</span>
+          <h3>🔒 Blocked Modbus Mutation Fields</h3>
+        </div>
+        <button class="modal-close" id="btnCloseSafetyModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">
+          The following Modbus registers technically support write commands (access: <code>RW</code>), but mutation is <strong>strictly blocked</strong> by system safety configuration because modifying them is hazardous (grid protection, trip thresholds, factory calibration, inverter disconnect limits).
+        </p>
+
+        <div class="safety-policy-notice" style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 6px; padding: 12px; margin-bottom: 16px;">
+          <div style="font-weight: 600; color: #f59e0b; margin-bottom: 4px;">⚠️ Mutation Unblock Policy</div>
+          <div style="font-size: 13px; color: var(--text-muted, #94a3b8);" id="safetyUnblockPolicy">
+            To unblock mutation of any field, you must manually edit <code>config/blocked_fields.yaml</code> on the host filesystem and remove or comment out the blocked entry. There is intentionally NO API or Web UI unblock option.
+          </div>
+        </div>
+
+        <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-weight: 600; font-size: 13px;">Safety-Protected Fields in Active System (<span id="safetyBlockedCount">0</span>):</span>
+          <span class="text-muted" style="font-size: 12px;" id="safetyConfigPath">config/blocked_fields.yaml</span>
+        </div>
+
+        <div style="max-height: 360px; overflow-y: auto; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px;">
+          <table class="data-table" style="width: 100%; margin: 0; font-size: 12px;">
+            <thead>
+              <tr>
+                <th width="35%">Field Key</th>
+                <th width="25%">Label</th>
+                <th width="15%">Device</th>
+                <th width="25%">Matched Rule</th>
+              </tr>
+            </thead>
+            <tbody id="safetyBlockedTableBody">
+              <tr><td colspan="4" class="text-center" style="padding: 16px;">Loading protected fields...</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="margin-top: 16px;">
+          <details>
+            <summary style="cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-muted, #94a3b8);">Configured Protection Patterns (<span id="safetyPatternCount">0</span>) ▾</summary>
+            <div id="safetyPatternsList" style="margin-top: 8px; font-family: monospace; font-size: 12px; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 4px;"></div>
+          </details>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btnCloseSafetyFooter">Close</button>
       </div>
     </div>
   </div>

@@ -199,6 +199,26 @@ const el = {
   btnCopyExportYaml: document.getElementById('btnCopyExportYaml'),
   btnDownloadExportYaml: document.getElementById('btnDownloadExportYaml'),
   btnApplyCleanSlate: document.getElementById('btnApplyCleanSlate'),
+  btnSaveRepoGroupings: document.getElementById('btnSaveRepoGroupings'),
+  btnExportGroupingsFromModal: document.getElementById('btnExportGroupingsFromModal'),
+  btnExportHADefaults: document.getElementById('btnExportHADefaults'),
+  exportHADefaultsModal: document.getElementById('exportHADefaultsModal'),
+  btnCloseExportHAModal: document.getElementById('btnCloseExportHAModal'),
+  btnCloseExportHAFooter: document.getElementById('btnCloseExportHAFooter'),
+  exportHAYamlCode: document.getElementById('exportHAYamlCode'),
+  btnCopyHAYaml: document.getElementById('btnCopyHAYaml'),
+  btnDownloadHAYaml: document.getElementById('btnDownloadHAYaml'),
+  btnSaveHADefaultsDirect: document.getElementById('btnSaveHADefaultsDirect'),
+  btnOpenBlockedSafety: document.getElementById('btnOpenBlockedSafety'),
+  blockedSafetyModal: document.getElementById('blockedSafetyModal'),
+  btnCloseSafetyModal: document.getElementById('btnCloseSafetyModal'),
+  btnCloseSafetyFooter: document.getElementById('btnCloseSafetyFooter'),
+  safetyBlockedCount: document.getElementById('safetyBlockedCount'),
+  safetyConfigPath: document.getElementById('safetyConfigPath'),
+  safetyBlockedTableBody: document.getElementById('safetyBlockedTableBody'),
+  safetyPatternCount: document.getElementById('safetyPatternCount'),
+  safetyPatternsList: document.getElementById('safetyPatternsList'),
+  safetyUnblockPolicy: document.getElementById('safetyUnblockPolicy'),
   toast: document.getElementById('toast'),
   counts: {
     all: document.getElementById('countAll'),
@@ -206,6 +226,7 @@ const el = {
     selected: document.getElementById('countSelected'),
     sensor: document.getElementById('countSensors'),
     writable: document.getElementById('countWritable'),
+    protected: document.getElementById('countProtected'),
     primary: document.getElementById('countPrimary'),
     diagnostic: document.getElementById('countDiagnostic'),
     push: document.getElementById('countPush'),
@@ -1576,6 +1597,8 @@ function renderFieldTable() {
           return isFieldDiagnostic(f);
         case 'writable':
           return f.is_writable;
+        case 'protected':
+          return Boolean(f.is_mutation_blocked);
         case 'push':
           return f.sources && f.sources.some(s => s.source_type === 'MQTT');
         case 'modbus':
@@ -1627,6 +1650,8 @@ function renderFieldTable() {
           return isFieldDiagnostic(f);
         case 'writable':
           return f.is_writable;
+        case 'protected':
+          return Boolean(f.is_mutation_blocked);
         case 'push':
           return f.source === 'MQTT_PUSH' && !f.is_compound;
         case 'modbus':
@@ -1743,7 +1768,7 @@ function renderFieldTable() {
           <div class="field-label-line">
             ${expandBtnHtml}
             <span class="field-label" title="${escapeHtml(f.description || '')}">${f.label}</span>
-            ${f.is_writable ? '<span class="badge-writable" title="Settable register (Read/Write)">RW</span>' : ''}
+            ${f.is_mutation_blocked ? '<span class="badge-protected" title="Modbus RW but mutation blocked by safety policy (edit config/blocked_fields.yaml to unblock)">🔒 Protected</span>' : (f.is_writable ? '<span class="badge-writable" title="Settable register (Read/Write)">RW</span>' : '')}
             ${countBadge}
           </div>
           <span class="field-key">${f.concept_key} &bull; <small>${f.id}</small></span>
@@ -1774,7 +1799,7 @@ function renderFieldTable() {
             <button class="btn btn-secondary btn-sm btn-icon-more" data-key="${targetFieldRef.key}" title="More Actions">⋮</button>
             <div class="action-dropdown-menu">
               <button class="action-menu-item item-details" data-key="${targetFieldRef.key}">📋 Modbus Details</button>
-              ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${targetFieldRef.key}">✏️ Edit Value</button>` : ''}
+              ${f.is_mutation_blocked ? `<button class="action-menu-item disabled" disabled title="Mutation blocked by safety config">🔒 Mutation Blocked</button>` : (f.is_writable ? `<button class="action-menu-item item-edit" data-key="${targetFieldRef.key}">✏️ Edit Value</button>` : '')}
               ${(f.is_writable || f.bounds) ? `<button class="action-menu-item item-bounds" data-key="${targetFieldRef.key}">📏 Configure Bounds...</button>` : ''}
               <button class="action-menu-item item-copy" data-key="${targetFieldRef.key}">📄 Copy Key</button>
               <button class="action-menu-item item-toggle-cat" data-key="${targetFieldRef.key}">${isFieldDiagnostic(f) ? '⚡ Set as Primary Sensor' : '🏷️ Set as Diagnostic'}</button>
@@ -2203,7 +2228,7 @@ function renderFieldTable() {
           <div class="field-cell-main">
             <div class="field-label-line">
               <span class="field-label" title="${f.description || ''}">${f.label}</span>
-              ${f.is_writable ? '<span class="badge-writable" title="Settable SunSpec register (Read/Write)">RW</span>' : ''}
+              ${f.is_mutation_blocked ? '<span class="badge-protected" title="Modbus RW but mutation blocked by safety policy (edit config/blocked_fields.yaml to unblock)">🔒 Protected</span>' : (f.is_writable ? '<span class="badge-writable" title="Settable SunSpec register (Read/Write)">RW</span>' : '')}
             </div>
             <span class="field-key">${f.key}</span>
             ${formatBoundsBadge(f)}
@@ -2247,7 +2272,7 @@ function renderFieldTable() {
               <button class="btn btn-secondary btn-sm btn-icon-more" data-key="${f.key}" title="More Actions">⋮</button>
               <div class="action-dropdown-menu">
                 <button class="action-menu-item item-details" data-key="${f.key}">📋 Modbus Details</button>
-                ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${f.key}">✏️ Edit Value</button>` : ''}
+                ${f.is_mutation_blocked ? `<button class="action-menu-item disabled" disabled title="Mutation blocked by safety config">🔒 Mutation Blocked</button>` : (f.is_writable ? `<button class="action-menu-item item-edit" data-key="${f.key}">✏️ Edit Value</button>` : '')}
                 ${(f.is_writable || f.bounds) ? `<button class="action-menu-item item-bounds" data-key="${f.key}">📏 Configure Bounds...</button>` : ''}
                 <button class="action-menu-item item-copy" data-key="${f.key}">📄 Copy Key</button>
                 <button class="action-menu-item item-toggle-cat" data-key="${f.key}">${isFieldDiagnostic(f) ? '⚡ Set as Primary Sensor' : '🏷️ Set as Diagnostic'}</button>
@@ -2279,7 +2304,7 @@ function renderFieldTable() {
           <div class="field-cell-main">
             <div class="field-label-line">
               <span class="field-label" title="${f.description || ''}">${f.label}</span>
-              ${f.is_writable ? '<span class="badge-writable" title="Settable SunSpec register (Read/Write)">RW</span>' : ''}
+              ${f.is_mutation_blocked ? '<span class="badge-protected" title="Modbus RW but mutation blocked by safety policy (edit config/blocked_fields.yaml to unblock)">🔒 Protected</span>' : (f.is_writable ? '<span class="badge-writable" title="Settable SunSpec register (Read/Write)">RW</span>' : '')}
               ${f.mqtt_equivalent ? `<span class="badge-mqtt-linked" title="Direct Push MQTT equivalent: ${f.mqtt_equivalent}">⚡ Push MQTT</span>` : ''}
               ${f.compound_key ? `<span class="badge-compound-linked" title="Represented by merged telemetry point: ${f.compound_key}">⚡ Merged</span>` : ''}
             </div>
@@ -2311,7 +2336,7 @@ function renderFieldTable() {
               <button class="btn btn-secondary btn-sm btn-icon-more" data-key="${f.key}" title="More Actions">⋮</button>
               <div class="action-dropdown-menu">
                 <button class="action-menu-item item-details" data-key="${f.key}">📋 Modbus Details</button>
-                ${f.is_writable ? `<button class="action-menu-item item-edit" data-key="${f.key}">✏️ Edit Value</button>` : ''}
+                ${f.is_mutation_blocked ? `<button class="action-menu-item disabled" disabled title="Mutation blocked by safety config">🔒 Mutation Blocked</button>` : (f.is_writable ? `<button class="action-menu-item item-edit" data-key="${f.key}">✏️ Edit Value</button>` : '')}
                 ${(f.is_writable || f.bounds) ? `<button class="action-menu-item item-bounds" data-key="${f.key}">📏 Configure Bounds...</button>` : ''}
                 <button class="action-menu-item item-copy" data-key="${f.key}">📄 Copy Key</button>
                 <button class="action-menu-item item-toggle-cat" data-key="${f.key}">${isFieldDiagnostic(f) ? '⚡ Set as Primary Sensor' : '🏷️ Set as Diagnostic'}</button>
@@ -2789,6 +2814,7 @@ function updateFilterCounts() {
     if (el.counts.selected) el.counts.selected.textContent = fields.filter(f => isFieldSelected(f)).length;
     if (el.counts.sensor) el.counts.sensor.textContent = fields.filter(f => f.ha_platform === 'sensor').length;
     if (el.counts.writable) el.counts.writable.textContent = fields.filter(f => f.is_writable).length;
+    if (el.counts.protected) el.counts.protected.textContent = fields.filter(f => f.is_mutation_blocked).length;
     if (el.counts.primary) el.counts.primary.textContent = fields.filter(f => !isFieldDiagnostic(f)).length;
     if (el.counts.diagnostic) el.counts.diagnostic.textContent = fields.filter(f => isFieldDiagnostic(f)).length;
     if (el.counts.push) el.counts.push.textContent = fields.filter(f => f.sources && f.sources.some(s => s.source_type === 'MQTT')).length;
@@ -2803,6 +2829,7 @@ function updateFilterCounts() {
     if (el.counts.selected) el.counts.selected.textContent = fields.filter(f => isFieldSelected(f)).length;
     if (el.counts.sensor) el.counts.sensor.textContent = fields.filter(f => f.ha_platform === 'sensor').length;
     if (el.counts.writable) el.counts.writable.textContent = fields.filter(f => f.is_writable).length;
+    if (el.counts.protected) el.counts.protected.textContent = fields.filter(f => f.is_mutation_blocked).length;
     if (el.counts.primary) el.counts.primary.textContent = fields.filter(f => !isFieldDiagnostic(f)).length;
     if (el.counts.diagnostic) el.counts.diagnostic.textContent = fields.filter(f => isFieldDiagnostic(f)).length;
     if (el.counts.push) el.counts.push.textContent = fields.filter(f => f.source === 'MQTT_PUSH' && !f.is_compound).length;
@@ -4992,6 +5019,107 @@ function setupEventListeners() {
     });
   }
 
+  if (el.btnSaveRepoGroupings) {
+    el.btnSaveRepoGroupings.addEventListener('click', async () => {
+      try {
+        el.btnSaveRepoGroupings.disabled = true;
+        el.btnSaveRepoGroupings.textContent = 'Saving...';
+        const res = await fetch(apiPath('api/grouping/export_repo_groupings'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+          showToast(`Saved ${data.groups_count || 0} groupings to groupings.yaml!`);
+        } else {
+          alert('Failed exporting groupings: ' + (data.message || data.error || 'Unknown error'));
+        }
+      } catch (err) {
+        alert('Failed exporting groupings: ' + err);
+      } finally {
+        el.btnSaveRepoGroupings.disabled = false;
+        el.btnSaveRepoGroupings.textContent = '💾 Save to groupings.yaml';
+      }
+    });
+  }
+
+  if (el.btnExportGroupingsFromModal) {
+    el.btnExportGroupingsFromModal.addEventListener('click', () => {
+      closeGroupingModal();
+      openExportModal('telemetry_mappings');
+    });
+  }
+
+  // Export HA Defaults Listeners
+  if (el.btnExportHADefaults) {
+    el.btnExportHADefaults.addEventListener('click', openExportHAModal);
+  }
+  if (el.btnCloseExportHAModal) {
+    el.btnCloseExportHAModal.addEventListener('click', closeExportHAModal);
+  }
+  if (el.btnCloseExportHAFooter) {
+    el.btnCloseExportHAFooter.addEventListener('click', closeExportHAModal);
+  }
+  if (el.exportHADefaultsModal) {
+    el.exportHADefaultsModal.addEventListener('click', (e) => {
+      if (e.target === el.exportHADefaultsModal) closeExportHAModal();
+    });
+  }
+  if (el.btnCopyHAYaml) {
+    el.btnCopyHAYaml.addEventListener('click', () => {
+      if (currentHAYaml) {
+        copyToClipboard(currentHAYaml);
+        showToast('Copied ha_default_config.yaml to clipboard!');
+      }
+    });
+  }
+  if (el.btnDownloadHAYaml) {
+    el.btnDownloadHAYaml.addEventListener('click', () => {
+      window.location.href = apiPath('api/ha/export_defaults?download=true');
+    });
+  }
+  if (el.btnSaveHADefaultsDirect) {
+    el.btnSaveHADefaultsDirect.addEventListener('click', async () => {
+      try {
+        el.btnSaveHADefaultsDirect.disabled = true;
+        el.btnSaveHADefaultsDirect.textContent = 'Saving...';
+        const res = await fetch(apiPath('api/ha/export_defaults'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(data.message || `Exported ${data.count || 0} fields to ha_default_config.yaml!`);
+        } else {
+          alert('Failed exporting defaults: ' + (data.error || 'Unknown error'));
+        }
+      } catch (err) {
+        alert('Failed exporting defaults: ' + err);
+      } finally {
+        el.btnSaveHADefaultsDirect.disabled = false;
+        el.btnSaveHADefaultsDirect.textContent = '💾 Save to ha_default_config.yaml';
+      }
+    });
+  }
+
+  // Safety Policy Listeners
+  if (el.btnOpenBlockedSafety) {
+    el.btnOpenBlockedSafety.addEventListener('click', openBlockedSafetyModal);
+  }
+  if (el.btnCloseSafetyModal) {
+    el.btnCloseSafetyModal.addEventListener('click', closeBlockedSafetyModal);
+  }
+  if (el.btnCloseSafetyFooter) {
+    el.btnCloseSafetyFooter.addEventListener('click', closeBlockedSafetyModal);
+  }
+  if (el.blockedSafetyModal) {
+    el.blockedSafetyModal.addEventListener('click', (e) => {
+      if (e.target === el.blockedSafetyModal) closeBlockedSafetyModal();
+    });
+  }
+
   // Compare Table Event Delegation for Grouping Actions
   if (el.compareTableBody) {
     el.compareTableBody.addEventListener('click', async (e) => {
@@ -5773,6 +5901,85 @@ async function fetchExportYaml() {
     }
   } catch (err) {
     el.exportYamlCode.textContent = `# Failed to load export: ${err}`;
+  }
+}
+
+// Export HA Defaults Logic
+let currentHAYaml = '';
+
+async function openExportHAModal() {
+  if (!el.exportHADefaultsModal) return;
+  el.exportHADefaultsModal.classList.add('open');
+  if (el.exportHAYamlCode) {
+    el.exportHAYamlCode.textContent = '# Generating ha_default_config.yaml...';
+  }
+  try {
+    const res = await fetch(apiPath('api/ha/export_defaults'));
+    const data = await res.json();
+    if (data.status === 'ok') {
+      currentHAYaml = data.yaml || '';
+      if (el.exportHAYamlCode) el.exportHAYamlCode.textContent = currentHAYaml;
+    } else {
+      if (el.exportHAYamlCode) el.exportHAYamlCode.textContent = `# Error: ${data.error || 'Unknown error'}`;
+    }
+  } catch (err) {
+    if (el.exportHAYamlCode) el.exportHAYamlCode.textContent = `# Failed to load: ${err}`;
+  }
+}
+
+function closeExportHAModal() {
+  if (el.exportHADefaultsModal) {
+    el.exportHADefaultsModal.classList.remove('open');
+  }
+}
+
+// Blocked Safety Policy Modal Logic
+async function openBlockedSafetyModal() {
+  if (!el.blockedSafetyModal) return;
+  el.blockedSafetyModal.classList.add('open');
+  if (el.safetyBlockedTableBody) {
+    el.safetyBlockedTableBody.innerHTML = '<tr><td colspan="4" class="text-center" style="padding: 16px;">Loading protected fields...</td></tr>';
+  }
+  try {
+    const res = await fetch(apiPath('api/safety/blocked_fields'));
+    const data = await res.json();
+    if (el.safetyConfigPath) el.safetyConfigPath.textContent = data.config_path || 'config/blocked_fields.yaml';
+    if (el.safetyBlockedCount) el.safetyBlockedCount.textContent = data.blocked_count || 0;
+    if (el.safetyPatternCount) el.safetyPatternCount.textContent = data.patterns_count || 0;
+    if (el.safetyUnblockPolicy && data.unblock_instruction) {
+      el.safetyUnblockPolicy.textContent = data.unblock_instruction;
+    }
+
+    if (el.safetyPatternsList) {
+      const patterns = data.patterns || [];
+      el.safetyPatternsList.innerHTML = patterns.map(p => `<div>&bull; ${escapeHtml(p)}</div>`).join('') || '<div>No patterns configured.</div>';
+    }
+
+    if (el.safetyBlockedTableBody) {
+      const items = data.blocked_fields || [];
+      if (items.length === 0) {
+        el.safetyBlockedTableBody.innerHTML = '<tr><td colspan="4" class="text-center" style="padding: 16px; color: var(--text-muted, #94a3b8);">No Modbus RW fields in active devices are currently blocked.</td></tr>';
+      } else {
+        el.safetyBlockedTableBody.innerHTML = items.map(it => `
+          <tr>
+            <td><code>${escapeHtml(it.key)}</code></td>
+            <td><strong>${escapeHtml(it.label || it.name)}</strong></td>
+            <td><span class="device-type-badge">${escapeHtml(it.device_type || '')}</span></td>
+            <td><span class="badge-protected">${escapeHtml(it.matched_pattern)}</span></td>
+          </tr>
+        `).join('');
+      }
+    }
+  } catch (err) {
+    if (el.safetyBlockedTableBody) {
+      el.safetyBlockedTableBody.innerHTML = `<tr><td colspan="4" class="text-center" style="padding: 16px; color: #ef4444;">Error loading safety policy: ${err}</td></tr>`;
+    }
+  }
+}
+
+function closeBlockedSafetyModal() {
+  if (el.blockedSafetyModal) {
+    el.blockedSafetyModal.classList.remove('open');
   }
 }
 

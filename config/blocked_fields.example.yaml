@@ -1,0 +1,28 @@
+# PWRcell SunSpec - Blocked Mutation Fields (Example Template)
+# Copy to config/blocked_fields.yaml or /data/blocked_fields.yaml to customize.
+
+blocked_fields:
+  - "*.ReConn*"
+  - "*.IslandEna"
+  - "*Trip*"
+  - "*.HzTrip*"
+  - "*.VArTrip*"
+  - "*.VLowTrip*"
+  - "*.VHighTrip*"
+  - "*.TripTime*"
+  - "*.ESHzHi"
+  - "*.ESHzLo"
+  - "*.ESVHi"
+  - "*.ESVLo"
+  - "*Rmp*Rte*"
+  - "*LatchTms*"
+  - "inverter.*.VNom"
+  - "inverter.*.VMax"
+  - "inverter.*.VMin"
+  - "inverter.*.AMax"
+  - "*.AntiIslEna"
+  - "battery.*.VMaxTrip"
+  - "battery.*.VMinTrip"
+  - "battery.*.OTTrip"
+  - "battery.*.UTTrip"
+  - "battery.*.SetInvState"

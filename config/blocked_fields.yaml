@@ -1,0 +1,51 @@
+# PWRcell SunSpec - Blocked Mutation Fields
+#
+# This file lists SunSpec Modbus points that technically support write access (access: "RW"),
+# but which the system explicitly prohibits mutating because modifying them could disrupt
+# grid safety code compliance (IEEE 1547 / UL 1741), trip protection thresholds, or hardware limits.
+#
+# SECURITY & SAFETY POLICY:
+# - Mutation of any field matching these patterns is blocked across the Web UI, API, and MQTT bridge.
+# - Home Assistant discovery will NEVER expose these fields as writable entities (select/number/switch).
+# - The ONLY way to unblock a field for mutation is to MANUALLY edit this file on the host filesystem
+#   and remove or comment out the blocked entry. There is intentionally NO API or Web UI unblock option.
+#
+# Matching Rules:
+# - Wildcards (*) are supported (e.g., "*.HzTrip*", "battery.*.VMaxTrip", "*Trip*").
+# - Matches point names (e.g., "AMax"), qualified keys ("inverter.model_702.AMax"), or generic paths ("inverter.inverter.AMax").
+# - Case-insensitive.
+
+blocked_fields:
+  # --- Grid Reconnect & Safety Protection Limits (IEEE 1547 / UL 1741) ---
+  - "*.ReConn*"
+  - "*.IslandEna"
+  - "*Trip*"
+  - "*.HzTrip*"
+  - "*.VArTrip*"
+  - "*.VLowTrip*"
+  - "*.VHighTrip*"
+  - "*.TripTime*"
+  - "*.ESHzHi"
+  - "*.ESHzLo"
+  - "*.ESVHi"
+  - "*.ESVLo"
+
+  # --- Grid Ramp Rates & Safety Timers ---
+  - "*Rmp*Rte*"
+  - "*LatchTms*"
+
+  # --- Inverter Grid Capacity & Factory Limits ---
+  - "inverter.*.VNom"
+  - "inverter.*.VMax"
+  - "inverter.*.VMin"
+  - "inverter.*.AMax"
+
+  # --- Anti-Islanding Controls ---
+  - "*.AntiIslEna"
+
+  # --- Battery Critical Internal Protection Cutoffs ---
+  - "battery.*.VMaxTrip"
+  - "battery.*.VMinTrip"
+  - "battery.*.OTTrip"
+  - "battery.*.UTTrip"
+  - "battery.*.SetInvState"

@@ -177,6 +177,33 @@ def cmd_export_default_config(args):
         sys.exit(1)
 
 
+def cmd_export_groupings(args, config: AppConfig):
+    from .grouping import export_repo_groupings
+    from .client import create_client
+    try:
+        with create_client(config=config, mock=getattr(args, "mock", True)) as client:
+            res = export_repo_groupings(client.state, target_path=args.target)
+            print(f"Successfully exported {len(res.get('groups', []))} groupings to {res.get('target_path')}")
+    except Exception as e:
+        print(f"Error exporting groupings: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_list_blocked(args, config: AppConfig):
+    from .safety import get_blocked_mutation_fields
+    from .client import create_client
+    with create_client(config=config, mock=getattr(args, "mock", True)) as client:
+        info = get_blocked_mutation_fields(client.state)
+    print(f"Config path: {info['config_path']}")
+    print(f"Configured patterns ({info['patterns_count']}):")
+    for pat in info["patterns"]:
+        print(f"  • {pat}")
+    print(f"\nBlocked mutation fields ({info['blocked_count']}):")
+    for item in info["blocked_fields"]:
+        print(f"  🔒 {item['key']} ({item['label']}) [matched: {item['matched_pattern']}]")
+    print(f"\nPolicy: {info['unblock_instruction']}")
+
+
 def cmd_clean_discovery(args, config: AppConfig):
     from .tools.clean_discovery import purge_pwrcell_discovery_topics
     from .config import MqttConfig
@@ -257,6 +284,21 @@ def main():
     sub_export.add_argument("--source", type=str, default=None, help="Source config path (default: ha_config.yaml)")
     sub_export.add_argument("--target", type=str, default=None, help="Target default config path (default: ha_default_config.yaml)")
 
+    # export-groupings
+    sub_grp = subparsers.add_parser(
+        "export-groupings",
+        help="Export current field groupings to groupings.yaml for checking back into the repo",
+    )
+    sub_grp.add_argument("--target", type=str, default=None, help="Target path for groupings.yaml")
+    sub_grp.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
+
+    # list-blocked
+    sub_blk = subparsers.add_parser(
+        "list-blocked",
+        help="List Modbus registers blocked from mutation by safety configuration",
+    )
+    sub_blk.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
+
     # clean-discovery
     sub_clean = subparsers.add_parser(
         "clean-discovery",
@@ -312,6 +354,10 @@ def main():
         cmd_status(args, config)
     elif args.subcommand == "export-default-config":
         cmd_export_default_config(args)
+    elif args.subcommand == "export-groupings":
+        cmd_export_groupings(args, config)
+    elif args.subcommand == "list-blocked":
+        cmd_list_blocked(args, config)
     elif args.subcommand == "clean-discovery":
         cmd_clean_discovery(args, config)
 

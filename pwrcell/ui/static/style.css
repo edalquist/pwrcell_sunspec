@@ -3179,6 +3179,20 @@ body {
   letter-spacing: 0.5px;
 }
 
+.badge-protected {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background-color: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  letter-spacing: 0.5px;
+}
+
 .field-bounds-line {
   margin-top: 4px;
   display: flex;

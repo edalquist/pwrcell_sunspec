@@ -490,6 +490,33 @@ def export_as_telemetry_mappings(
     mappings_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
     exported_ungrouped: Set[str] = set(reg.ungrouped_fields)
 
+    # When exporting full mappings, pre-populate with all canonical package mappings
+    if not only_custom:
+        for m in reg.get_all():
+            map_key = (m.device_type, m.id)
+            f_list = []
+            f_seen = set()
+            for mf in m.mqtt_fields:
+                if mf not in f_seen:
+                    f_seen.add(mf)
+                    f_list.append(mf)
+            for mbf in m.modbus_fields:
+                if mbf not in f_seen:
+                    f_seen.add(mbf)
+                    if m.transform and m.transform != "none":
+                        f_list.append({"path": mbf, "transform": m.transform})
+                    else:
+                        f_list.append(mbf)
+            entry_item: Dict[str, Any] = {
+                "id": m.id,
+                "name": m.label,
+                "device_type": m.device_type,
+                "fields": f_list,
+            }
+            if m.synonyms:
+                entry_item["synonyms"] = list(m.synonyms)
+            mappings_by_key[map_key] = entry_item
+
     # Collect overrides where target is null/standalone
     for ov_k, ov_v in raw_data.get("field_overrides", {}).items():
         if ov_v is None or str(ov_v).strip().lower() in ("", "null", "none", "standalone", "ungrouped"):
@@ -555,14 +582,21 @@ def export_as_telemetry_mappings(
                     continue
 
                 if map_key in mappings_by_key:
-                    # Merge candidates if already present from another unit
+                    # Merge candidates if already present from another unit or canonical definition
                     existing = mappings_by_key[map_key]
-                    for c in candidates:
-                        if c not in existing.setdefault("modbus_fields", []):
-                            existing["modbus_fields"].append(c)
+                    existing_paths = {f if isinstance(f, str) else f.get("path") for f in existing.get("fields", [])}
                     for mk in mqtt_keys:
-                        if mk not in existing.setdefault("mqtt_fields", []):
-                            existing["mqtt_fields"].append(mk)
+                        if mk not in existing_paths:
+                            existing_paths.add(mk)
+                            existing.setdefault("fields", []).append(mk)
+                    for c in candidates:
+                        if c not in existing_paths:
+                            existing_paths.add(c)
+                            c_tf = next((s.transform for s in mb_sources if (s.field_key == c or getattr(s, "name", "") == c.split(".")[-1]) and getattr(s, "transform", None)), None)
+                            if c_tf and c_tf != "none":
+                                existing.setdefault("fields", []).append({"path": c, "transform": c_tf})
+                            else:
+                                existing.setdefault("fields", []).append(c)
                 else:
                     dev_class = getattr(g, "ha_device_class", None)
                     st_class = getattr(g, "ha_state_class", None)
@@ -576,9 +610,12 @@ def export_as_telemetry_mappings(
                     entry: Dict[str, Any] = {
                         "id": g.concept_key,
                         "name": g.label or g.concept_key.replace("_", " ").title(),
+                        "device_type": dev_type,
                         "fields": [],
                     }
                     orig_m = reg.get_by_id(g.concept_key)
+                    if orig_m and orig_m.synonyms:
+                        entry["synonyms"] = list(orig_m.synonyms)
                     c_meta = raw_data.get("custom_concepts", {}).get(g.concept_key, {})
                     g_trans = (
                         next((s.transform for s in mb_sources if getattr(s, "transform", None)), None)
@@ -597,25 +634,6 @@ def export_as_telemetry_mappings(
 
                     mappings_by_key[map_key] = entry
 
-    # When exporting full mappings, ensure existing canonical mappings are preserved
-    if not only_custom:
-        for m in reg.get_all():
-            map_key = (m.device_type, m.id)
-            if map_key not in mappings_by_key:
-                f_list = []
-                for mf in m.mqtt_fields:
-                    f_list.append(mf)
-                for mbf in m.modbus_fields:
-                    if m.transform and m.transform != "none":
-                        f_list.append({"path": mbf, "transform": m.transform})
-                    else:
-                        f_list.append(mbf)
-                mappings_by_key[map_key] = {
-                    "id": m.id,
-                    "name": m.label,
-                    "fields": f_list,
-                }
-
     mappings_list = [
         m for m in mappings_by_key.values()
         if not only_explicit_groupings
@@ -625,6 +643,7 @@ def export_as_telemetry_mappings(
 
     output_dict: Dict[str, Any] = {
         "version": "2.0",
+        "auto_group_heuristics": False,
         "groups": mappings_list,
     }
     if exported_ungrouped:
@@ -641,6 +660,40 @@ def export_as_telemetry_mappings(
         "ungrouped_fields": sorted(list(exported_ungrouped)),
         "yaml": yaml_str,
     }
+
+
+def export_repo_groupings(
+    state_store: Any,
+    config_path: Optional[Path | str] = None,
+    target_path: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """Export current active groupings formatted for checking back into the repo as groupings.yaml."""
+    from .mapping import DEFAULT_GROUPINGS_FILE
+    res = export_as_telemetry_mappings(
+        state_store=state_store,
+        config_path=config_path,
+        only_custom=False,
+        only_explicit_groupings=False,
+    )
+    if target_path:
+        dst = Path(target_path)
+    else:
+        pkg_dir = Path(__file__).resolve().parent
+        repo_root = pkg_dir.parent
+        repo_data_groupings = pkg_dir / "data" / DEFAULT_GROUPINGS_FILE
+        if repo_data_groupings.exists() or (repo_root / ".git").exists():
+            dst = repo_data_groupings
+        else:
+            dst = repo_root / "config" / DEFAULT_GROUPINGS_FILE
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dst = dst.with_suffix(".tmp")
+    with open(tmp_dst, "w", encoding="utf-8") as f:
+        f.write(res["yaml"])
+    tmp_dst.replace(dst)
+
+    res["target_path"] = str(dst)
+    return res
 
 
 def save_current_as_telemetry_mappings(

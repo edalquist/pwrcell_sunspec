@@ -1088,6 +1088,68 @@ class TestWebExplorerApi(unittest.TestCase):
         reset_data = reset_resp.get_json()
         self.assertNotIn(f"{inv_sn}:inverter.inverter.TmpCab", reset_data.get("category_overrides", {}))
 
+    def test_safety_blocked_fields_api(self):
+        resp = self.test_client.get("/api/safety/blocked_fields")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data["status"], "ok")
+        self.assertIn("patterns", data)
+        self.assertIn("blocked_fields", data)
+        self.assertIn("manually edit config/blocked_fields.yaml", data["unblock_instruction"])
+
+        # Attempt to write to a blocked register via API should fail with 400
+        write_resp = self.test_client.post(
+            "/api/fields/write",
+            json={"field_key": "inverter.EIconfig.IslandEna", "value": 0},
+        )
+        self.assertEqual(write_resp.status_code, 400)
+        err_msg = write_resp.get_json().get("error", "")
+        self.assertIn("blocked from mutation", err_msg)
+
+    def test_ha_export_defaults_api(self):
+        # 1. GET JSON
+        resp_json = self.test_client.get("/api/ha/export_defaults")
+        self.assertEqual(resp_json.status_code, 200)
+        data = resp_json.get_json()
+        self.assertEqual(data["status"], "ok")
+        self.assertIn("selected_fields", data["yaml"])
+        self.assertEqual(data["filename"], "ha_default_config.yaml")
+
+        # 2. GET Download attachment
+        resp_dl = self.test_client.get("/api/ha/export_defaults?download=true")
+        self.assertEqual(resp_dl.status_code, 200)
+        self.assertEqual(resp_dl.mimetype, "text/yaml")
+        self.assertIn("attachment; filename=ha_default_config.yaml", resp_dl.headers.get("Content-Disposition", ""))
+
+        # 3. POST direct export to file
+        with tempfile.NamedTemporaryFile(suffix=".yaml") as tmp_tgt:
+            resp_post = self.test_client.post(
+                "/api/ha/export_defaults",
+                json={"target_path": tmp_tgt.name},
+            )
+            self.assertEqual(resp_post.status_code, 200)
+            post_data = resp_post.get_json()
+            self.assertTrue(post_data["success"])
+            self.assertGreater(post_data["count"], 0)
+
+    def test_grouping_export_repo_api(self):
+        # 1. POST export_repo_groupings to temporary file
+        with tempfile.NamedTemporaryFile(suffix=".yaml") as tmp_tgt:
+            resp_post = self.test_client.post(
+                "/api/grouping/export_repo_groupings",
+                json={"target_path": tmp_tgt.name},
+            )
+            self.assertEqual(resp_post.status_code, 200)
+            data = resp_post.get_json()
+            self.assertEqual(data["status"], "ok")
+            self.assertGreater(data["groups_count"], 0)
+
+        # 2. GET download format=groupings
+        resp_dl = self.test_client.get("/api/grouping/export?format=groupings&download=true")
+        self.assertEqual(resp_dl.status_code, 200)
+        self.assertEqual(resp_dl.mimetype, "text/yaml")
+        self.assertIn("attachment; filename=groupings.yaml", resp_dl.headers.get("Content-Disposition", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

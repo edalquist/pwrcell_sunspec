@@ -118,6 +118,12 @@ class ConceptView:
     model_label: str = "Unified Concept"
 
     @property
+    def is_mutation_blocked(self) -> bool:
+        """Return True if mutation of this concept or underlying fields is blocked for safety."""
+        from .safety import is_mutation_blocked
+        return is_mutation_blocked(self, device_sn=self.device_sn)
+
+    @property
     def access(self) -> str:
         """Access permission ('RW' if writable else 'R')."""
         return "RW" if self.is_writable else "R"
@@ -323,7 +329,10 @@ class ConceptView:
             "discrepancy_reason": self.discrepancy_reason or self.notes,
             "confidence": self.confidence,
             "notes": self.notes,
-            "is_writable": self.is_writable,
+            "access": "RW" if (self.is_writable or any(getattr(s, "is_writable", False) for s in self.sources)) else "R",
+            "is_writable": self.is_writable and not self.is_mutation_blocked,
+            "modbus_writable": self.is_writable or any(getattr(s, "is_writable", False) for s in self.sources),
+            "is_mutation_blocked": self.is_mutation_blocked,
             "ha_platform": self.ha_platform,
             "ha_device_class": self.ha_device_class,
             "ha_state_class": self.ha_state_class,

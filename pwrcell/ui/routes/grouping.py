@@ -454,6 +454,23 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             "ungrouped_fields": res.get("ungrouped_fields", []),
         })
 
+    @bp.route("/api/grouping/export_repo_groupings", methods=["POST"])
+    def export_groupings_to_repo():
+        from ...grouping import export_repo_groupings
+        try:
+            body = request.get_json() or {}
+            target_path = body.get("target_path")
+            res = export_repo_groupings(client.state, target_path=target_path)
+            return jsonify({
+                "status": "ok",
+                "groups_count": len(res.get("groups", [])),
+                "ungrouped_count": len(res.get("ungrouped_fields", [])),
+                "target_path": res.get("target_path"),
+                "message": f"Successfully exported {len(res.get('groups', []))} groupings to {res.get('target_path')}",
+            })
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
     @bp.route("/api/grouping/save-to-mappings", methods=["POST"])
     def save_to_telemetry_mappings():
         from ...grouping import save_current_as_telemetry_mappings

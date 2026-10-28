@@ -290,19 +290,45 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             "selected_fields": new_list,
         })
 
-    @bp.route("/api/ha/export_defaults", methods=["POST"])
+    @bp.route("/api/ha/export_defaults", methods=["GET", "POST"])
     def export_ha_defaults():
-        from ...ha import export_default_config
+        from flask import Response
+        from ...ha import export_default_config, generate_ha_default_config
+        as_download = request.args.get("download", "").lower() in ("true", "1", "yes")
+
+        if request.method == "POST":
+            try:
+                body = request.get_json(silent=True) or {}
+                target_path = body.get("target_path")
+                keys = export_default_config(target_path=target_path)
+                return jsonify({
+                    "success": True,
+                    "count": len(keys),
+                    "default_fields": keys,
+                    "message": f"Successfully exported {len(keys)} generic field IDs to ha_default_config.yaml",
+                })
+            except Exception as e:
+                logger.error("Failed exporting default HA config: %s", e)
+                return jsonify({"error": str(e)}), 500
+
         try:
-            keys = export_default_config()
+            res = generate_ha_default_config()
+            if as_download:
+                return Response(
+                    res["yaml"],
+                    mimetype="text/yaml",
+                    headers={"Content-Disposition": "attachment; filename=ha_default_config.yaml"},
+                )
             return jsonify({
-                "success": True,
-                "count": len(keys),
-                "default_fields": keys,
+                "status": "ok",
+                "filename": "ha_default_config.yaml",
+                "yaml": res["yaml"],
+                "count": len(res.get("selected_fields", [])),
+                "data": res.get("data"),
             })
         except Exception as e:
-            logger.error("Failed exporting default HA config: %s", e)
-            return jsonify({"error": str(e)}), 500
+            logger.error("Failed generating default HA config: %s", e)
+            return jsonify({"status": "error", "error": str(e)}), 500
 
     @bp.route("/api/ha/preview")
     def get_ha_preview():

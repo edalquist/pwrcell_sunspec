@@ -133,6 +133,13 @@ class ControlDispatcher:
 
     def set_system_mode(self, mode: Union[str, int]) -> int:
         """Change system operating mode (e.g., 'CLEAN_BACKUP', 'SELF_SUPPLY', 'GRID_TIE')."""
+        from .safety import is_mutation_blocked
+        if is_mutation_blocked("SysMd") or is_mutation_blocked("system_mode"):
+            raise PermissionError(
+                "System operating mode mutation is blocked by safety configuration. "
+                "To unblock, manually edit config/blocked_fields.yaml."
+            )
+
         rebus_dir_model = self.catalog.get_model_by_name("REbus_dir") if self.catalog else None
         inv_status_model = self.catalog.get_model_by_name("inverter_status") if self.catalog else None
         rebus_dir_id = rebus_dir_model.model_id if rebus_dir_model else MODEL_REBUS_DIR
@@ -280,6 +287,14 @@ class ControlDispatcher:
         
         Restricts inputs based on the field descriptor from the SunSpec metamodel catalog.
         """
+        from .safety import is_mutation_blocked
+
+        if is_mutation_blocked(field_key):
+            raise PermissionError(
+                f"Field '{field_key}' is blocked from mutation by safety configuration. "
+                "To unblock, manually edit config/blocked_fields.yaml."
+            )
+
         target_field = None
         target_dev = None
 
@@ -346,6 +361,12 @@ class ControlDispatcher:
 
         if not target_field or not target_dev:
             raise KeyError(f"Field '{field_key}' not found in state store")
+
+        if is_mutation_blocked(target_field, device_sn=target_dev.serial_number):
+            raise PermissionError(
+                f"Field '{field_key}' is blocked from mutation by safety configuration. "
+                "To unblock, manually edit config/blocked_fields.yaml."
+            )
 
         if target_field.name in ("SysMd", "system_mode"):
             self.set_system_mode(new_value)

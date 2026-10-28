@@ -64,6 +64,9 @@ HA_WRITABLE_ALLOWLIST, HA_EXCLUDED_SELECT_OPTIONS = _load_ha_security_config()
 
 def is_ha_writable_allowed(field: Any) -> bool:
     """Return True if the field is both writable and in the Home Assistant writable allow-list."""
+    from .safety import is_mutation_blocked
+    if is_mutation_blocked(field):
+        return False
     if not getattr(field, "is_writable", False):
         return False
     if field.is_compound:
@@ -410,15 +413,11 @@ def unqualify_ha_config(selected_field_keys: Optional[List[str]]) -> List[str]:
     return sorted(list(generic_keys))
 
 
-def export_default_config(
+def generate_ha_default_config(
     source_path: Optional[Path | str] = None,
     target_path: Optional[Path | str] = None,
-) -> List[str]:
-    """Convert a device-specific ha_config.yaml into a generic ha_default_config.yaml.
-
-    Strips hardware serial numbers and deduplicates field IDs so the result
-    can serve as a universal default seed across any installation.
-    """
+) -> Dict[str, Any]:
+    """Generate generic ha_default_config dictionary and YAML string from current ha_config.yaml."""
     src = Path(source_path) if source_path else get_default_ha_config_path()
     dst = Path(target_path) if target_path else get_default_seed_config_path()
 
@@ -439,15 +438,49 @@ def export_default_config(
     out_dict = dict(existing_data)
     out_dict["selected_fields"] = generic_keys
 
+    # Also generalize category overrides if present
+    raw_overrides = load_ha_category_overrides(config_path=src)
+    if raw_overrides:
+        generic_overrides: Dict[str, str] = {}
+        for ov_k, ov_v in raw_overrides.items():
+            clean_k = ov_k.split(":", 1)[1].strip() if ":" in ov_k else ov_k.strip()
+            generic_overrides[clean_k] = ov_v.strip().lower()
+        if generic_overrides:
+            out_dict["category_overrides"] = dict(sorted(generic_overrides.items()))
+
+    yaml_header = (
+        "# PWRcell Default Home Assistant Entity Configuration\n"
+        "# Generated from existing ha_config.yaml (hardware serial numbers stripped)\n\n"
+    )
+    yaml_str = yaml_header + yaml.dump(out_dict, default_flow_style=False, sort_keys=False)
+    return {
+        "data": out_dict,
+        "yaml": yaml_str,
+        "selected_fields": generic_keys,
+        "source_path": str(src),
+        "target_path": str(dst),
+    }
+
+
+def export_default_config(
+    source_path: Optional[Path | str] = None,
+    target_path: Optional[Path | str] = None,
+) -> List[str]:
+    """Convert a device-specific ha_config.yaml into a generic ha_default_config.yaml.
+
+    Strips hardware serial numbers and deduplicates field IDs so the result
+    can serve as a universal default seed across any installation.
+    """
+    res = generate_ha_default_config(source_path=source_path, target_path=target_path)
+    dst = Path(res["target_path"])
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp_dst = dst.with_suffix(".tmp")
     with open(tmp_dst, "w", encoding="utf-8") as f:
-        f.write("# PWRcell Default Home Assistant Entity Configuration\n")
-        f.write("# Generated from existing ha_config.yaml (hardware serial numbers stripped)\n\n")
-        yaml.dump(out_dict, f, default_flow_style=False, sort_keys=False)
+        f.write(res["yaml"])
     tmp_dst.replace(dst)
 
-    logger.info("Exported %d generic default field IDs from %s to %s", len(generic_keys), src, dst)
+    generic_keys = res["selected_fields"]
+    logger.info("Exported %d generic default field IDs from %s to %s", len(generic_keys), res["source_path"], dst)
     return generic_keys
 
 

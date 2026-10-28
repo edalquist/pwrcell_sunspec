@@ -248,8 +248,14 @@ class StateField:
         return False
 
     @property
+    def is_mutation_blocked(self) -> bool:
+        """Return True if mutation of this field is blocked by safety configuration."""
+        from .safety import is_mutation_blocked
+        return is_mutation_blocked(self, device_sn=self.device_sn)
+
+    @property
     def is_writable(self) -> bool:
-        return self.access == "RW"
+        return self.access == "RW" and not self.is_mutation_blocked
 
     @property
     def active_flags(self) -> List[str]:
@@ -574,6 +580,8 @@ class StateField:
             "source": self.source.value,
             "access": self.access,
             "is_writable": self.is_writable,
+            "modbus_writable": self.access == "RW",
+            "is_mutation_blocked": self.is_mutation_blocked,
             "bounds": self.get_bounds(sf_value=sf_value),
             "is_scale_factor": self.is_scale_factor,
             "scale_factor_point": self.scale_factor_point,

@@ -59,4 +59,9 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             logger.error("Failed writing field %s: %s", field_key, e)
             return jsonify({"error": str(e)}), 400
 
+    @bp.route("/api/safety/blocked_fields")
+    def get_safety_blocked_fields():
+        from ...safety import get_blocked_mutation_fields
+        return jsonify(get_blocked_mutation_fields(client.state))
+
     return bp
