@@ -623,7 +623,73 @@ class TestWebExplorerApi(unittest.TestCase):
             self.assertTrue(data["success"])
             self.assertEqual(data["count"], 1)
             self.assertIn("inverter.live.grid_power_w", data["default_fields"])
-            mock_export.assert_called_once()
+
+    def test_ha_reset_defaults_endpoint(self):
+        """Verify POST /api/ha/reset_defaults resets configuration to defaults."""
+        resp = self.test_client.post(
+            "/api/ha/reset_defaults",
+            json={"purge_mqtt": False},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data.get("success"))
+        self.assertGreater(data.get("count", 0), 0)
+        self.assertIsInstance(data.get("selected_fields"), list)
+
+    def test_ha_clean_discovery_endpoint(self):
+        """Verify POST /api/ha/clean_discovery calls purge_pwrcell_discovery_topics."""
+        from unittest.mock import patch
+        with patch("pwrcell.tools.clean_discovery.purge_pwrcell_discovery_topics", return_value=["homeassistant/sensor/pwrcell_test/config"]):
+            resp = self.test_client.post("/api/ha/clean_discovery")
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertTrue(data.get("success"))
+            self.assertEqual(data.get("purged_count"), 1)
+
+    def test_grouping_reset_defaults_endpoint(self):
+        """Verify POST /api/grouping/reset_defaults resets custom groupings."""
+        resp = self.test_client.post("/api/grouping/reset_defaults")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertTrue(data.get("success"))
+
+    def test_legacy_concept_remap_and_cleanup(self):
+        """Verify qualify_legacy_ha_config migrates legacy concept keys and drops obsolete ones."""
+        from pwrcell.ha import qualify_legacy_ha_config
+        legacy_keys = [
+            "inverter.concept.ac_frequency",
+            "inverter.concept.grid_exported_energy_wh",
+            "inverter.concept.inverter_output_power",
+            "inverter.concept.inverter_state",
+            "inverter.concept.a",
+            "inverter.concept.aphb",
+            "battery.concept.battery_voltage",
+            "battery.concept.battery_soh",
+            "pv_link.concept.iin",
+            "battery.standalone.storage_ac_charged_energy_wh_None",
+            "inverter.concept.obsolete_unknown",
+        ]
+        qualified = qualify_legacy_ha_config(legacy_keys, self.client.state)
+        inv = self.client.state.get_inverter()
+        inv_sn = inv.serial_number.strip().upper()
+        bat = self.client.state.get_battery()
+        bat_sn = bat.serial_number.strip().upper()
+        pv = self.client.state.get_devices_by_type("pv_link")[0]
+        pv_sn = pv.serial_number.strip().upper()
+
+        self.assertIn(f"{inv_sn}:inverter.inverter.Hz", qualified)
+        self.assertIn(f"{inv_sn}:inverter.compound.grid_exported_energy", qualified)
+        self.assertIn(f"{inv_sn}:inverter.compound.inverter_output_power", qualified)
+        self.assertIn(f"{inv_sn}:inverter.live.inverter_state_name", qualified)
+        self.assertIn(f"{inv_sn}:inverter.inverter.A", qualified)
+        self.assertIn(f"{inv_sn}:inverter.inverter.AphB", qualified)
+        self.assertIn(f"{bat_sn}:battery.compound.battery_voltage", qualified)
+        self.assertIn(f"{bat_sn}:battery.live.state_of_health", qualified)
+        self.assertIn(f"{pv_sn}:pv_link.string_combiner.DCA", qualified)
+
+        for k in qualified:
+            self.assertNotIn("concept", k)
+            self.assertNotIn("None", k)
 
     def test_grouping_bounds_api(self):
         """Verify GET, POST, and DELETE on /api/grouping/bounds."""

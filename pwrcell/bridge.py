@@ -331,12 +331,11 @@ class HomeAssistantBridge:
                     published_count += 1
 
                     old_s_topic = payload_info.get("old_sensor_topic")
-                    if old_s_topic and old_s_topic in previously_published:
+                    if old_s_topic:
                         self._mqttc.publish(old_s_topic, "", retain=True)
 
                     for leg_t in payload_info.get("legacy_config_topics", []):
-                        if leg_t in previously_published:
-                            self._mqttc.publish(leg_t, "", retain=True)
+                        self._mqttc.publish(leg_t, "", retain=True)
 
                     cmd_topic = payload_info.get("command_topic")
                     if cmd_topic:
@@ -402,12 +401,11 @@ class HomeAssistantBridge:
                     published_count += 1
 
                     old_s_topic = payload_info.get("old_sensor_topic")
-                    if old_s_topic and old_s_topic in previously_published:
+                    if old_s_topic:
                         self._mqttc.publish(old_s_topic, "", retain=True)
 
                     for leg_t in payload_info.get("legacy_config_topics", []):
-                        if leg_t in previously_published:
-                            self._mqttc.publish(leg_t, "", retain=True)
+                        self._mqttc.publish(leg_t, "", retain=True)
 
                     # If field is writable, subscribe to its command topic
                     cmd_topic = payload_info.get("command_topic")
@@ -536,6 +534,11 @@ class HomeAssistantBridge:
         if needs_discovery:
             config_payload = json.dumps(payload_info["payload"])
             self._mqttc.publish(config_topic, config_payload, retain=True)
+            old_s_topic = payload_info.get("old_sensor_topic")
+            if old_s_topic:
+                self._mqttc.publish(old_s_topic, "", retain=True)
+            for leg_t in payload_info.get("legacy_config_topics", []):
+                self._mqttc.publish(leg_t, "", retain=True)
             cmd_topic = payload_info.get("command_topic")
             if cmd_topic:
                 with self._lock:
@@ -581,6 +584,11 @@ class HomeAssistantBridge:
         if needs_discovery:
             config_payload = json.dumps(payload_info["payload"])
             self._mqttc.publish(config_topic, config_payload, retain=True)
+            old_s_topic = payload_info.get("old_sensor_topic")
+            if old_s_topic:
+                self._mqttc.publish(old_s_topic, "", retain=True)
+            for leg_t in payload_info.get("legacy_config_topics", []):
+                self._mqttc.publish(leg_t, "", retain=True)
             cmd_topic = payload_info.get("command_topic")
             if cmd_topic:
                 with self._lock:

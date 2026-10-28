@@ -243,6 +243,8 @@
         </div>
         <div class="footer-actions">
           <button class="btn btn-secondary" id="btnPreviewHA">Preview MQTT Discovery</button>
+          <button class="btn btn-secondary" id="btnCleanHA" title="Scan MQTT broker and purge any orphaned or obsolete PWRcell discovery topics">🧹 Clean Stale MQTT</button>
+          <button class="btn btn-secondary" id="btnResetHA" title="Reset all Home Assistant selections to default recommended configuration">↺ Reset to Defaults</button>
           <button class="btn btn-primary" id="btnSaveHA">Save to ha_config.yaml</button>
         </div>
       </div>
@@ -352,6 +354,7 @@
               <option value="">All Devices</option>
             </select>
             <input type="text" class="compare-search-input" id="cmpSearchInput" placeholder="Filter concept or register..." />
+            <button class="btn btn-secondary btn-xs" id="btnResetAllGroupings" title="Clear all custom grouping overrides and restore defaults">↺ Reset Overrides</button>
           </div>
         </div>
 

@@ -170,6 +170,21 @@ def load_ha_config(
     return fields
 
 
+_LEGACY_CONCEPT_REMAP: Dict[str, str] = {
+    "inverter.concept.ac_frequency": "inverter.inverter.Hz",
+    "inverter.concept.grid_exported_energy_wh": "inverter.compound.grid_exported_energy",
+    "inverter.concept.grid_imported_energy_wh": "inverter.compound.grid_imported_energy",
+    "inverter.concept.inverter_output_power": "inverter.compound.inverter_output_power",
+    "inverter.concept.inverter_output_power_w": "inverter.compound.inverter_output_power",
+    "inverter.concept.inverter_state": "inverter.live.inverter_state_name",
+    "inverter.concept.a": "inverter.inverter.A",
+    "inverter.concept.aphb": "inverter.inverter.AphB",
+    "battery.concept.battery_voltage": "battery.compound.battery_voltage",
+    "battery.concept.battery_soh": "battery.live.state_of_health",
+    "pv_link.concept.iin": "pv_link.string_combiner.DCA",
+}
+
+
 def qualify_legacy_ha_config(selected_field_keys: Optional[List[str]], state_store: StateStore) -> List[str]:
     """Ensure all field keys are scoped by device serial number (<SERIAL>:<FIELD_KEY>)."""
     if not selected_field_keys:
@@ -183,9 +198,20 @@ def qualify_legacy_ha_config(selected_field_keys: Optional[List[str]], state_sto
             continue
         if ":" in k_str:
             sn_part, field_part = k_str.split(":", 1)
-            qualified.add(f"{sn_part.strip().upper()}:{field_part.strip()}")
+            sn_part = sn_part.strip().upper()
+            field_part = field_part.strip()
+            # Remap or drop legacy concept/standalone artifacts
+            if field_part in _LEGACY_CONCEPT_REMAP:
+                field_part = _LEGACY_CONCEPT_REMAP[field_part]
+            elif ".concept." in field_part or field_part.endswith("_None"):
+                continue
+            qualified.add(f"{sn_part}:{field_part}")
         else:
             # Legacy unqualified key, e.g. 'inverter.live.grid_power_w' or 'pv_link.string_combiner.DCW'
+            if k_str in _LEGACY_CONCEPT_REMAP:
+                k_str = _LEGACY_CONCEPT_REMAP[k_str]
+            elif ".concept." in k_str or k_str.endswith("_None"):
+                continue
             dot_idx = k_str.find(".")
             dev_type = k_str[:dot_idx] if dot_idx != -1 else ""
             devices = [d for d in state_store.devices.values() if d.device_type == dev_type]
@@ -196,6 +222,20 @@ def qualify_legacy_ha_config(selected_field_keys: Optional[List[str]], state_sto
                 # If device not found yet in state_store, keep key as fallback
                 qualified.add(k_str)
     return sorted(list(qualified))
+
+
+def reset_ha_config_to_defaults(
+    state_store: StateStore,
+    config_path: Optional[Path | str] = None,
+) -> List[str]:
+    """Reset ha_config.yaml to seed ha_default_config.yaml qualified for live devices."""
+    seed_path = get_default_seed_config_path()
+    raw_seed = load_ha_config(seed_path, allow_default_seed=False)
+    if not raw_seed:
+        raw_seed = get_recommended_field_keys(state_store)
+    qualified = qualify_legacy_ha_config(raw_seed, state_store)
+    save_ha_config(qualified, config_path=config_path)
+    return qualified
 
 
 def save_ha_config(selected_field_keys: Optional[List[str]], config_path: Optional[Path | str] = None):
@@ -465,19 +505,22 @@ def generate_discovery_payload(
 
     old_sensor_topic = f"{ha_prefix}/sensor/{node_id}/{object_id}/config" if platform in ("select", "number", "switch") else None
 
-    legacy_config_topics = []
-    if is_compound:
-        for pfx in ("compound_", "concept_"):
-            legacy_config_topics.append(f"{ha_prefix}/{platform}/{node_id}/{pfx}{sub_key}/config")
-            legacy_config_topics.append(f"{ha_prefix}/sensor/{node_id}/{pfx}{sub_key}/config")
-
-    device_info = get_device_info(device, gateway_device=gateway_device)
-
     raw_label = getattr(field, "label", None) or getattr(field, "name", "")
     name_clean = str(raw_label).strip()
 
     sub_key_lower = sub_key.lower()
     pt_name_lower = str(getattr(field, "name", "")).lower()
+
+    legacy_config_topics = []
+    candidates = {sub_key}
+    if pt_name_lower:
+        candidates.add(pt_name_lower)
+    for c in candidates:
+        for pfx in ("compound_", "concept_"):
+            legacy_config_topics.append(f"{ha_prefix}/{platform}/{node_id}/{pfx}{c}/config")
+            legacy_config_topics.append(f"{ha_prefix}/sensor/{node_id}/{pfx}{c}/config")
+    # Exclude current config_topic and deduplicate
+    legacy_config_topics = [t for t in dict.fromkeys(legacy_config_topics) if t != config_topic]
 
     # Friendly entity naming instead of raw SunSpec unit names
     if name_clean in ("Watts", "W") or sub_key_lower in ("inverter_w", "w"):
@@ -503,6 +546,8 @@ def generate_discovery_payload(
         name_clean = "REbus Voltage"
     elif sub_key_lower in ("battery_soc", "state_of_charge") and name_clean.lower() in ("battery soc", "soc"):
         name_clean = "State of Charge"
+
+    device_info = get_device_info(device, gateway_device=gateway_device)
 
     # Modern HA naming: has_entity_name=True ensures entity name is clean and prefixed by device name in HA UI
     payload: Dict[str, Any] = {
@@ -696,41 +741,7 @@ def generate_discovery_payload(
         elif is_diagnostic_point(getattr(field, "name", ""), getattr(field, "model_id", None), device_type=device.device_type) or is_diagnostic_point(sub_key_lower, device_type=device.device_type):
             payload["entity_category"] = "diagnostic"
 
-    # 6. Raw SunSpec & redundant live push layers: disabled by default to keep dashboards clean
-    if not is_compound and not is_writable:
-        sub_group = getattr(field, "sub_group", None) or getattr(field, "model_name", None)
-        if device.device_type == "pv_link":
-            # For PV Links, keep primary production sensors enabled by default
-            is_pv_primary = (
-                pt_name_lower in ("p", "e", "dcw", "dcwh", "dca")
-                or sub_key_lower in ("rebus_status_p", "rebus_status_e", "string_combiner_dca", "string_combiner_dcw", "string_combiner_dcwh")
-            )
-            if not is_pv_primary:
-                payload["enabled_by_default"] = False
-        else:
-            if sub_group and sub_group not in ("live", "compound", "concept"):
-                payload["enabled_by_default"] = False
-
-    # 6b. When compound views are the primary dashboard layer, disable redundant live metrics by default
-    sub_grp = (
-        getattr(field, "sub_group", None)
-        or getattr(field, "model_name", None)
-        or (field.key.split(".")[1] if hasattr(field, "key") and "." in getattr(field, "key", "") else None)
-    )
-    if not is_compound and (sub_grp == "live" or sub_key_lower.startswith("live_")):
-        redundant_live_keys = {
-            "grid_power_w", "inverter_output_power_w", "solar_power_w",
-            "storage_ac_charged_energy_wh", "storage_ac_discharged_energy_wh",
-            "inverter_output_exported_energy_wh",
-        }
-        if getattr(field, "name", "") in redundant_live_keys or sub_key_lower in (
-            "live_grid_power_w", "live_inverter_output_power_w", "live_solar_power_w",
-            "live_storage_ac_charged_energy_wh", "live_storage_ac_discharged_energy_wh",
-            "live_inverter_output_exported_energy_wh",
-        ):
-            payload["enabled_by_default"] = False
-
-    # 7. HA schema validation: enum device_class requires options
+    # 6. HA schema validation: enum device_class requires options
     if payload.get("device_class") == "enum" and not payload.get("options"):
         payload.pop("device_class", None)
 

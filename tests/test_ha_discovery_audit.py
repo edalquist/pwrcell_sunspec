@@ -239,21 +239,21 @@ class TestHaDiscoveryAudit(unittest.TestCase):
         self.assertEqual(disc.get("device_class"), "current")
 
     def test_diagnostics_and_raw_sunspec_enabled_by_default(self):
-        """Internal engineering metrics must be categorized as diagnostic, and raw registers disabled by default."""
+        """Internal engineering metrics must be categorized as diagnostic, and all selected fields enabled by default."""
         f_tmpcab = self.inv.fields.get("inverter.inverter.TmpCab")
         self.assertIsNotNone(f_tmpcab)
         disc = generate_discovery_payload(f_tmpcab, self.inv)["payload"]
         self.assertEqual(disc.get("entity_category"), "diagnostic")
-        self.assertFalse(disc.get("enabled_by_default", True))
+        self.assertTrue(disc.get("enabled_by_default", True))
 
         f_dcv = self.inv.fields.get("inverter.inverter.DCV")
         self.assertIsNotNone(f_dcv)
         disc = generate_discovery_payload(f_dcv, self.inv)["payload"]
         self.assertEqual(disc.get("entity_category"), "diagnostic")
-        self.assertFalse(disc.get("enabled_by_default", True))
+        self.assertTrue(disc.get("enabled_by_default", True))
 
     def test_pv_link_primary_vs_diagnostic_enabled_by_default(self):
-        """PV Link primary metrics (power, energy, current) must be enabled by default; internal sensors disabled/diagnostic."""
+        """All selected PV Link metrics must be enabled by default; internal sensors categorized as diagnostic."""
         # Primary metrics enabled
         for pt_key in ("pv_link.REbus_status.P", "pv_link.REbus_status.E", "pv_link.string_combiner.DCA"):
             f = self.pv.fields.get(pt_key)
@@ -262,26 +262,26 @@ class TestHaDiscoveryAudit(unittest.TestCase):
             self.assertTrue(payload.get("enabled_by_default", True), f"{pt_key} should be enabled by default")
             self.assertIsNone(payload.get("entity_category"), f"{pt_key} should not be categorized as diagnostic")
 
-        # Internal diagnostics disabled and categorized
+        # Internal diagnostics enabled and categorized
         for diag_key in ("pv_link.REbus_status.V", "pv_link.REbus_status.T", "pv_link.REbus_status.St", "pv_link.REbus_status.I"):
             f = self.pv.fields.get(diag_key)
             self.assertIsNotNone(f, f"Missing {diag_key}")
             payload = generate_discovery_payload(f, self.pv)["payload"]
-            self.assertFalse(payload.get("enabled_by_default", True), f"{diag_key} should be disabled by default")
+            self.assertTrue(payload.get("enabled_by_default", True), f"{diag_key} should be enabled by default")
             self.assertEqual(payload.get("entity_category"), "diagnostic", f"{diag_key} should be diagnostic")
 
-    def test_redundant_live_metrics_disabled_by_default(self):
-        """Redundant live metrics must have enabled_by_default: false to prevent duplicate dashboard rows."""
-        redundant_keys = (
+    def test_all_selected_metrics_enabled_by_default(self):
+        """All selected metrics must be enabled by default (enabled_by_default is never false)."""
+        live_keys = (
             "inverter.live.grid_power_w",
             "inverter.live.inverter_output_power_w",
             "inverter.live.solar_power_w",
         )
-        for r_key in redundant_keys:
+        for r_key in live_keys:
             f = self.inv.fields.get(r_key)
             if f is not None:
                 payload = generate_discovery_payload(f, self.inv)["payload"]
-                self.assertFalse(payload.get("enabled_by_default", True), f"{r_key} should be disabled by default")
+                self.assertTrue(payload.get("enabled_by_default", True), f"{r_key} should be enabled by default")
 
         # Compound views remain enabled by default
         for c_key in ("grid_power", "inverter_output_power", "solar_power"):

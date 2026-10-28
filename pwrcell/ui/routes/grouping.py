@@ -152,6 +152,23 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         from ...grouping import load_custom_groupings
         return jsonify(load_custom_groupings())
 
+    @bp.route("/api/grouping/reset_defaults", methods=["POST"])
+    def reset_grouping_defaults():
+        try:
+            from ...grouping import get_default_grouping_config_path, save_custom_groupings
+            p = get_default_grouping_config_path()
+            if p.exists():
+                try:
+                    p.unlink()
+                except Exception:
+                    save_custom_groupings({})
+            else:
+                save_custom_groupings({})
+            return jsonify({"success": True, "message": "Grouping overrides reset to default"})
+        except Exception as e:
+            logger.error("Failed resetting grouping overrides: %s", e)
+            return jsonify({"error": str(e)}), 500
+
     def _resolve_device_sn(device_sn: str, field_key: str = "", concept_key: str = "") -> str:
         clean_sn = (device_sn or "").strip().upper()
         if clean_sn and clean_sn in client.state.devices:

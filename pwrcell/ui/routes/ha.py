@@ -15,6 +15,7 @@ from ...ha import (
     is_field_selected,
     load_ha_config,
     qualify_legacy_ha_config,
+    reset_ha_config_to_defaults,
     save_ha_config,
 )
 
@@ -89,6 +90,91 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             if set(qualified) != set(selected):
                 save_ha_config(qualified)
             return jsonify({"selected_fields": qualified})
+
+    @bp.route("/api/ha/reset_defaults", methods=["POST"])
+    def reset_ha_defaults():
+        try:
+            from ...bridge import get_default_published_topics_path
+
+            body = request.get_json(silent=True) or {}
+            purge_mqtt = body.get("purge_mqtt", True)
+
+            qualified = reset_ha_config_to_defaults(client.state)
+
+            cache_path = get_default_published_topics_path()
+            if cache_path.exists():
+                try:
+                    cache_path.unlink()
+                except Exception as e:
+                    logger.warning("Could not delete cache file %s: %s", cache_path, e)
+
+            purged_topics = []
+            if purge_mqtt:
+                try:
+                    from ...tools.clean_discovery import purge_pwrcell_discovery_topics
+                    m_cfg = getattr(getattr(client, "config", None), "mqtt", None)
+                    pfx = getattr(getattr(client, "bridge", None), "discovery_prefix", "homeassistant") or "homeassistant"
+                    purged_topics = purge_pwrcell_discovery_topics(
+                        broker_host=getattr(m_cfg, "host", None) or "127.0.0.1",
+                        broker_port=getattr(m_cfg, "port", None) or 1883,
+                        username=getattr(m_cfg, "username", None),
+                        password=getattr(m_cfg, "password", None),
+                        discovery_prefix=pfx,
+                        clear_cache=True,
+                    )
+                except Exception as e:
+                    logger.warning("Failed purging MQTT discovery during reset: %s", e)
+
+            if hasattr(client, "bridge") and client.bridge:
+                try:
+                    client.bridge._published_discovery_topics.clear()
+                    client.bridge.reload_config_and_republish()
+                except Exception as e:
+                    logger.warning("Failed republishing HA discovery during reset: %s", e)
+
+            return jsonify({
+                "success": True,
+                "count": len(qualified),
+                "selected_fields": qualified,
+                "purged_count": len(purged_topics),
+            })
+        except Exception as e:
+            logger.error("Failed resetting HA config to defaults: %s", e)
+            return jsonify({"error": str(e)}), 500
+
+    @bp.route("/api/ha/clean_discovery", methods=["POST"])
+    def clean_ha_discovery():
+        try:
+            from ...tools.clean_discovery import purge_pwrcell_discovery_topics
+            from ...bridge import get_default_published_topics_path
+
+            m_cfg = getattr(getattr(client, "config", None), "mqtt", None)
+            pfx = getattr(getattr(client, "bridge", None), "discovery_prefix", "homeassistant") or "homeassistant"
+            purged_topics = purge_pwrcell_discovery_topics(
+                broker_host=getattr(m_cfg, "host", None) or "127.0.0.1",
+                broker_port=getattr(m_cfg, "port", None) or 1883,
+                username=getattr(m_cfg, "username", None),
+                password=getattr(m_cfg, "password", None),
+                discovery_prefix=pfx,
+                clear_cache=True,
+            )
+
+            # Republish currently selected active fields
+            if hasattr(client, "bridge") and client.bridge:
+                try:
+                    client.bridge._published_discovery_topics.clear()
+                    client.bridge.publish_discovery()
+                except Exception as e:
+                    logger.warning("Failed republishing active discovery: %s", e)
+
+            return jsonify({
+                "success": True,
+                "purged_count": len(purged_topics),
+                "purged_topics": purged_topics,
+            })
+        except Exception as e:
+            logger.error("Failed cleaning MQTT discovery: %s", e)
+            return jsonify({"error": str(e)}), 500
 
     @bp.route("/api/ha/recommended")
     def get_ha_recommended():

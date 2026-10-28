@@ -86,7 +86,10 @@ const el = {
   btnDeselectAll: document.getElementById('btnDeselectAll'),
   btnApplySameType: document.getElementById('btnApplySameType'),
   btnPreviewHA: document.getElementById('btnPreviewHA'),
+  btnCleanHA: document.getElementById('btnCleanHA'),
+  btnResetHA: document.getElementById('btnResetHA'),
   btnSaveHA: document.getElementById('btnSaveHA'),
+  btnResetAllGroupings: document.getElementById('btnResetAllGroupings'),
   previewModal: document.getElementById('previewModal'),
   previewCode: document.getElementById('previewCode'),
   btnCloseModal: document.getElementById('btnCloseModal'),
@@ -4153,6 +4156,72 @@ function setupEventListeners() {
     }
   });
 
+  // Clean Stale HA MQTT Discovery Topics
+  if (el.btnCleanHA) {
+    el.btnCleanHA.addEventListener('click', async () => {
+      if (!confirm('Scan the MQTT broker and purge any orphaned or obsolete PWRcell discovery topics (such as old concept entities)? Active entities will be re-published cleanly.')) {
+        return;
+      }
+      const origText = el.btnCleanHA.textContent;
+      try {
+        el.btnCleanHA.disabled = true;
+        el.btnCleanHA.textContent = '🧹 Cleaning...';
+        const res = await fetch(apiPath('api/ha/clean_discovery'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        const data = await res.json();
+        if (data.success) {
+          showToast(`Purged ${data.purged_count || 0} orphaned MQTT discovery topics and re-published active entities.`);
+        } else {
+          alert(`Error cleaning discovery: ${data.error || 'Unknown error'}`);
+        }
+      } catch (err) {
+        alert(`Failed cleaning discovery: ${err}`);
+      } finally {
+        el.btnCleanHA.disabled = false;
+        el.btnCleanHA.textContent = origText;
+      }
+    });
+  }
+
+  // Reset HA Config to Defaults
+  if (el.btnResetHA) {
+    el.btnResetHA.addEventListener('click', async () => {
+      if (!confirm('Reset all Home Assistant entity selections back to the default recommended configuration? This will overwrite ha_config.yaml with default fields, purge stale topics, and re-publish discovery.')) {
+        return;
+      }
+      const origText = el.btnResetHA.textContent;
+      try {
+        el.btnResetHA.disabled = true;
+        el.btnResetHA.textContent = '↺ Resetting...';
+        const res = await fetch(apiPath('api/ha/reset_defaults'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ purge_mqtt: true }),
+        });
+        const data = await res.json();
+        if (data.success) {
+          state.modifiedDeviceSerials.clear();
+          if (Array.isArray(data.selected_fields)) {
+            state.selectedHaKeys = new Set(data.selected_fields);
+            updateHaCounter();
+            updateFilterCounts();
+            renderFieldTable();
+          }
+          showToast(`Reset to defaults: ${data.count} entities selected!`);
+        } else {
+          alert(`Error resetting config: ${data.error || 'Unknown error'}`);
+        }
+      } catch (err) {
+        alert(`Failed resetting config: ${err}`);
+      } finally {
+        el.btnResetHA.disabled = false;
+        el.btnResetHA.textContent = origText;
+      }
+    });
+  }
+
   // Preview HA MQTT Discovery
   el.btnPreviewHA.addEventListener('click', async () => {
     try {
@@ -5385,6 +5454,35 @@ async function refreshAfterGroupingChange(deviceSn) {
   if (el.compareModal && el.compareModal.classList.contains('open')) {
     await fetchAndRenderCompare();
   }
+}
+
+// Reset All Grouping Overrides
+if (el.btnResetAllGroupings) {
+  el.btnResetAllGroupings.addEventListener('click', async () => {
+    if (!confirm('Clear all custom field grouping and polarity overrides and revert to automatic defaults?')) {
+      return;
+    }
+    try {
+      const res = await fetch(apiPath('api/grouping/reset_defaults'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Grouping overrides reset to default!');
+        if (state.activeDevice) {
+          await selectDevice(state.activeDevice.serial_number);
+        }
+        if (el.compareModal && el.compareModal.classList.contains('open')) {
+          await fetchAndRenderCompare();
+        }
+      } else {
+        alert(`Error resetting groupings: ${data.error || 'Unknown error'}`);
+      }
+    } catch (err) {
+      alert(`Failed resetting groupings: ${err}`);
+    }
+  });
 }
 
 // Export Custom Mappings Logic
