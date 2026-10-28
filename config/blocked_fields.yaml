@@ -40,6 +40,10 @@ blocked_fields:
   - "inverter.*.VMin"
   - "inverter.*.AMax"
 
+  # --- Zero Export / Grid Export Limits ---
+  - "inverter.*.ZExp"
+  - "inverter.*.ZExpLim"
+
   # --- Anti-Islanding Controls ---
   - "*.AntiIslEna"
 

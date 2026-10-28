@@ -31,6 +31,8 @@ class TestSafetyBlockedFields(unittest.TestCase):
                 "*Trip*",
                 "inverter.*.VNom",
                 "inverter.*.AMax",
+                "inverter.*.ZExp",
+                "inverter.*.ZExpLim",
                 "battery.*.SetInvState",
             ]
         }
@@ -43,7 +45,7 @@ class TestSafetyBlockedFields(unittest.TestCase):
 
     def test_load_blocked_fields(self):
         patterns = load_blocked_fields(self.config_path)
-        self.assertEqual(len(patterns), 6)
+        self.assertEqual(len(patterns), 8)
         self.assertIn("*.IslandEna", patterns)
         self.assertIn("*Trip*", patterns)
 
@@ -57,6 +59,8 @@ class TestSafetyBlockedFields(unittest.TestCase):
         self.assertTrue(is_mutation_blocked("VArTrip", config_path=self.config_path))
         self.assertTrue(is_mutation_blocked("inverter.inverter.VNom", config_path=self.config_path))
         self.assertTrue(is_mutation_blocked("battery.battery.SetInvState", config_path=self.config_path))
+        self.assertTrue(is_mutation_blocked("inverter.model_64208.ZExp", config_path=self.config_path))
+        self.assertTrue(is_mutation_blocked("inverter.model_64208.ZExpLim", config_path=self.config_path))
 
         # Serial number prefix stripping
         self.assertTrue(is_mutation_blocked("0001000714E9:inverter.inverter.VNom", config_path=self.config_path))
@@ -166,7 +170,7 @@ class TestSafetyBlockedFields(unittest.TestCase):
 
         info = get_blocked_mutation_fields(state, config_path=self.config_path)
         self.assertEqual(info["status"], "ok")
-        self.assertEqual(info["patterns_count"], 6)
+        self.assertEqual(info["patterns_count"], 8)
         self.assertEqual(info["blocked_count"], 1)
         self.assertEqual(info["blocked_fields"][0]["name"], "IslandEna")
         self.assertIn("manually edit config/blocked_fields.yaml", info["unblock_instruction"])

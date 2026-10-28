@@ -20,6 +20,8 @@ blocked_fields:
   - "inverter.*.VMax"
   - "inverter.*.VMin"
   - "inverter.*.AMax"
+  - "inverter.*.ZExp"
+  - "inverter.*.ZExpLim"
   - "*.AntiIslEna"
   - "battery.*.VMaxTrip"
   - "battery.*.VMinTrip"
