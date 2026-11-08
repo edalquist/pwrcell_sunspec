@@ -2,6 +2,8 @@
 
 Integrate and control your Generac PWRcell system (Inverter, Battery, PV Links, REbus Beacon) using SunSpec Modbus TCP and internal MQTT telemetry. Includes a companion **Web Explorer** with live telemetry, SunSpec enum lookups, Modbus register browsing, and full **Home Assistant MQTT Discovery**.
 
+[![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fedalquist%2Fpwrcell_sunspec)
+
 ---
 
 ## Features
@@ -28,7 +30,10 @@ You can run this project in two primary ways:
 If you run **Home Assistant OS** or **Home Assistant Supervised**, running as an Add-on provides automatic lifecycle management, direct Mosquitto broker integration, persistent configuration, and one-click sidebar access via Home Assistant Ingress.
 
 #### Method A: Via Home Assistant Add-on Store (Repository)
-1. In Home Assistant, navigate to **Settings** > **Add-ons** > **Add-on Store**.
+
+[![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fedalquist%2Fpwrcell_sunspec)
+
+1. Click the button above to add this repository directly to your Home Assistant instance, or manually in Home Assistant navigate to **Settings** > **Add-ons** > **Add-on Store**.
 2. Click the three dots menu (**⋮**) in the upper right corner and select **Repositories**.
 3. Add the repository URL:
    ```text
