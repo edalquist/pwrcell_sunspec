@@ -144,7 +144,7 @@ class TestModbusScanRange(unittest.TestCase):
 
         # None, "None", and "" must NOT trigger duplicate stop.
         # Slave 4 is discovered.
-        # Slave 5 has duplicate "PWR-1001", which triggers warning and stop.
+        # Slave 5 has duplicate "PWR-1001", which triggers warning and stop when stop_on_duplicate_serial=True.
         # Discovered should contain slaves 1, 2, 3, 4.
         self.assertIn(1, discovered)
         self.assertIn(2, discovered)
@@ -153,6 +153,92 @@ class TestModbusScanRange(unittest.TestCase):
         self.assertNotIn(5, discovered)
         self.assertEqual(len(discovered), 4)
         self.assertTrue(any("duplicate serial" in line.lower() for line in cm.output))
+
+    def test_scan_range_skips_duplicate_and_discovers_subsequent_devices(self):
+        from unittest.mock import MagicMock
+        from pwrcell.modbus import SerializedModbusClient
+
+        mgr = SerializedModbusClient(host="localhost", port=5020)
+        mgr.read_model_block = MagicMock()
+
+        # Reproduce GitHub Issue #14:
+        # Slaves 1..6: original install
+        # Slave 7: duplicate serial of slave 1 (Beacon mirror/alias)
+        # Slaves 8..9: newly added PV Links
+        serials = {
+            1: "SN-BEACON",
+            2: "SN-ICM",
+            3: "SN-PV3",
+            4: "SN-PV4",
+            5: "SN-INV5",
+            6: "SN-BAT6",
+            7: "SN-BEACON",  # Duplicate alias at 7
+            8: "SN-PV8",     # Added PV link at 8
+            9: "SN-PV9",     # Added PV link at 9
+        }
+
+        def mock_scan_device(slave_id, full_model_read=False):
+            if slave_id not in serials:
+                return None
+            mock_dev = MagicMock()
+            mock_dev.models = {1: MagicMock()}
+            common_block = MagicMock()
+            common_block.SN.value = serials[slave_id]
+            common_block.Md.value = f"Model_{slave_id}"
+            mock_dev.common = [common_block]
+            return mock_dev
+
+        mgr.scan_device = MagicMock(side_effect=mock_scan_device)
+
+        with self.assertLogs("pwrcell.modbus", level="WARNING") as cm:
+            discovered = mgr.scan_range(start_id=1, end_id=10)
+
+        # Slave 7 should be skipped because it is an alias of Slave 1.
+        # Slaves 8 and 9 must be discovered.
+        self.assertIn(1, discovered)
+        self.assertIn(2, discovered)
+        self.assertIn(3, discovered)
+        self.assertIn(4, discovered)
+        self.assertIn(5, discovered)
+        self.assertIn(6, discovered)
+        self.assertNotIn(7, discovered)
+        self.assertIn(8, discovered)
+        self.assertIn(9, discovered)
+        self.assertEqual(len(discovered), 8)
+        self.assertTrue(any("skipping duplicate" in line.lower() for line in cm.output))
+
+    def test_scan_range_stops_on_max_consecutive_duplicates(self):
+        from unittest.mock import MagicMock
+        from pwrcell.modbus import SerializedModbusClient
+
+        mgr = SerializedModbusClient(host="localhost", port=5020)
+        mgr.read_model_block = MagicMock()
+
+        serials = {
+            1: "SN-BASE",
+            2: "SN-BASE",
+            3: "SN-BASE",
+            4: "SN-BASE",
+            5: "SN-BASE",
+            6: "SN-DISTANT",
+        }
+
+        def mock_scan_device(slave_id, full_model_read=False):
+            if slave_id not in serials:
+                return None
+            mock_dev = MagicMock()
+            mock_dev.models = {1: MagicMock()}
+            common_block = MagicMock()
+            common_block.SN.value = serials[slave_id]
+            common_block.Md.value = f"Model_{slave_id}"
+            mock_dev.common = [common_block]
+            return mock_dev
+
+        mgr.scan_device = MagicMock(side_effect=mock_scan_device)
+
+        discovered = mgr.scan_range(start_id=1, end_id=10, max_consecutive_duplicates=3)
+        # Should stop after slave 4 (3 consecutive duplicates of SN-BASE: slaves 2, 3, 4)
+        self.assertEqual(list(discovered.keys()), [1])
 
     def test_write_point_value_warns_on_readback_mismatch(self):
         from unittest.mock import MagicMock

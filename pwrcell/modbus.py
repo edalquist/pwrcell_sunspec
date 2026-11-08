@@ -391,13 +391,15 @@ class SerializedModbusClient:
         self,
         start_id: int = 1,
         end_id: int = 100,
-        stop_on_duplicate_serial: bool = True,
+        stop_on_duplicate_serial: bool = False,
         max_consecutive_misses: int = 15,
+        max_consecutive_duplicates: int = 5,
     ) -> Dict[int, ss2_client.SunSpecModbusClientDeviceTCP]:
         """Scan a range of slave IDs sequentially, returning discovered devices."""
         discovered: Dict[int, ss2_client.SunSpecModbusClientDeviceTCP] = {}
         found_serials: Dict[str, List[int]] = {}
         consecutive_misses = 0
+        consecutive_duplicates = 0
 
         logger.info("Scanning Modbus slave IDs %d..%d on %s:%d", start_id, end_id, self.host, self.port)
 
@@ -405,6 +407,7 @@ class SerializedModbusClient:
             dev = self.scan_device(slave_id, full_model_read=False)
             if not dev:
                 consecutive_misses += 1
+                consecutive_duplicates = 0
                 if max_consecutive_misses > 0 and consecutive_misses >= max_consecutive_misses:
                     logger.info(
                         "Stopping scan after %d consecutive empty slave IDs (last tried: %d)",
@@ -433,16 +436,26 @@ class SerializedModbusClient:
             if sn and sn not in ("", "0"):
                 ids = found_serials.setdefault(sn, [])
                 ids.append(slave_id)
-                if len(ids) > 1 and stop_on_duplicate_serial:
+                if len(ids) > 1:
+                    consecutive_duplicates += 1
                     logger.warning(
-                        "Found duplicate serial %s at slave ID %d (already seen at %s); stopping scan (discovered IDs: %s)",
+                        "Found duplicate serial %s at slave ID %d (already seen at %s); skipping duplicate",
                         sn,
                         slave_id,
                         ids[:-1],
-                        sorted(list(discovered.keys())),
                     )
-                    break
+                    if stop_on_duplicate_serial or (
+                        max_consecutive_duplicates > 0 and consecutive_duplicates >= max_consecutive_duplicates
+                    ):
+                        logger.info(
+                            "Stopping scan after duplicate serial threshold reached (last tried: %d, discovered IDs: %s)",
+                            slave_id,
+                            sorted(list(discovered.keys())),
+                        )
+                        break
+                    continue
 
+            consecutive_duplicates = 0
             discovered[slave_id] = dev
             logger.info("Discovered device at ID %d: %s (SN: %s)", slave_id, md, sn)
 
