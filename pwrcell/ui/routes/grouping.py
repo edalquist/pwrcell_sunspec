@@ -164,6 +164,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                     save_custom_groupings({})
             else:
                 save_custom_groupings({})
+            _sync_grouping_state()
             return jsonify({"success": True, "message": "Grouping overrides reset to default"})
         except Exception as e:
             logger.error("Failed resetting grouping overrides: %s", e)
@@ -208,6 +209,15 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                 return inv.serial_number
 
         return clean_sn
+
+    def _sync_grouping_state(device_sn: Optional[str] = None):
+        if client and getattr(client, "state", None):
+            client.state.refresh_compound_links(device_sn)
+        if client and getattr(client, "bridge", None):
+            try:
+                client.bridge.publish_discovery()
+            except Exception as e:
+                logger.warning("Failed to republish discovery after grouping update: %s", e)
 
     @bp.route("/api/grouping/override", methods=["POST"])
     def set_grouping_override():
@@ -268,6 +278,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                 custom_label=custom_label,
                 transform=transform if fk == field_key else None,
             )
+        _sync_grouping_state(device_sn)
         return jsonify({"status": "ok", "overrides": result})
 
     @bp.route("/api/grouping/reset", methods=["POST"])
@@ -285,6 +296,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             device_sn=device_sn,
             field_key=field_key,
         )
+        _sync_grouping_state(device_sn)
         return jsonify({"status": "ok", "overrides": result})
 
     @bp.route("/api/grouping/invert", methods=["POST"])
@@ -307,6 +319,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         transforms[qual_key] = new_tf
 
         save_custom_groupings(custom_data)
+        _sync_grouping_state(device_sn)
         return jsonify({"status": "ok", "field_key": field_key, "transform": new_tf})
 
     @bp.route("/api/grouping/ungroup_all", methods=["POST"])
@@ -336,6 +349,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             concept_key=concept_key,
             device_fields=device_fields,
         )
+        _sync_grouping_state(device_sn)
         return jsonify({"status": "ok", "overrides": result})
 
     @bp.route("/api/grouping/suggestions")
@@ -388,6 +402,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             negative_field_key=negative_field_key,
             polarity_convention=polarity_convention,
         )
+        _sync_grouping_state(device_sn)
         return jsonify({"status": "ok", "overrides": result})
 
     @bp.route("/api/grouping/suggestions/batch-approve", methods=["POST"])
@@ -399,6 +414,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             return jsonify({"error": "suggestions array is required"}), 400
 
         result = approve_suggestions(suggestions)
+        _sync_grouping_state()
         return jsonify({"status": "ok", "count": len(suggestions), "overrides": result})
 
     @bp.route("/api/grouping/suggestions/dismiss", methods=["POST"])

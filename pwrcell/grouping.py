@@ -73,7 +73,7 @@ def load_custom_groupings(config_path: Optional[Path | str] = None) -> Dict[str,
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
             if not isinstance(data, dict):
-                res = {"field_overrides": {}, "field_transforms": {}, "custom_concepts": {}, "dismissed_suggestions": [], "custom_bounds": {}}
+                res = {"field_overrides": {}, "field_transforms": {}, "custom_concepts": {}, "dismissed_suggestions": [], "custom_bounds": {}, "preferred_sources": {}}
             else:
                 res = {
                     "field_overrides": data.get("field_overrides", {}) or {},
@@ -81,6 +81,7 @@ def load_custom_groupings(config_path: Optional[Path | str] = None) -> Dict[str,
                     "custom_concepts": data.get("custom_concepts", {}) or {},
                     "dismissed_suggestions": list(data.get("dismissed_suggestions", []) or []),
                     "custom_bounds": data.get("custom_bounds", {}) or {},
+                    "preferred_sources": data.get("preferred_sources", {}) or {},
                 }
             _CUSTOM_GROUPINGS_CACHE["path"] = str(path)
             _CUSTOM_GROUPINGS_CACHE["mtime"] = mtime
@@ -91,10 +92,11 @@ def load_custom_groupings(config_path: Optional[Path | str] = None) -> Dict[str,
                 "custom_concepts": dict(res["custom_concepts"]),
                 "dismissed_suggestions": list(res["dismissed_suggestions"]),
                 "custom_bounds": dict(res["custom_bounds"]),
+                "preferred_sources": dict(res.get("preferred_sources", {}) or {}),
             }
     except Exception as e:
         logger.error("Failed to load custom groupings from %s: %s", path, e)
-        return {"field_overrides": {}, "field_transforms": {}, "custom_concepts": {}, "dismissed_suggestions": [], "custom_bounds": {}}
+        return {"field_overrides": {}, "field_transforms": {}, "custom_concepts": {}, "dismissed_suggestions": [], "custom_bounds": {}, "preferred_sources": {}}
 
 
 def save_custom_groupings(data: Dict[str, Any], config_path: Optional[Path | str] = None) -> None:
@@ -108,6 +110,7 @@ def save_custom_groupings(data: Dict[str, Any], config_path: Optional[Path | str
             "custom_concepts": data.get("custom_concepts", {}) or {},
             "dismissed_suggestions": sorted(list(set(data.get("dismissed_suggestions", []) or []))),
             "custom_bounds": data.get("custom_bounds", {}) or {},
+            "preferred_sources": data.get("preferred_sources", {}) or {},
         }
         with open(path, "w", encoding="utf-8") as f:
             f.write("# PWRcell SunSpec - Custom Field Grouping Overrides\n")

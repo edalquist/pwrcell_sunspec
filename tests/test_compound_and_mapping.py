@@ -128,6 +128,7 @@ class TestConfigurableMappingsAndCompoundViews(unittest.TestCase):
         self.assertGreater(c_view.match_pct, 99.0)
 
         # Step 3: Now simulate a new Modbus poll arriving at t2 (newer than MQTT)
+        # Because MQTT is selected, Modbus updates must be ignored for the active compound sensor value!
         t2 = time.time()
         mb_field2 = self.state.set_field(
             device_sn=self.inv.serial_number,
@@ -143,18 +144,19 @@ class TestConfigurableMappingsAndCompoundViews(unittest.TestCase):
         mb_field2.last_updated = t2
 
         c_view_updated = self.state.get_compound_view("grid_power")
-        # Now Latest value must switch to Modbus (+2950.0) because t2 > t1!
-        self.assertEqual(c_view_updated.latest_value, 2950.0)
-        self.assertEqual(c_view_updated.latest_source, FieldSource.MODBUS_POLL.value)
+        # Latest value must remain MQTT (+2810.0) because MQTT is selected!
+        self.assertEqual(c_view_updated.latest_value, 2810.0)
+        self.assertEqual(c_view_updated.latest_source, FieldSource.MQTT_PUSH.value)
         self.assertEqual(c_view_updated.mqtt_value, 2810.0)
+        # Modbus value is recorded for comparison/delta, but does not drive the active sensor
         self.assertEqual(c_view_updated.modbus_value, 2950.0)
 
-    def test_compound_subscriber_notified_on_either_source(self):
-        """Verify compound subscribers are notified when either MQTT or Modbus updates."""
+    def test_compound_subscriber_ignores_modbus_when_mqtt_selected(self):
+        """Verify compound subscribers receive Modbus when MQTT is absent, but ignore Modbus once MQTT is selected."""
         received_views = []
         self.state.subscribe_compound(lambda v: received_views.append(v))
 
-        # Modbus update
+        # 1. Modbus update arrives first when MQTT has no data (fallback mode)
         self.state.set_field(
             device_sn=self.bat.serial_number,
             name="SoC",
@@ -170,7 +172,7 @@ class TestConfigurableMappingsAndCompoundViews(unittest.TestCase):
         self.assertEqual(received_views[0].mapping_id, "battery_soc")
         self.assertEqual(received_views[0].latest_value, 82.5)
 
-        # MQTT update
+        # 2. MQTT update arrives (MQTT becomes active/selected)
         self.state.set_field(
             device_sn=self.bat.serial_number,
             name="state_of_charge",
@@ -185,6 +187,25 @@ class TestConfigurableMappingsAndCompoundViews(unittest.TestCase):
         self.assertEqual(len(received_views), 2)
         self.assertEqual(received_views[1].mapping_id, "battery_soc")
         self.assertEqual(received_views[1].latest_value, 83.0)
+
+        # 3. Subsequent Modbus poll arrives: must be ignored because MQTT is selected!
+        self.state.set_field(
+            device_sn=self.bat.serial_number,
+            name="SoC",
+            label="Battery State of Charge",
+            description="Battery SoC",
+            value=82.8,
+            raw_value=82.8,
+            units="%",
+            source=FieldSource.MODBUS_POLL,
+            sub_group="model_802",
+        )
+        # Subscriber count must remain 2 (Modbus update was ignored)
+        self.assertEqual(len(received_views), 2)
+        c_soc = self.state.get_compound_view("battery_soc")
+        self.assertEqual(c_soc.latest_value, 83.0)
+        self.assertEqual(c_soc.latest_source, FieldSource.MQTT_PUSH.value)
+        self.assertEqual(c_soc.modbus_value, 82.8)
 
     def test_api_device_compound_fields_and_mappings(self):
         """Test API endpoints for compound fields and mappings."""

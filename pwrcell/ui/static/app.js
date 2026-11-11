@@ -604,10 +604,21 @@ function getFieldDeviceSn(f) {
   return (f?.device_sn || state.activeDevice?.serial_number || '').trim().toUpperCase();
 }
 
+function getCompoundKeyForItem(f) {
+  if (f?.device_type && f?.concept_key) {
+    return `${f.device_type}.compound.${f.concept_key}`;
+  }
+  if (f?.id && f.id.includes('.concept.')) {
+    return f.id.replace('.concept.', '.compound.');
+  }
+  return null;
+}
+
 // Check if a field is selected for Home Assistant (supports device-scoped and legacy global keys)
 function isFieldSelected(f) {
   if (!f) return false;
   const sn = getFieldDeviceSn(f);
+  const compKey = getCompoundKeyForItem(f);
 
   const checkKey = (k) => {
     if (!k) return false;
@@ -617,6 +628,7 @@ function isFieldSelected(f) {
 
   if (checkKey(f.key)) return true;
   if (checkKey(f.id)) return true;
+  if (compKey && checkKey(compKey)) return true;
   if (checkKey(f.mqtt_key)) return true;
   if (checkKey(f.active_source_key)) return true;
   if (f.sources && Array.isArray(f.sources)) {
@@ -776,16 +788,23 @@ function toggleHaSelection(f, isSelected) {
   const scopedId = (sn && f.id) ? `${sn}:${f.id}` : f.id;
   const scopedKey = (sn && f.key) ? `${sn}:${f.key}` : f.key;
   const scopedMqttKey = (sn && f.mqtt_key) ? `${sn}:${f.mqtt_key}` : f.mqtt_key;
+  const compKey = getCompoundKeyForItem(f);
+  const scopedCompKey = (sn && compKey) ? `${sn}:${compKey}` : compKey;
 
   if (isSelected) {
     state.selectedHaKeys.add(scopedPrimaryKey);
     if (scopedId && f.sources) state.selectedHaKeys.add(scopedId);
+    if (scopedCompKey) state.selectedHaKeys.add(scopedCompKey);
   } else {
     state.selectedHaKeys.delete(scopedPrimaryKey);
     state.selectedHaKeys.delete(primaryKey);
     if (scopedId) {
       state.selectedHaKeys.delete(scopedId);
       state.selectedHaKeys.delete(f.id);
+    }
+    if (scopedCompKey) {
+      state.selectedHaKeys.delete(scopedCompKey);
+      state.selectedHaKeys.delete(compKey);
     }
     if (scopedKey) {
       state.selectedHaKeys.delete(scopedKey);
@@ -2114,8 +2133,9 @@ function renderFieldTable() {
         `;
       }).join('');
 
-      const cleanDeviceType = f.device_type || 'inverter';
-      const haEntityId = `sensor.pwrcell_${cleanDeviceType}_${f.concept_key}`;
+      const cleanSn = (f.device_sn || f.device_type || 'inverter').toLowerCase();
+      const platform = f.ha_platform || 'sensor';
+      const haEntityId = `${platform}.pwrcell_${cleanSn}_${(f.concept_key || '').toLowerCase()}`;
 
       let syncBadge = '';
       if (f.delta !== null && f.delta !== undefined) {
@@ -4361,14 +4381,30 @@ function setupEventListeners() {
     const sn = (state.activeDevice.serial_number || '').trim().toUpperCase();
     if (sn) {
       state.modifiedDeviceSerials.add(sn);
+      for (const k of Array.from(state.selectedHaKeys)) {
+        if (k.startsWith(`${sn}:`)) {
+          state.selectedHaKeys.delete(k);
+        }
+      }
     }
     state.activeFields.forEach(f => {
+      const compKey = getCompoundKeyForItem(f);
       if (sn) {
         state.selectedHaKeys.delete(`${sn}:${f.key}`);
+        if (f.id) state.selectedHaKeys.delete(`${sn}:${f.id}`);
+        if (compKey) state.selectedHaKeys.delete(`${sn}:${compKey}`);
         if (f.mqtt_key) state.selectedHaKeys.delete(`${sn}:${f.mqtt_key}`);
       }
       state.selectedHaKeys.delete(f.key);
+      if (f.id) state.selectedHaKeys.delete(f.id);
+      if (compKey) state.selectedHaKeys.delete(compKey);
       if (f.mqtt_key) state.selectedHaKeys.delete(f.mqtt_key);
+      if (f.sources && Array.isArray(f.sources)) {
+        for (const s of f.sources) {
+          state.selectedHaKeys.delete(s.field_key);
+          if (sn) state.selectedHaKeys.delete(`${sn}:${s.field_key}`);
+        }
+      }
     });
     updateHaCounter();
     updateFilterCounts();

@@ -220,3 +220,10 @@ Run the automated unit test suite:
 ```bash
 ./.venv/bin/python -m unittest discover tests
 ```
+
+---
+
+## Contributing & Agent Guidelines
+
+See [AGENTS.md](AGENTS.md) for automated agent instructions, version bump guidelines, and release note protocols.
+See [CHANGELOG.md](CHANGELOG.md) for full release notes and version history.

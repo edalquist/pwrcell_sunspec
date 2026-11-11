@@ -34,7 +34,8 @@ from .ha import (
     qualify_legacy_ha_config,
     ORIGIN_INFO,
 )
-from .state import StateField
+from .mapping import MappingRegistry
+from .state import FieldSource, StateField
 
 logger = logging.getLogger(__name__)
 
@@ -315,9 +316,37 @@ class HomeAssistantBridge:
         for dev in self.client.state.get_devices_snapshot():
             sn_clean = dev.serial_number.strip().upper()
             self._publish_device_availability(dev, force=True)
+
+            # 0. Pre-populate metadata for any selected fields (and compound members) not yet polled
+            reg = MappingRegistry.get_instance()
+            for sel_key in selected_keys:
+                if ":" in sel_key:
+                    target_sn, f_path = sel_key.split(":", 1)
+                    if target_sn.strip().upper() != sn_clean:
+                        continue
+                else:
+                    f_path = sel_key
+                    if not f_path.startswith(f"{dev.device_type}."):
+                        continue
+
+                if f_path.startswith(f"{dev.device_type}.compound.") or f_path.startswith(f"{dev.device_type}.concept."):
+                    cid = f_path.split(".")[-1]
+                    m = reg.get_by_id(cid)
+                    if m and m.device_type == dev.device_type:
+                        for cand in (list(m.mqtt_fields) + list(m.modbus_fields)):
+                            if cand not in dev.fields:
+                                self.client.state.ensure_field_definition(dev.serial_number, cand)
+                elif f_path not in dev.fields:
+                    self.client.state.ensure_field_definition(dev.serial_number, f_path)
+
             # 1. Publish selected compound fields
             for c_view in self.client.state.get_compound_views(dev.serial_number):
-                if is_field_selected(c_view.key, dev.serial_number, selected_set, c_view.mqtt_key):
+                if is_field_selected(
+                    c_view.key,
+                    dev.serial_number,
+                    selected_set,
+                    getattr(c_view, "mqtt_key", None),
+                ):
                     new_active_compounds.add(f"{sn_clean}:{c_view.key}")
                     if getattr(c_view, "mqtt_key", None):
                         new_active_member_keys.add(f"{sn_clean}:{c_view.mqtt_key}")
@@ -359,20 +388,6 @@ class HomeAssistantBridge:
                             self._mqttc.publish(payload_info["state_topic"], val_str, retain=True)
 
             # 2. Publish selected raw fields
-            # Pre-populate metadata for any selected fields not yet polled
-            for sel_key in selected_keys:
-                if ":" in sel_key:
-                    target_sn, f_path = sel_key.split(":", 1)
-                    if target_sn.strip().upper() != sn_clean:
-                        continue
-                else:
-                    f_path = sel_key
-                    if not f_path.startswith(f"{dev.device_type}."):
-                        continue
-
-                if f_path not in dev.fields and not f_path.startswith(f"{dev.device_type}.compound."):
-                    self.client.state.ensure_field_definition(dev.serial_number, f_path)
-
             for f_key, field in list(dev.fields.items()):
                 is_suppressed = (
                     f"{sn_clean}:{f_key}" in new_active_member_keys
@@ -499,9 +514,19 @@ class HomeAssistantBridge:
             selected_snapshot = set(self.selected_field_keys) | set(self._selected_set)
         c_views = self.client.state.get_compound_views(field.device_sn)
         for c_view in c_views:
-            is_member = any(getattr(s, "field_key", None) == field.key for s in getattr(c_view, "sources", []))
-            if is_member or (field.compound_key and c_view.key == field.compound_key):
-                if is_field_selected(c_view.key, field.device_sn, selected_snapshot, getattr(c_view, "mqtt_key", None)):
+            is_member = (
+                field.key == getattr(c_view, "mqtt_key", None)
+                or field.key in getattr(c_view, "modbus_candidates", [])
+                or any(getattr(s, "field_key", None) == field.key for s in getattr(c_view, "sources", []))
+                or (field.compound_key and c_view.key == field.compound_key)
+            )
+            if is_member:
+                if is_field_selected(
+                    c_view.key,
+                    field.device_sn,
+                    selected_snapshot,
+                    getattr(c_view, "mqtt_key", None),
+                ):
                     with self._lock:
                         self._active_compound_keys.add(f"{clean_sn}:{c_view.key}")
                         self._active_member_keys.add(f"{clean_sn}:{field.key}")
@@ -562,24 +587,57 @@ class HomeAssistantBridge:
         self._publish_field_state(field, payload_info, retain=False)
 
     def _on_compound_update(self, c_view: Any):
-        """Called when a compound view updates from either MQTT push or Modbus poll."""
+        """Called when a compound view updates (only from active/selected source)."""
         if not self._mqttc or c_view.latest_value is None:
             return
+
+        # If MQTT is selected on this compound view, ignore any updates sourced from Modbus
+        if (
+            getattr(c_view, "latest_source", None) != FieldSource.MQTT_PUSH.value
+            and getattr(c_view, "mqtt_value", None) is not None
+        ):
+            from .grouping import load_custom_groupings
+            custom_data = load_custom_groupings()
+            pref_sources = custom_data.get("preferred_sources", {}) or {}
+            c_key = getattr(c_view, "key", "")
+            m_id = getattr(c_view, "concept_key", None) or getattr(c_view, "mapping_id", "")
+            clean_sn = getattr(c_view, "device_sn", "").strip().upper()
+            pref = (
+                pref_sources.get(f"{clean_sn}:{m_id}")
+                or pref_sources.get(f"{clean_sn}:{c_key}")
+                or pref_sources.get(m_id)
+                or pref_sources.get(c_key)
+            )
+            is_modbus_preferred = pref in ("MODBUS", getattr(c_view, "modbus_key", None))
+            if not is_modbus_preferred:
+                return
         with self._lock:
             selected_snapshot = set(self.selected_field_keys) | set(self._selected_set)
-        if not is_field_selected(c_view.key, c_view.device_sn, selected_snapshot, getattr(c_view, "mqtt_key", None)):
+        if not is_field_selected(
+            c_view.key,
+            c_view.device_sn,
+            selected_snapshot,
+            getattr(c_view, "mqtt_key", None),
+        ):
             return
         clean_sn = c_view.device_sn.strip().upper()
         cache_key = f"{clean_sn}:{c_view.key}"
         with self._lock:
             self._active_compound_keys.add(cache_key)
+            if getattr(c_view, "mqtt_key", None):
+                self._active_member_keys.add(f"{clean_sn}:{c_view.mqtt_key}")
+            for cand in getattr(c_view, "modbus_candidates", []):
+                self._active_member_keys.add(f"{clean_sn}:{cand}")
+            for s in getattr(c_view, "sources", []):
+                if getattr(s, "field_key", None):
+                    self._active_member_keys.add(f"{clean_sn}:{s.field_key}")
             payload_info = self._payload_info_cache.get(cache_key)
         dev = self.client.state.get_device(c_view.device_sn)
         if not dev:
             return
         self._publish_device_availability(dev)
+        gateway = self.client.state.get_beacon() or self.client.state.get_inverter()
         if payload_info is None:
-            gateway = self.client.state.get_beacon() or self.client.state.get_inverter()
             payload_info = generate_discovery_payload(
                 c_view,
                 dev,
@@ -597,6 +655,21 @@ class HomeAssistantBridge:
             if needs_discovery:
                 self._published_discovery_topics.add(config_topic)
         if needs_discovery:
+            # Unpublish raw member sensors so HA doesn't keep stale duplicate entities
+            for cand in getattr(c_view, "modbus_candidates", []):
+                if cand in dev.fields:
+                    m_field = dev.fields[cand]
+                    m_payload = generate_discovery_payload(
+                        m_field, dev, gateway_device=gateway, base_topic=self.base_topic, ha_prefix=self.discovery_prefix
+                    )
+                    self._mqttc.publish(m_payload["config_topic"], "", retain=True)
+            if getattr(c_view, "mqtt_key", None) and c_view.mqtt_key in dev.fields:
+                m_field = dev.fields[c_view.mqtt_key]
+                m_payload = generate_discovery_payload(
+                    m_field, dev, gateway_device=gateway, base_topic=self.base_topic, ha_prefix=self.discovery_prefix
+                )
+                self._mqttc.publish(m_payload["config_topic"], "", retain=True)
+
             config_payload = json.dumps(payload_info["payload"])
             self._mqttc.publish(config_topic, config_payload, retain=True)
             old_s_topic = payload_info.get("old_sensor_topic")
@@ -640,16 +713,17 @@ class HomeAssistantBridge:
             logger.warning("No registered field for command topic %s", topic)
             return
 
+        dev_sn = getattr(target_field, "device_sn", None)
         # Offload blocking Modbus write operation to single-worker executor to order commands and avoid freezing Paho's network loop
         try:
-            self._cmd_executor.submit(self._execute_command_async, target_field.key, payload_str)
+            self._cmd_executor.submit(self._execute_command_async, target_field.key, payload_str, dev_sn)
         except RuntimeError:
             self._cmd_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="PwrCellHACmd")
-            self._cmd_executor.submit(self._execute_command_async, target_field.key, payload_str)
+            self._cmd_executor.submit(self._execute_command_async, target_field.key, payload_str, dev_sn)
 
-    def _execute_command_async(self, field_key: str, payload_str: str):
+    def _execute_command_async(self, field_key: str, payload_str: str, device_sn: Optional[str] = None):
         try:
-            confirmed_val = self.client.controls.write_field(field_key, payload_str)
-            logger.info("Executed command for %s: confirmed=%s", field_key, confirmed_val)
+            confirmed_val = self.client.controls.write_field(field_key, payload_str, device_sn=device_sn)
+            logger.info("Executed command for %s (device=%s): confirmed=%s", field_key, device_sn, confirmed_val)
         except Exception as e:
-            logger.error("Failed executing command for %s: %s", field_key, e)
+            logger.error("Failed executing command for %s (device=%s): %s", field_key, device_sn, e)

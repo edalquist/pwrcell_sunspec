@@ -236,21 +236,24 @@ def get_blocked_mutation_fields(
                         })
 
         # Also inspect compound views
-        for c_id, c_view in list(getattr(state_store, "compound_views", {}).items()):
-            if c_view.is_writable or c_view.access == "RW":
-                matched = get_matched_blocked_pattern(c_view, config_path=path)
-                if matched:
-                    blocked_items.append({
-                        "key": f"compound.{c_id}",
-                        "name": c_id,
-                        "label": c_view.label or c_id,
-                        "device_sn": "COMPOUND",
-                        "device_type": "compound",
-                        "model_id": None,
-                        "model_name": "compound",
-                        "access": "RW",
-                        "matched_pattern": matched,
-                    })
+        if hasattr(state_store, "get_compound_views"):
+            for c_view in state_store.get_compound_views():
+                if getattr(c_view, "is_writable", False) or getattr(c_view, "access", "R") == "RW":
+                    dev_sn = getattr(c_view, "device_sn", None) or "COMPOUND"
+                    matched = get_matched_blocked_pattern(c_view, device_sn=dev_sn, config_path=path)
+                    if matched:
+                        c_id = getattr(c_view, "concept_key", None) or getattr(c_view, "mapping_id", "")
+                        blocked_items.append({
+                            "key": getattr(c_view, "key", f"compound.{c_id}"),
+                            "name": c_id,
+                            "label": getattr(c_view, "label", c_id) or c_id,
+                            "device_sn": dev_sn,
+                            "device_type": getattr(c_view, "device_type", "compound") or "compound",
+                            "model_id": None,
+                            "model_name": "compound",
+                            "access": "RW",
+                            "matched_pattern": matched,
+                        })
 
     return {
         "status": "ok",

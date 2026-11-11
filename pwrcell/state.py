@@ -824,47 +824,103 @@ class StateStore:
         fields = self.find_fields(key)
         return fields[0] if fields else None
 
-    def get_compound_view(self, mapping_id: str) -> Optional[CompoundFieldView]:
-        """Compute compound view for a specific mapping id.
+    def _find_device_field(self, dev: UnifiedDevice, key: str) -> Optional[StateField]:
+        """Find a StateField on a specific device by exact key or point suffix."""
+        if not dev:
+            return None
+        if key in dev.fields:
+            return dev.fields[key]
+        parts = key.split(".")
+        if len(parts) >= 3:
+            target_dev_type = parts[0]
+            target_point = parts[-1]
+            if dev.device_type == target_dev_type:
+                for f_key, f_obj in list(dev.fields.items()):
+                    if f_key.endswith(f".{target_point}") and f_obj.source != FieldSource.MQTT_PUSH:
+                        return f_obj
+        return None
+
+    def get_compound_view(self, mapping_id: str, device_sn: Optional[str] = None) -> Optional[CompoundFieldView]:
+        """Compute compound view for a specific mapping id on a target device.
         
         Surfaces all 3 values (latest, mqtt, modbus) while preserving underlying state.
         """
         reg = MappingRegistry.get_instance()
         m = reg.get_by_id(mapping_id)
+        from .grouping import load_custom_groupings, is_field_excluded_from_mapping
+        custom_data = load_custom_groupings()
+
         if not m:
-            return None
+            cdef = (custom_data.get("custom_concepts") or {}).get(mapping_id)
+            if cdef:
+                from .mapping import TelemetryMappingDef
+                m = TelemetryMappingDef(
+                    id=mapping_id,
+                    name=cdef.get("label", mapping_id),
+                    label=cdef.get("label", mapping_id),
+                    description=cdef.get("description", ""),
+                    device_type=cdef.get("device_type", "inverter"),
+                    unit=cdef.get("units", ""),
+                    transform=cdef.get("transform", "none"),
+                    ha_platform=cdef.get("ha_platform", "sensor"),
+                    ha_device_class=cdef.get("ha_device_class"),
+                    ha_state_class=cdef.get("ha_state_class"),
+                    mqtt_fields=[],
+                    modbus_fields=[],
+                )
+            else:
+                return None
 
         # Determine target device
-        target_dev = None
-        if m.mqtt_field.startswith("inverter."):
-            target_dev = self.get_inverter()
-        elif m.mqtt_field.startswith("battery."):
-            target_dev = self.get_battery()
-        elif m.mqtt_field.startswith("rebus_beacon."):
-            target_dev = self.get_beacon()
+        target_dev = self.get_device(device_sn) if device_sn else None
+        if target_dev and m.device_type and target_dev.device_type != m.device_type:
+            return None
 
         if not target_dev:
-            devs = self.get_devices_by_type(m.device_type)
-            if devs:
-                target_dev = devs[0]
-            else:
-                target_dev = self.get_inverter() or self.get_beacon()
+            if m.mqtt_field and m.mqtt_field.startswith("inverter."):
+                target_dev = self.get_inverter()
+            elif m.mqtt_field and m.mqtt_field.startswith("battery."):
+                target_dev = self.get_battery()
+            elif m.mqtt_field and m.mqtt_field.startswith("rebus_beacon."):
+                target_dev = self.get_beacon()
+
+            if not target_dev:
+                devs = self.get_devices_by_type(m.device_type)
+                if devs:
+                    target_dev = devs[0]
+                else:
+                    target_dev = self.get_inverter() or self.get_beacon()
         if not target_dev:
             return None
 
         target_sn = target_dev.serial_number if target_dev else ""
 
-        from .grouping import load_custom_groupings, is_field_excluded_from_mapping
-        custom_data = load_custom_groupings()
+        # Gather custom overrides for this mapping
+        overrides = custom_data.get("field_overrides", {}) or {}
+        override_fields = [
+            f_key.split(":", 1)[1] if ":" in f_key else f_key
+            for f_key, tgt in overrides.items()
+            if tgt == mapping_id and (":" not in f_key or f_key.split(":", 1)[0].strip().upper() == target_sn.upper())
+        ]
+
+        mqtt_cands = list(m.mqtt_fields)
+        mb_cands = list(m.modbus_fields)
+        for of in override_fields:
+            if of.startswith(f"{target_dev.device_type}.live.") or ".live." in of:
+                if of not in mqtt_cands:
+                    mqtt_cands.append(of)
+            else:
+                if of not in mb_cands:
+                    mb_cands.append(of)
 
         # 1. Lookup MQTT Field
         raw_mqtt_field = None
-        for mf in m.mqtt_fields:
-            raw_mqtt_field = self._find_field(mf)
+        for mf in mqtt_cands:
+            raw_mqtt_field = self._find_device_field(target_dev, mf) or self._find_field(mf)
             if raw_mqtt_field:
                 break
         if not raw_mqtt_field and m.mqtt_field:
-            raw_mqtt_field = self._find_field(m.mqtt_field)
+            raw_mqtt_field = self._find_device_field(target_dev, m.mqtt_field) or self._find_field(m.mqtt_field)
 
         mqtt_field = raw_mqtt_field
         if mqtt_field:
@@ -878,11 +934,25 @@ class StateStore:
         mqtt_k = mqtt_field.key if mqtt_field else m.mqtt_field
 
         # 2. Lookup Modbus Field (primary candidate then alternatives)
-        candidates = list(m.modbus_fields)
+        candidates = [
+            cand_key for cand_key in mb_cands
+            if not is_field_excluded_from_mapping(target_sn, cand_key, m.id, custom_data)
+        ]
+
+        should_sum = (
+            m.transform in ("sum", "sum_all", "sum_devices")
+            or m.id == "solar_power"
+            or (any(c.startswith("pv_link.") for c in mb_cands) and m.mqtt_field == "inverter.live.solar_power_w")
+        )
+
         mb_fields: List[StateField] = []
-        chosen_cand_key = m.modbus_field
+        chosen_cand_key = candidates[0] if candidates else m.modbus_field
         for cand_key in candidates:
-            fields = self.find_fields(cand_key)
+            if should_sum:
+                fields = self.find_fields(cand_key)
+            else:
+                f_single = self._find_device_field(target_dev, cand_key)
+                fields = [f_single] if f_single else []
             valid_fields = [
                 f for f in fields
                 if not is_field_excluded_from_mapping(getattr(f, "device_sn", None) or target_sn, f.key, m.id, custom_data)
@@ -891,8 +961,12 @@ class StateStore:
                 mb_fields = valid_fields
                 chosen_cand_key = cand_key
                 break
-        if not mb_fields:
-            fields = self.find_fields(m.modbus_field)
+        if not mb_fields and chosen_cand_key:
+            if should_sum:
+                fields = self.find_fields(chosen_cand_key)
+            else:
+                f_single = self._find_device_field(target_dev, chosen_cand_key)
+                fields = [f_single] if f_single else []
             mb_fields = [
                 f for f in fields
                 if not is_field_excluded_from_mapping(getattr(f, "device_sn", None) or target_sn, f.key, m.id, custom_data)
@@ -902,50 +976,81 @@ class StateStore:
         if not mqtt_field and not mb_fields:
             return None
 
-        should_sum = (
-            m.transform in ("sum", "sum_all", "sum_devices")
-            or m.id == "solar_power"
-            or (chosen_cand_key.startswith("pv_link.") and m.mqtt_field == "inverter.live.solar_power_w")
-        )
-
         mb_field = mb_fields[0] if mb_fields else None
+        field_transforms = custom_data.get("field_transforms", {}) or {}
+
         if should_sum and mb_fields:
             num_vals = [f.value for f in mb_fields if isinstance(f.value, (int, float))]
             mb_raw = sum(num_vals) if num_vals else (0.0 if mb_fields else None)
             mb_upd = max((f.last_updated for f in mb_fields), default=None)
             mb_k = chosen_cand_key
-            if m.transform and m.transform not in ("sum", "sum_all", "sum_devices"):
-                mb_val = apply_transform(mb_raw, m.transform)
+            eff_transform = (
+                field_transforms.get(f"{target_sn}:{mb_k}")
+                or field_transforms.get(mb_k)
+                or (custom_data.get("custom_concepts", {}).get(m.id, {}) or {}).get("transform")
+                or m.transform
+            )
+            if eff_transform and eff_transform not in ("sum", "sum_all", "sum_devices"):
+                mb_val = apply_transform(mb_raw, eff_transform)
             else:
                 mb_val = mb_raw
         else:
             mb_raw = mb_field.value if mb_field else None
             mb_upd = mb_field.last_updated if mb_field else None
             mb_k = mb_field.key if mb_field else chosen_cand_key
-            mb_val = apply_transform(mb_raw, m.transform)
+            eff_transform = (
+                field_transforms.get(f"{target_sn}:{mb_k}")
+                or field_transforms.get(mb_k)
+                or (custom_data.get("custom_concepts", {}).get(m.id, {}) or {}).get("transform")
+                or m.transform
+            )
+            mb_val = apply_transform(mb_raw, eff_transform)
 
-        # 3. Determine Latest Value
-        if mqtt_upd is not None and mb_upd is not None:
-            if mb_upd > mqtt_upd:
-                latest_val = mb_val
-                latest_src = FieldSource.MODBUS_POLL.value
-                latest_upd = mb_upd
-            else:
-                latest_val = mqtt_val
-                latest_src = FieldSource.MQTT_PUSH.value
-                latest_upd = mqtt_upd
-        elif mqtt_upd is not None:
+        key = f"{target_dev.device_type}.compound.{m.id}"
+
+        # 3. Determine Latest Value (only considering sources with non-None values)
+        # If MQTT is selected, all Modbus updates for this grouped entity must be ignored.
+        pref_sources = custom_data.get("preferred_sources", {}) or {}
+        pref_key = (
+            pref_sources.get(f"{target_sn}:{m.id}")
+            or pref_sources.get(f"{target_sn}:{key}")
+            or pref_sources.get(m.id)
+            or pref_sources.get(key)
+        )
+        is_modbus_preferred = bool(
+            pref_key and (
+                pref_key == "MODBUS"
+                or pref_key == mb_k
+                or any(pref_key == c for c in candidates)
+            )
+        )
+
+        has_mqtt_val = mqtt_val is not None and mqtt_upd is not None
+        has_mb_val = mb_val is not None and mb_upd is not None
+
+        if not is_modbus_preferred and has_mqtt_val:
+            # MQTT is selected: ignore Modbus updates for this grouped sensor's active value
             latest_val = mqtt_val
             latest_src = FieldSource.MQTT_PUSH.value
             latest_upd = mqtt_upd
-        elif mb_upd is not None:
+        elif is_modbus_preferred and has_mb_val:
+            # Modbus explicitly preferred
             latest_val = mb_val
             latest_src = FieldSource.MODBUS_POLL.value
             latest_upd = mb_upd
+        elif has_mb_val:
+            # Fallback to Modbus when MQTT telemetry is not available
+            latest_val = mb_val
+            latest_src = FieldSource.MODBUS_POLL.value
+            latest_upd = mb_upd
+        elif has_mqtt_val:
+            latest_val = mqtt_val
+            latest_src = FieldSource.MQTT_PUSH.value
+            latest_upd = mqtt_upd
         else:
             latest_val = None
             latest_src = "NONE"
-            latest_upd = 0.0
+            latest_upd = max(mqtt_upd or 0.0, mb_upd or 0.0)
 
         # Compute delta and match percentage
         delta = None
@@ -955,7 +1060,6 @@ class StateStore:
             denom = max(abs(mqtt_val), abs(mb_val), 1.0)
             match_pct = max(0.0, 100.0 - (delta / denom * 100.0))
 
-        key = f"{target_dev.device_type}.compound.{m.id}"
         is_writable = False
         if m.id == "system_mode":
             is_writable = True
@@ -1012,9 +1116,26 @@ class StateStore:
                     units=mqtt_field.units,
                     is_writable=False,
                     is_optimal=(latest_src == FieldSource.MQTT_PUSH.value),
-                    device_sn=mqtt_field.device_sn if mqtt_field else "",
+                    device_sn=mqtt_field.device_sn if mqtt_field else target_sn,
                 )
             )
+        elif m.mqtt_field and not is_field_excluded_from_mapping(target_sn, m.mqtt_field, m.id, custom_data):
+            sources.append(
+                ConceptSource(
+                    source_type="MQTT",
+                    source_id="MQTT",
+                    field_key=m.mqtt_field,
+                    name=m.mqtt_field.split(".")[-1],
+                    label=f"{m.label} (MQTT)",
+                    value=None,
+                    raw_value=None,
+                    units=m.unit,
+                    is_writable=False,
+                    is_optimal=False,
+                    device_sn=target_sn,
+                )
+            )
+
         if mb_field:
             sources.append(
                 ConceptSource(
@@ -1029,15 +1150,15 @@ class StateStore:
                     raw_value=mb_raw,
                     units=mb_field.units,
                     is_writable=mb_field.is_writable,
-                    transform=m.transform if m.transform != "none" else None,
+                    transform=eff_transform if eff_transform != "none" else None,
                     is_optimal=(latest_src == FieldSource.MODBUS_POLL.value),
-                    device_sn=mb_field.device_sn if mb_field else "",
+                    device_sn=mb_field.device_sn if mb_field else target_sn,
                 )
             )
 
         active_k = mqtt_k if latest_src == FieldSource.MQTT_PUSH.value else mb_k
 
-        return ConceptView(
+        c_view = ConceptView(
             id=key,
             concept_key=m.id,
             device_sn=target_dev.serial_number,
@@ -1063,19 +1184,67 @@ class StateStore:
             ha_suggested_display_precision=precision,
         )
         from .ha import get_effective_ha_category
-        c_view.ha_category = get_effective_ha_category(c_view, target_dev)
+        c_view.ha_category = get_effective_ha_category(c_view, target_dev.serial_number)
         return c_view
 
     def get_compound_views(self, device_sn: Optional[str] = None) -> List[CompoundFieldView]:
         """Compute all compound views, optionally filtered by device_sn."""
         reg = MappingRegistry.get_instance()
-        views = []
-        for m in reg.get_all():
-            view = self.get_compound_view(m.id)
-            if view:
-                if device_sn is None or view.device_sn == device_sn:
-                    views.append(view)
+        from .grouping import load_custom_groupings
+        custom_data = load_custom_groupings()
+        custom_concepts = custom_data.get("custom_concepts", {}) or {}
+
+        views: List[CompoundFieldView] = []
+        target_devices = [self.get_device(device_sn)] if device_sn else self.get_devices_snapshot()
+        for dev in target_devices:
+            if not dev:
+                continue
+            for m in reg.get_all():
+                if m.device_type == dev.device_type:
+                    view = self.get_compound_view(m.id, device_sn=dev.serial_number)
+                    if view:
+                        views.append(view)
+            for cid, cdef in custom_concepts.items():
+                c_dev_type = cdef.get("device_type", dev.device_type)
+                if c_dev_type == dev.device_type and not reg.get_by_id(cid):
+                    view = self.get_compound_view(cid, device_sn=dev.serial_number)
+                    if view:
+                        views.append(view)
         return views
+
+    def refresh_compound_links(self, device_sn: Optional[str] = None) -> None:
+        """Re-evaluate compound_key and mqtt_equivalent on existing StateFields after grouping changes."""
+        from .grouping import load_custom_groupings, is_field_excluded_from_mapping
+        custom_data = load_custom_groupings()
+        reg = MappingRegistry.get_instance()
+        mb_to_mqtt = reg.get_modbus_to_mqtt_map()
+        raw_to_comp = reg.get_raw_to_compound_map()
+        overrides = custom_data.get("field_overrides", {}) or {}
+
+        with self._lock:
+            target_devs = [self.get_device(device_sn)] if device_sn else list(self.devices.values())
+            for dev in target_devs:
+                if not dev:
+                    continue
+                sn_clean = dev.serial_number.strip().upper()
+                for f_key, f_obj in dev.fields.items():
+                    mqtt_eq = mb_to_mqtt.get(f_key)
+                    c_key = raw_to_comp.get(f_key) or (raw_to_comp.get(mqtt_eq) if mqtt_eq else None)
+                    qual_key = f"{sn_clean}:{f_key}"
+                    override_target = overrides.get(qual_key, overrides.get(f_key))
+                    if override_target and str(override_target).strip().lower() not in ("", "null", "none", "standalone", "ungrouped"):
+                        c_key = f"{dev.device_type}.compound.{str(override_target).strip()}"
+                    elif c_key:
+                        cid = c_key.split(".")[-1]
+                        if is_field_excluded_from_mapping(dev.serial_number, f_key, cid, custom_data):
+                            c_key = None
+                            mqtt_eq = None
+                    elif override_target and str(override_target).strip().lower() in ("", "null", "none", "standalone", "ungrouped"):
+                        c_key = None
+                        mqtt_eq = None
+                    f_obj.mqtt_equivalent = mqtt_eq
+                    f_obj.compound_key = c_key
+                    f_obj.is_compound_raw = bool(c_key)
 
     def get_unified_fields(
         self,
@@ -1329,6 +1498,9 @@ class StateStore:
             if not dev:
                 raise ValueError(f"Device with serial number {device_sn} not registered")
 
+            if sub_group == "live" and source == FieldSource.MODBUS_POLL:
+                source = FieldSource.MQTT_PUSH
+
             if not label:
                 label = name
 
@@ -1411,9 +1583,19 @@ class StateStore:
         affected_view = None
         if changed and compound_listeners:
             reg = MappingRegistry.get_instance()
+            is_mqtt_field = (source == FieldSource.MQTT_PUSH or sub_group == "live" or bool(reg.get_by_mqtt(key)))
             mapping = reg.get_by_mqtt(key) or reg.find_mapping_for_modbus(key)
             if mapping:
-                affected_view = self.get_compound_view(mapping.id)
+                target_comp_sn = device_sn if mapping.device_type == dev.device_type else None
+                affected_view = self.get_compound_view(mapping.id, device_sn=target_comp_sn)
+                # If this field update came from Modbus, but MQTT is selected for this grouped entity,
+                # ignore all Modbus updates for this grouped entity (do not notify compound listeners)
+                if (
+                    affected_view
+                    and not is_mqtt_field
+                    and affected_view.latest_source == FieldSource.MQTT_PUSH.value
+                ):
+                    affected_view = None
 
         # Notify outside lock
         for listener in listeners:

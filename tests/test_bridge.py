@@ -428,7 +428,12 @@ class TestHomeAssistantBridge(unittest.TestCase):
 
         with patch.object(self.bridge._cmd_executor, "submit", wraps=self.bridge._cmd_executor.submit) as mock_submit:
             self.bridge._on_message(self.mock_mqttc, None, msg)
-            mock_submit.assert_called_once_with(self.bridge._execute_command_async, "inverter.compound.system_mode", "SELF_SUPPLY")
+            mock_submit.assert_called_once_with(
+                self.bridge._execute_command_async,
+                "inverter.compound.system_mode",
+                "SELF_SUPPLY",
+                "0001000714E9",
+            )
 
         # Wait briefly for single-worker executor
         import time

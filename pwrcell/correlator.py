@@ -1,7 +1,8 @@
 """Telemetry Correlation and Modbus-to-MQTT Mapping Engine (Forwarding Shim)."""
 
-from .concept import ConceptView as ComparisonResultRow, ConceptView
+from .concept import ConceptView
 from .tools.correlator import (
+    ComparisonResultRow,
     KNOWN_TELEMETRY_MAPPINGS,
     ModbusCandidate,
     TelemetryMappingDef,

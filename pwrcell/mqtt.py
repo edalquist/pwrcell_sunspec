@@ -266,6 +266,8 @@ class MqttClient:
                                 except Exception:
                                     pass
                                 try:
+                                    if hasattr(self.__mqttc, "_port"):
+                                        self.__mqttc._port = new_port
                                     self.__mqttc.connect_async(self.__tunnel_ip, new_port)
                                 except Exception as e:
                                     logger.warning("Failed reconnecting internal MQTT to %s:%s: %s", self.__tunnel_ip, new_port, e)

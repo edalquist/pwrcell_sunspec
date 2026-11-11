@@ -135,6 +135,14 @@ groups:
   - inverter_output_power
   - inverter_power
   - real_power
+- id: solar_power
+  name: Solar Generation Power
+  device_type: inverter
+  fields:
+  - inverter.live.solar_power_w
+  synonyms:
+  - solar_power_w
+  - solar_power
 - id: inverter_state
   name: Inverter Operational State
   device_type: inverter
@@ -422,5 +430,4 @@ groups:
   - a
   - total_dc_current
 ungrouped_fields:
-- battery.live.state_of_health
 - inverter.concept.inverter_state

@@ -3,9 +3,7 @@
 
 selected_fields:
 - battery.REbus_status.I
-- battery.REbus_status.P
 - battery.REbus_status.St
-- battery.REbus_status.T
 - battery.REbus_status.V
 - battery.battery.AChaMax
 - battery.battery.ADisChaMax
@@ -36,7 +34,6 @@ selected_fields:
 - inverter.REbus_status.I
 - inverter.REbus_status.P
 - inverter.REbus_status.T
-- inverter.REbus_status.V
 - inverter.compound.grid_exported_energy
 - inverter.compound.grid_imported_energy
 - inverter.compound.inverter_output_power
@@ -74,9 +71,6 @@ selected_fields:
 - pv_link.REbus_status.St
 - pv_link.REbus_status.T
 - pv_link.REbus_status.V
-- pv_link.string_combiner.DCA
-- pv_link.string_combiner.DCV
-- rebus_beacon.REbus_dir.SysMd
 controllable_fields:
 - system_mode
 - SysMd
@@ -107,7 +101,6 @@ category_overrides:
   battery.standalone.modtmpmin_804: primary
   battery.standalone.st_64207: primary
   battery.standalone.v_64207: primary
-  i_64207: primary
   inverter.REbus_exp.Px1: primary
   inverter.REbus_exp.Px2: primary
   inverter.REbus_exp.Whin: primary
@@ -122,17 +115,6 @@ category_overrides:
   inverter.standalone.tmpsnk_102: primary
   inverter.standalone.tmptrns_102: primary
   inverter.standalone.whin_64204: primary
-  modtmpavg_804: primary
-  modtmpmax_804: primary
-  modtmpmin_804: primary
   pv_link.standalone.i_64207: primary
   pv_link.standalone.st_64207: primary
   pv_link.standalone.v_64207: primary
-  px1_64204: primary
-  px2_64204: primary
-  st_64207: primary
-  tmpot_102: primary
-  tmpsnk_102: primary
-  tmptrns_102: primary
-  v_64207: primary
-  whin_64204: primary

@@ -18,7 +18,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from ..concept import ConceptView as ComparisonResultRow, ConceptView
+from ..concept import ConceptView
 from ..mapping import MappingRegistry, ModbusCandidateDef, TelemetryMappingDef as ConfigMappingDef, apply_transform
 from ..optimizer import group_device_fields, clean_unit
 from ..state import FieldSource, StateField, StateStore

@@ -48,12 +48,13 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         body = request.get_json() or {}
         field_key = body.get("field_key")
         value = body.get("value")
+        device_sn = body.get("device_sn")
 
         if not field_key:
             return jsonify({"error": "field_key is required"}), 400
 
         try:
-            confirmed_val = client.controls.write_field(field_key, value)
+            confirmed_val = client.controls.write_field(field_key, value, device_sn=device_sn)
             return jsonify({"success": True, "field_key": field_key, "value": confirmed_val})
         except Exception as e:
             logger.error("Failed writing field %s: %s", field_key, e)

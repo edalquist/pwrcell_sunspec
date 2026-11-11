@@ -361,9 +361,27 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             })
 
         for dev in client.state.get_devices_snapshot():
+            sn_clean = dev.serial_number.strip().upper()
+            active_compounds = set()
+            active_members = set()
+
             # Include compound fields
             for c_view in client.state.get_compound_views(dev.serial_number):
-                if is_field_selected(c_view.key, dev.serial_number, selected, c_view.mqtt_key):
+                if is_field_selected(
+                    c_view.key,
+                    dev.serial_number,
+                    selected,
+                    c_view.mqtt_key,
+                ):
+                    active_compounds.add(f"{sn_clean}:{c_view.key}")
+                    if getattr(c_view, "mqtt_key", None):
+                        active_members.add(f"{sn_clean}:{c_view.mqtt_key}")
+                    for cand in getattr(c_view, "modbus_candidates", []):
+                        active_members.add(f"{sn_clean}:{cand}")
+                    for s in getattr(c_view, "sources", []):
+                        if getattr(s, "field_key", None):
+                            active_members.add(f"{sn_clean}:{s.field_key}")
+
                     payload_info = generate_discovery_payload(c_view, dev, gateway_device=gateway, category_overrides=cat_overrides)
                     preview_list.append({
                         "field_key": c_view.key,
@@ -379,6 +397,11 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
 
             # Include raw fields
             for f_key, f in list(dev.fields.items()):
+                if (
+                    f"{sn_clean}:{f_key}" in active_members
+                    or (f.compound_key and f"{sn_clean}:{f.compound_key}" in active_compounds)
+                ):
+                    continue
                 if is_field_selected(f_key, dev.serial_number, selected):
                     payload_info = generate_discovery_payload(f, dev, gateway_device=gateway, category_overrides=cat_overrides)
                     preview_list.append({

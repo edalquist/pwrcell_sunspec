@@ -17,7 +17,7 @@ from .catalog import (
     get_catalog,
 )
 from .modbus import SerializedModbusClient
-from .state import StateStore
+from .state import FieldSource, StateStore
 
 logger = logging.getLogger(__name__)
 
@@ -270,30 +270,55 @@ class ControlDispatcher:
                         model_label=f.model_label,
                     )
 
+        # Also update live system_mode field if present in state store
+        for dev in self.state_store.get_devices_snapshot():
+            for f_key, f_live in list(dev.fields.items()):
+                if f_key.endswith(".live.system_mode") or (f_live.name == "system_mode" and f_live.sub_group == "live"):
+                    self.state_store.set_field(
+                        device_sn=dev.serial_number,
+                        name=f_live.name,
+                        label=f_live.label,
+                        description=f_live.description,
+                        value=mode_name,
+                        raw_value=int_mode,
+                        units=f_live.units,
+                        source=FieldSource.MQTT_PUSH,
+                        sub_group="live",
+                    )
+
         # Also update compound view for system_mode
         c_view = self.state_store.get_compound_view("system_mode")
         if c_view:
             c_view.modbus_value = mode_name
             c_view.modbus_raw_value = int_mode
             c_view.latest_value = mode_name
-            c_view.latest_source = "MODBUS_POLL"
+            c_view.latest_source = FieldSource.MQTT_PUSH.value if getattr(c_view, "mqtt_value", None) else FieldSource.MODBUS_POLL.value
             c_view.latest_updated = time.time()
             self.state_store.notify_compound_change(c_view)
 
         return int_mode
 
-    def write_field(self, field_key: str, new_value: Any) -> Any:
-        """Write any writable field by key (e.g. 'rebus_beacon.REbus_dir.SysMd', 'inverter.compound.system_mode').
+    def write_field(self, field_key: str, new_value: Any, device_sn: Optional[str] = None) -> Any:
+        """Write any writable field by key, optionally scoped to device_sn.
         
         Restricts inputs based on the field descriptor from the SunSpec metamodel catalog.
         """
         from .safety import is_mutation_blocked
 
-        if is_mutation_blocked(field_key):
+        # Parse <device_sn>:<field_key> if present
+        if ":" in field_key and not device_sn:
+            sn_part, field_key = field_key.split(":", 1)
+            device_sn = sn_part.strip().upper()
+
+        if is_mutation_blocked(field_key, device_sn=device_sn):
             raise PermissionError(
                 f"Field '{field_key}' is blocked from mutation by safety configuration. "
                 "To unblock, manually edit config/blocked_fields.yaml."
             )
+
+        # Normalize .concept. to .compound.
+        if ".concept." in field_key:
+            field_key = field_key.replace(".concept.", ".compound.")
 
         target_field = None
         target_dev = None
@@ -305,10 +330,14 @@ class ControlDispatcher:
             or field_key in ("inverter.live.system_mode", "system_mode", "inverter.compound.system_mode")
         ):
             self.set_system_mode(new_value)
+            if device_sn:
+                dev = self.state_store.get_device(device_sn)
+                if dev and field_key in dev.fields:
+                    return dev.fields[field_key].value
             for dev in self.state_store.get_devices_snapshot():
                 if field_key in dev.fields:
                     return dev.fields[field_key].value
-            c_view = self.state_store.get_compound_view("system_mode")
+            c_view = self.state_store.get_compound_view("system_mode", device_sn=device_sn)
             if c_view:
                 return c_view.latest_value
             return new_value
@@ -316,7 +345,7 @@ class ControlDispatcher:
         # Handle other compound fields
         if ".compound." in field_key:
             mapping_id = field_key.split(".compound.", 1)[-1]
-            c_view = self.state_store.get_compound_view(mapping_id)
+            c_view = self.state_store.get_compound_view(mapping_id, device_sn=device_sn)
             if not c_view:
                 raise KeyError(f"Compound field '{field_key}' not found in state store")
             if not c_view.is_writable:
@@ -338,26 +367,34 @@ class ControlDispatcher:
                     if "bound" in str(ex):
                         raise ex
 
-            target_mb_key = c_view.modbus_key
+            target_mb_key = None
+            for cand in ([c_view.modbus_key] if c_view.modbus_key else []) + list(c_view.modbus_candidates):
+                pt = self.catalog.get_point_for_field(cand) if self.catalog else None
+                if pt and pt.is_writable:
+                    target_mb_key = cand
+                    break
             if not target_mb_key:
-                for cand in c_view.modbus_candidates:
-                    pt = self.catalog.get_point_for_field(cand) if self.catalog else None
-                    if pt and pt.is_writable:
-                        target_mb_key = cand
-                        break
+                target_mb_key = c_view.modbus_key
             if not target_mb_key:
                 raise PermissionError(f"Compound field '{field_key}' has no writable modbus target point")
-            res = self.write_field(target_mb_key, new_value)
-            updated_c = self.state_store.get_compound_view(mapping_id)
+            res = self.write_field(target_mb_key, new_value, device_sn=c_view.device_sn)
+            updated_c = self.state_store.get_compound_view(mapping_id, device_sn=c_view.device_sn)
             if updated_c:
                 self.state_store.notify_compound_change(updated_c)
             return res
 
-        for dev in self.state_store.get_devices_snapshot():
-            if field_key in dev.fields:
-                target_field = dev.fields[field_key]
+        if device_sn:
+            dev = self.state_store.get_device(device_sn)
+            if dev and field_key in dev.fields:
                 target_dev = dev
-                break
+                target_field = dev.fields[field_key]
+
+        if not target_field:
+            for dev in self.state_store.get_devices_snapshot():
+                if field_key in dev.fields:
+                    target_field = dev.fields[field_key]
+                    target_dev = dev
+                    break
 
         if not target_field or not target_dev:
             raise KeyError(f"Field '{field_key}' not found in state store")

@@ -116,25 +116,80 @@ def is_field_selected(
     device_sn: Optional[str],
     selected_keys: List[str] | Set[str],
     mqtt_key: Optional[str] = None,
+    candidate_keys: Optional[Iterable[str]] = None,
 ) -> bool:
     """Check if a field is selected, supporting both device-scoped ('<sn>:<key>') and legacy global keys."""
     if not selected_keys:
         return False
     s_set = selected_keys if isinstance(selected_keys, set) else set(selected_keys)
+
+    check_keys = [field_key]
+    if ".compound." in field_key:
+        check_keys.append(field_key.replace(".compound.", ".concept."))
+    elif ".concept." in field_key:
+        check_keys.append(field_key.replace(".concept.", ".compound."))
+    if mqtt_key:
+        check_keys.append(mqtt_key)
+    if candidate_keys:
+        check_keys.extend(k for k in candidate_keys if k)
+
     # Selected keys are normalized at load time (qualify_legacy_ha_config): '<SERIAL_UPPER>:<field_key>'.
     if device_sn:
         prefix = f"{device_sn.strip().upper()}:"
-        if f"{prefix}{field_key}" in s_set:
-            return True
-        if mqtt_key and f"{prefix}{mqtt_key}" in s_set:
-            return True
+        for k in check_keys:
+            if f"{prefix}{k}" in s_set:
+                return True
 
     # Legacy global keys (no serial prefix) are only present until a device of that type registers.
-    if field_key in s_set:
-        return True
-    if mqtt_key and mqtt_key in s_set:
-        return True
+    for k in check_keys:
+        if k in s_set:
+            return True
     return False
+
+
+_HA_CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def clear_ha_config_cache() -> None:
+    """Clear in-memory cache of HA config files."""
+    _HA_CONFIG_CACHE.clear()
+
+
+def _read_ha_config_doc(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {"selected_fields": [], "category_overrides": {}}
+    p_str = str(path.resolve())
+    try:
+        mtime = path.stat().st_mtime
+        cached = _HA_CONFIG_CACHE.get(p_str)
+        if cached and cached.get("mtime") == mtime:
+            return {
+                "selected_fields": list(cached["selected_fields"]),
+                "category_overrides": dict(cached["category_overrides"]),
+            }
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        raw_fields = data.get("selected_fields")
+        fields = (
+            [str(x).strip() for x in raw_fields if x is not None and str(x).strip()]
+            if raw_fields
+            else []
+        )
+        raw_ov = data.get("category_overrides") or data.get("entity_categories") or {}
+        overrides = (
+            {str(k).strip(): str(v).strip().lower() for k, v in raw_ov.items() if k and v}
+            if isinstance(raw_ov, dict)
+            else {}
+        )
+        _HA_CONFIG_CACHE[p_str] = {
+            "mtime": mtime,
+            "selected_fields": list(fields),
+            "category_overrides": dict(overrides),
+        }
+        return {"selected_fields": fields, "category_overrides": overrides}
+    except Exception as e:
+        logger.error("Failed to load %s: %s", path, e)
+        return {"selected_fields": [], "category_overrides": {}}
 
 
 def load_ha_config(
@@ -147,28 +202,14 @@ def load_ha_config(
     falls back to ha_default_config.yaml as an initial seed.
     """
     path = Path(config_path) if config_path else get_default_ha_config_path()
-    fields: List[str] = []
-    if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-                raw_fields = data.get("selected_fields")
-                if raw_fields:
-                    fields = [str(x).strip() for x in raw_fields if x is not None and str(x).strip()]
-        except Exception as e:
-            logger.error("Failed to load %s: %s", path, e)
+    doc = _read_ha_config_doc(path)
+    fields = list(doc.get("selected_fields") or [])
 
     if not fields and allow_default_seed:
         seed_path = get_default_seed_config_path()
         if seed_path.exists():
-            try:
-                with open(seed_path, "r", encoding="utf-8") as f:
-                    data = yaml.safe_load(f) or {}
-                    raw_fields = data.get("selected_fields")
-                    if raw_fields:
-                        fields = [str(x).strip() for x in raw_fields if x is not None and str(x).strip()]
-            except Exception as e:
-                logger.error("Failed to load default seed %s: %s", seed_path, e)
+            seed_doc = _read_ha_config_doc(seed_path)
+            fields = list(seed_doc.get("selected_fields") or [])
 
     return fields
 
@@ -188,6 +229,24 @@ _LEGACY_CONCEPT_REMAP: Dict[str, str] = {
 }
 
 
+def _remap_concept_key(field_part: str) -> Optional[str]:
+    if field_part in _LEGACY_CONCEPT_REMAP:
+        return _LEGACY_CONCEPT_REMAP[field_part]
+    if field_part.endswith("_None"):
+        return None
+    if ".concept." in field_part:
+        dev_type, _, cid = field_part.partition(".concept.")
+        from .mapping import MappingRegistry
+        reg = MappingRegistry.get_instance()
+        if reg.get_by_id(cid):
+            return f"{dev_type}.compound.{cid}"
+        from .grouping import load_custom_groupings
+        if cid in (load_custom_groupings().get("custom_concepts") or {}):
+            return f"{dev_type}.compound.{cid}"
+        return None
+    return field_part
+
+
 def qualify_legacy_ha_config(selected_field_keys: Optional[List[str]], state_store: StateStore) -> List[str]:
     """Ensure all field keys are scoped by device serial number (<SERIAL>:<FIELD_KEY>)."""
     if not selected_field_keys:
@@ -204,17 +263,16 @@ def qualify_legacy_ha_config(selected_field_keys: Optional[List[str]], state_sto
             sn_part = sn_part.strip().upper()
             field_part = field_part.strip()
             # Remap or drop legacy concept/standalone artifacts
-            if field_part in _LEGACY_CONCEPT_REMAP:
-                field_part = _LEGACY_CONCEPT_REMAP[field_part]
-            elif ".concept." in field_part or field_part.endswith("_None"):
+            remapped = _remap_concept_key(field_part)
+            if not remapped:
                 continue
-            qualified.add(f"{sn_part}:{field_part}")
+            qualified.add(f"{sn_part}:{remapped}")
         else:
             # Legacy unqualified key, e.g. 'inverter.live.grid_power_w' or 'pv_link.string_combiner.DCW'
-            if k_str in _LEGACY_CONCEPT_REMAP:
-                k_str = _LEGACY_CONCEPT_REMAP[k_str]
-            elif ".concept." in k_str or k_str.endswith("_None"):
+            remapped = _remap_concept_key(k_str)
+            if not remapped:
                 continue
+            k_str = remapped
             dot_idx = k_str.find(".")
             dev_type = k_str[:dot_idx] if dot_idx != -1 else ""
             devices = [d for d in state_store.devices.values() if d.device_type == dev_type]
@@ -247,16 +305,8 @@ def load_ha_category_overrides(config_path: Optional[Path | str] = None) -> Dict
     Returns mapping of '<SERIAL>:<FIELD_KEY>' (or '<FIELD_KEY>') -> 'primary' | 'diagnostic' | 'config'.
     """
     path = Path(config_path) if config_path else get_default_ha_config_path()
-    if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-                raw_overrides = data.get("category_overrides") or data.get("entity_categories")
-                if isinstance(raw_overrides, dict):
-                    return {str(k).strip(): str(v).strip().lower() for k, v in raw_overrides.items() if k and v}
-        except Exception as e:
-            logger.error("Failed to load category overrides from %s: %s", path, e)
-    return {}
+    doc = _read_ha_config_doc(path)
+    return dict(doc.get("category_overrides") or {})
 
 
 def save_ha_config(
@@ -289,6 +339,7 @@ def save_ha_config(
                 sort_keys=False,
             )
         tmp_path.replace(path)
+        _HA_CONFIG_CACHE.pop(str(path.resolve()), None)
         logger.info("Saved %d entities and %d category overrides to %s", len(clean_keys), len(clean_overrides), path)
     except Exception as e:
         logger.error("Failed to save %s: %s", path, e)
@@ -369,7 +420,6 @@ def get_effective_ha_category(
             raw_candidates.append(pt_name)
             if model_id and dev_type:
                 raw_candidates.append(f"{dev_type}.standalone.{pt_name.lower()}_{model_id}")
-                raw_candidates.append(f"{pt_name.lower()}_{model_id}")
         if mqtt_k:
             raw_candidates.append(mqtt_k)
 
