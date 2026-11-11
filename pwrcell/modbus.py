@@ -261,6 +261,16 @@ class SerializedModbusClient:
                 logger.debug("Error closing shared Modbus client: %s", e)
         self.worker.stop()
 
+    def clear_devices(self):
+        """Clear cached SunSpecModbusClientDeviceTCP instances."""
+        with self._lock:
+            for dev in list(self._devices.values()):
+                try:
+                    dev.disconnect()
+                except Exception:
+                    pass
+            self._devices.clear()
+
     def _get_shared_client(self) -> mb.ModbusClientTCP:
         current_port = self.port
         if self.tunnel:

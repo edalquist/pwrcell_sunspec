@@ -305,6 +305,39 @@ class TestClientLifecycle(unittest.TestCase):
         self.assertIn("NEW_SERIAL_123", live_client.state.devices)
         self.assertEqual(live_client.state.devices["NEW_SERIAL_123"].device_type, "inverter")
 
+    def test_rescan_devices_with_clear_cache(self):
+        """rescan_devices(clear_cache=True) calls DeviceConfig.delete(), modbus.clear_devices(), and wipes in-memory devices."""
+        from types import SimpleNamespace
+        from pwrcell.config import DeviceConfig
+
+        live_client = PwrcellClient(is_mock=False)
+        live_client.state.register_device("OLD_DEV_001", 1, "rebus_beacon", "Beacon")
+        self.assertIn("OLD_DEV_001", live_client.state.devices)
+
+        mock_modbus = MagicMock()
+        new_dev = SimpleNamespace(
+            models={1: [object()]},
+            common=[
+                SimpleNamespace(
+                    SN=SimpleNamespace(value="NEW_BEACON_002"),
+                    Md=SimpleNamespace(value="REbus Beacon"),
+                    Vr=SimpleNamespace(value="1.0"),
+                )
+            ],
+        )
+        mock_modbus.scan_range.return_value = {1: new_dev}
+        live_client.modbus = mock_modbus
+
+        with patch.object(DeviceConfig, "delete", return_value=True) as mock_delete, \
+             patch.object(DeviceConfig, "write") as mock_write:
+            count = live_client.rescan_devices(start=1, end=10, clear_cache=True)
+            mock_delete.assert_called_once()
+            mock_modbus.clear_devices.assert_called_once()
+            mock_modbus.scan_range.assert_called_once_with(1, 10)
+            self.assertEqual(count, 1)
+            self.assertNotIn("OLD_DEV_001", live_client.state.devices)
+            self.assertIn("NEW_BEACON_002", live_client.state.devices)
+
     def test_data_dir_persists_all_runtime_files_under_data_dir_override(self):
         """With PWRCELL_DATA_DIR set, devices.yaml, ha_config.yaml, .ha_published_topics.json, telemetry_mappings.yaml, custom_groupings.yaml, and sunspec_cache_dir all resolve under data_dir()."""
         import os

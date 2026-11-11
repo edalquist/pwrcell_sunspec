@@ -72,8 +72,11 @@
       <!-- Left Sidebar: Devices Tree -->
       <aside class="sidebar">
         <div class="sidebar-header">
-          <h2>Discovered Devices</h2>
-          <span class="counter" id="deviceCountBadge">0</span>
+          <div class="sidebar-title-group" style="display: flex; align-items: center; gap: 8px;">
+            <h2>Discovered Devices</h2>
+            <span class="counter" id="deviceCountBadge">0</span>
+          </div>
+          <button class="btn btn-secondary btn-sm" id="btnOpenRescan" title="Scan Modbus network for devices">🔄 Re-scan</button>
         </div>
         <div class="device-list" id="deviceList">
           <div class="loading-spinner">Loading devices...</div>
@@ -764,6 +767,56 @@
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" id="btnCloseSafetyFooter">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Re-scan Devices Modal -->
+  <div class="modal-backdrop" id="rescanModal">
+    <div class="modal modal-md">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <span class="modal-tag">DEVICE DISCOVERY</span>
+          <h3>Re-scan Modbus Devices</h3>
+        </div>
+        <button class="modal-close" id="btnCloseRescanModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">
+          Scan the Modbus network to discover connected PWRcell inverters, batteries, PV links, and beacons.
+        </p>
+
+        <div style="display: flex; gap: 16px; margin-bottom: 16px;">
+          <div class="form-group" style="flex: 1;">
+            <label for="rescanStartId" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">Start Slave ID</label>
+            <input type="number" id="rescanStartId" class="text-input" min="1" max="247" value="1" style="width: 100%;" />
+          </div>
+          <div class="form-group" style="flex: 1;">
+            <label for="rescanEndId" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">End Slave ID</label>
+            <input type="number" id="rescanEndId" class="text-input" min="1" max="247" value="100" style="width: 100%;" />
+          </div>
+        </div>
+
+        <div class="form-group" style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 12px; margin-bottom: 16px;">
+          <label class="checkbox-label" style="display: flex; align-items: flex-start; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="chkClearDeviceCache" style="margin-top: 3px;" />
+            <div>
+              <strong style="color: var(--text-primary); font-size: 13px;">Force full re-scan (delete existing device cache)</strong>
+              <p style="margin: 4px 0 0; font-size: 11px; color: var(--text-muted); line-height: 1.4;">
+                Deletes cached <code>devices.yaml</code> and clears cached SunSpec models before scanning. Use this if devices were added, removed, or if stale devices are appearing in the list.
+              </p>
+            </div>
+          </label>
+        </div>
+
+        <div id="rescanStatusBanner" class="rescan-status-banner" style="display: none;">
+          <span class="loading-spinner" style="width: 14px; height: 14px; border-width: 2px; margin-right: 8px; display: inline-block;"></span>
+          <span id="rescanStatusText">Scanning Modbus network... This may take up to a minute.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btnCancelRescan">Cancel</button>
+        <button class="btn btn-primary" id="btnExecuteRescan">🔍 Start Scan</button>
       </div>
     </div>
   </div>

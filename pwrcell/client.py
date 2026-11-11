@@ -415,8 +415,21 @@ class PwrcellClient:
             logger.info("No saved devices found, performing Modbus device scan")
             self.rescan_devices(1, 100)
 
-    def rescan_devices(self, start: int = 1, end: int = 100) -> int:
-        """Perform a fresh Modbus scan across start..end, replacing stale cached devices if new devices are found."""
+    def rescan_devices(self, start: int = 1, end: int = 100, clear_cache: bool = False) -> int:
+        """Perform a fresh Modbus scan across start..end, replacing stale cached devices if new devices are found.
+
+        If clear_cache is True, deletes existing device configuration cache (devices.yaml),
+        clears cached SunSpec device instances, and wipes in-memory devices before scanning.
+        """
+        if clear_cache:
+            logger.info("Forcing full re-scan: deleting device cache and cached device instances")
+            DeviceConfig.delete()
+            if self.modbus:
+                self.modbus.clear_devices()
+            with self.state._lock:
+                self.state.devices.clear()
+                self.state.devices_by_slave_id.clear()
+
         if not self.modbus:
             return len(self.state.get_devices_snapshot())
         discovered = self.modbus.scan_range(start, end)
@@ -426,6 +439,11 @@ class PwrcellClient:
                 self.state.devices_by_slave_id.clear()
             self._save_scanned_devices(discovered)
             self.poller.refresh_model_resolutions()
+            if self.bridge:
+                try:
+                    self.bridge.publish_discovery()
+                except Exception as e:
+                    logger.debug("Error republishing discovery after rescan: %s", e)
         return len(discovered)
 
     def _is_empty_device_config(self, cfg: DeviceConfig) -> bool:

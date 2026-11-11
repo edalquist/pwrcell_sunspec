@@ -58,6 +58,9 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertIn(b"hideCombinedRaw", resp.data)
         self.assertIn(b"btnApplySameType", resp.data)
         self.assertIn(b"sortBar", resp.data)
+        self.assertIn(b"btnOpenRescan", resp.data)
+        self.assertIn(b"rescanModal", resp.data)
+        self.assertIn(b"chkClearDeviceCache", resp.data)
         self.assertIn(b"groupingModal", resp.data)
         self.assertIn(b"radioGroupExisting", resp.data)
         self.assertIn(b"radioGroupUngroup", resp.data)
@@ -292,6 +295,32 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertTrue(data["success"])
+
+    def test_rescan_devices_endpoint(self):
+        with mock.patch.object(self.client, "rescan_devices", return_value=3) as mock_rescan:
+            resp = self.test_client.post(
+                "/api/devices/rescan",
+                json={"start": 1, "end": 50, "clear_cache": False},
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertTrue(data["success"])
+            self.assertEqual(data["discovered_count"], 3)
+            self.assertFalse(data["cache_cleared"])
+            mock_rescan.assert_called_once_with(start=1, end=50, clear_cache=False)
+
+    def test_rescan_devices_with_clear_cache_endpoint(self):
+        with mock.patch.object(self.client, "rescan_devices", return_value=4) as mock_rescan:
+            resp = self.test_client.post(
+                "/api/devices/rescan",
+                json={"start": 1, "end": 100, "clear_cache": True},
+            )
+            self.assertEqual(resp.status_code, 200)
+            data = resp.get_json()
+            self.assertTrue(data["success"])
+            self.assertEqual(data["discovered_count"], 4)
+            self.assertTrue(data["cache_cleared"])
+            mock_rescan.assert_called_once_with(start=1, end=100, clear_cache=True)
 
     def test_sse_stream_cleanup(self):
         # Initial sse_queues should be empty

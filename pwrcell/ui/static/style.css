@@ -206,6 +206,12 @@ body {
   border-bottom: 1px solid var(--border-color);
 }
 
+.sidebar-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .sidebar-header h2 {
   font-size: 13px;
   font-weight: 600;
@@ -4013,6 +4019,20 @@ body {
   background: rgba(16, 185, 129, 0.08);
   color: #10b981;
 }
+
+.rescan-status-banner {
+  background-color: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  color: #7dd3fc;
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 12px;
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 
 
 

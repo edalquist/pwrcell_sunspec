@@ -160,6 +160,27 @@ class DeviceConfig:
     except FileNotFoundError as e:
       return None
 
+  @classmethod
+  def delete(cls) -> bool:
+    """Delete the cached devices.yaml configuration file if it exists."""
+    deleted = False
+    candidates = {
+      Path(_getConfigPath(_DEVICE_FILE, for_write=True)),
+      Path(_getConfigPath(_DEVICE_FILE, for_write=False)),
+      data_dir() / _DEVICE_FILE,
+      Path("config") / _DEVICE_FILE,
+      Path(_DEVICE_FILE),
+    }
+    for p in candidates:
+      if p.exists() and p.is_file():
+        try:
+          p.unlink()
+          deleted = True
+          logger.info("Deleted device cache at %s", p)
+        except Exception as e:
+          logger.warning("Could not delete device cache at %s: %s", p, e)
+    return deleted
+
   def write(self):
     target = _getConfigPath(_DEVICE_FILE, for_write=True)
     Path(target).parent.mkdir(parents=True, exist_ok=True)

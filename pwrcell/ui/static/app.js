@@ -219,6 +219,16 @@ const el = {
   safetyPatternCount: document.getElementById('safetyPatternCount'),
   safetyPatternsList: document.getElementById('safetyPatternsList'),
   safetyUnblockPolicy: document.getElementById('safetyUnblockPolicy'),
+  btnOpenRescan: document.getElementById('btnOpenRescan'),
+  rescanModal: document.getElementById('rescanModal'),
+  btnCloseRescanModal: document.getElementById('btnCloseRescanModal'),
+  btnCancelRescan: document.getElementById('btnCancelRescan'),
+  btnExecuteRescan: document.getElementById('btnExecuteRescan'),
+  rescanStartId: document.getElementById('rescanStartId'),
+  rescanEndId: document.getElementById('rescanEndId'),
+  chkClearDeviceCache: document.getElementById('chkClearDeviceCache'),
+  rescanStatusBanner: document.getElementById('rescanStatusBanner'),
+  rescanStatusText: document.getElementById('rescanStatusText'),
   toast: document.getElementById('toast'),
   counts: {
     all: document.getElementById('countAll'),
@@ -352,6 +362,20 @@ async function fetchDevices() {
 function renderDeviceSidebar() {
   el.deviceCountBadge.textContent = state.devices.length;
   el.deviceList.innerHTML = '';
+
+  if (state.devices.length === 0) {
+    el.deviceList.innerHTML = `
+      <div style="padding: 24px 16px; text-align: center; color: var(--text-muted); font-size: 12px;">
+        <p style="margin-bottom: 8px;">No devices discovered.</p>
+        <button class="btn btn-secondary btn-sm" id="btnEmptyRescan">🔍 Scan for Devices</button>
+      </div>
+    `;
+    const btnEmpty = document.getElementById('btnEmptyRescan');
+    if (btnEmpty) {
+      btnEmpty.addEventListener('click', openRescanModal);
+    }
+    return;
+  }
 
   state.devices.forEach(dev => {
     const card = document.createElement('div');
@@ -5186,6 +5210,25 @@ function setupEventListeners() {
     });
   }
 
+  // Re-scan Devices Listeners
+  if (el.btnOpenRescan) {
+    el.btnOpenRescan.addEventListener('click', openRescanModal);
+  }
+  if (el.btnCloseRescanModal) {
+    el.btnCloseRescanModal.addEventListener('click', closeRescanModal);
+  }
+  if (el.btnCancelRescan) {
+    el.btnCancelRescan.addEventListener('click', closeRescanModal);
+  }
+  if (el.btnExecuteRescan) {
+    el.btnExecuteRescan.addEventListener('click', executeRescanAction);
+  }
+  if (el.rescanModal) {
+    el.rescanModal.addEventListener('click', (e) => {
+      if (e.target === el.rescanModal) closeRescanModal();
+    });
+  }
+
   // Compare Table Event Delegation for Grouping Actions
   if (el.compareTableBody) {
     el.compareTableBody.addEventListener('click', async (e) => {
@@ -6046,6 +6089,102 @@ async function openBlockedSafetyModal() {
 function closeBlockedSafetyModal() {
   if (el.blockedSafetyModal) {
     el.blockedSafetyModal.classList.remove('open');
+  }
+}
+
+// Re-scan Devices Modal Actions
+function openRescanModal() {
+  if (!el.rescanModal) return;
+  if (el.rescanStartId) el.rescanStartId.value = 1;
+  if (el.rescanEndId) el.rescanEndId.value = 100;
+  if (el.chkClearDeviceCache) el.chkClearDeviceCache.checked = false;
+  if (el.rescanStatusBanner) el.rescanStatusBanner.style.display = 'none';
+  if (el.btnExecuteRescan) {
+    el.btnExecuteRescan.disabled = false;
+    el.btnExecuteRescan.textContent = '🔍 Start Scan';
+  }
+  if (el.btnCancelRescan) el.btnCancelRescan.disabled = false;
+  if (el.btnCloseRescanModal) el.btnCloseRescanModal.disabled = false;
+  el.rescanModal.classList.add('open');
+}
+
+function closeRescanModal() {
+  if (el.rescanModal) {
+    el.rescanModal.classList.remove('open');
+  }
+}
+
+async function executeRescanAction() {
+  const start = parseInt(el.rescanStartId ? el.rescanStartId.value : '1', 10) || 1;
+  const end = parseInt(el.rescanEndId ? el.rescanEndId.value : '100', 10) || 100;
+  const clearCache = el.chkClearDeviceCache ? el.chkClearDeviceCache.checked : false;
+
+  if (start < 1 || end < start || end > 247) {
+    alert('Please enter a valid slave ID range between 1 and 247.');
+    return;
+  }
+
+  if (clearCache) {
+    const confirmed = confirm(
+      'Are you sure you want to force a full re-scan and delete the existing device cache (devices.yaml)?\n\n' +
+      'All cached devices and SunSpec models will be wiped and re-discovered from scratch.'
+    );
+    if (!confirmed) {
+      return;
+    }
+  }
+
+  try {
+    if (el.btnExecuteRescan) {
+      el.btnExecuteRescan.disabled = true;
+      el.btnExecuteRescan.textContent = '🔄 Scanning...';
+    }
+    if (el.btnCancelRescan) el.btnCancelRescan.disabled = true;
+    if (el.btnCloseRescanModal) el.btnCloseRescanModal.disabled = true;
+    if (el.rescanStatusBanner) {
+      el.rescanStatusBanner.style.display = 'flex';
+      if (el.rescanStatusText) {
+        el.rescanStatusText.textContent = `Scanning Modbus slave IDs ${start}..${end}${clearCache ? ' (clearing cache)' : ''}... Please wait.`;
+      }
+    }
+
+    const res = await fetch(apiPath('api/devices/rescan'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start, end, clear_cache: clearCache }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Rescan failed');
+    }
+
+    state.devices = data.devices || [];
+    renderDeviceSidebar();
+
+    if (state.devices.length > 0) {
+      const stillExists = state.devices.some(d => d.serial_number === state.selectedDeviceSn);
+      if (stillExists) {
+        await selectDevice(state.selectedDeviceSn);
+      } else {
+        await selectDevice(state.devices[0].serial_number);
+      }
+    } else {
+      state.activeDevice = null;
+      state.selectedDeviceSn = null;
+    }
+
+    closeRescanModal();
+    showToast(`Scan complete: ${data.discovered_count} device(s) found${clearCache ? ' (cache cleared)' : ''}`);
+  } catch (err) {
+    alert(`Device scan failed: ${err.message || err}`);
+    if (el.rescanStatusBanner) el.rescanStatusBanner.style.display = 'none';
+  } finally {
+    if (el.btnExecuteRescan) {
+      el.btnExecuteRescan.disabled = false;
+      el.btnExecuteRescan.textContent = '🔍 Start Scan';
+    }
+    if (el.btnCancelRescan) el.btnCancelRescan.disabled = false;
+    if (el.btnCloseRescanModal) el.btnCloseRescanModal.disabled = false;
   }
 }
 
