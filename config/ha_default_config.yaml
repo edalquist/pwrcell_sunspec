@@ -59,7 +59,7 @@ selected_fields:
 - inverter.live.inverter_max_power_w
 - inverter.live.inverter_output_exported_energy_wh
 - inverter.live.inverter_output_power_w
-- inverter.live.inverter_state_name
+- inverter.compound.inverter_state
 - inverter.live.load_imported_energy_wh
 - inverter.live.load_power_w
 - inverter.live.solar_generation_energy_wh

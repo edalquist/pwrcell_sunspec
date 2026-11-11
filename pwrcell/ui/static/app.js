@@ -783,18 +783,37 @@ function toggleHaSelection(f, isSelected) {
     state.modifiedDeviceSerials.add(sn);
   }
 
+  const compKey = getCompoundKeyForItem(f);
+  const scopedCompKey = (sn && compKey) ? `${sn}:${compKey}` : compKey;
+  const isCompound = Boolean(f.is_compound || f.sources || compKey);
+
   const primaryKey = f.active_source_key || f.key || f.id;
   const scopedPrimaryKey = sn ? `${sn}:${primaryKey}` : primaryKey;
   const scopedId = (sn && f.id) ? `${sn}:${f.id}` : f.id;
   const scopedKey = (sn && f.key) ? `${sn}:${f.key}` : f.key;
   const scopedMqttKey = (sn && f.mqtt_key) ? `${sn}:${f.mqtt_key}` : f.mqtt_key;
-  const compKey = getCompoundKeyForItem(f);
-  const scopedCompKey = (sn && compKey) ? `${sn}:${compKey}` : compKey;
 
   if (isSelected) {
-    state.selectedHaKeys.add(scopedPrimaryKey);
-    if (scopedId && f.sources) state.selectedHaKeys.add(scopedId);
-    if (scopedCompKey) state.selectedHaKeys.add(scopedCompKey);
+    if (isCompound && scopedCompKey) {
+      state.selectedHaKeys.add(scopedCompKey);
+      // Clean up any individual member selections so they don't produce duplicate entities
+      state.selectedHaKeys.delete(scopedPrimaryKey);
+      state.selectedHaKeys.delete(primaryKey);
+      if (scopedKey) {
+        state.selectedHaKeys.delete(scopedKey);
+        state.selectedHaKeys.delete(f.key);
+      }
+      if (scopedMqttKey) state.selectedHaKeys.delete(scopedMqttKey);
+      if (f.mqtt_key) state.selectedHaKeys.delete(f.mqtt_key);
+      if (f.sources && Array.isArray(f.sources)) {
+        for (const s of f.sources) {
+          state.selectedHaKeys.delete(s.field_key);
+          if (sn) state.selectedHaKeys.delete(`${sn}:${s.field_key}`);
+        }
+      }
+    } else {
+      state.selectedHaKeys.add(scopedPrimaryKey);
+    }
   } else {
     state.selectedHaKeys.delete(scopedPrimaryKey);
     state.selectedHaKeys.delete(primaryKey);
@@ -4473,12 +4492,13 @@ function setupEventListeners() {
 
         // 3. Apply selected fields to this peer device
         selectedFields.forEach(f => {
-          const pk = f.active_source_key || f.key || f.id;
-          state.selectedHaKeys.add(`${peerSn}:${pk}`);
-          if (f.key) state.selectedHaKeys.add(`${peerSn}:${f.key}`);
-          if (f.id && f.sources) state.selectedHaKeys.add(`${peerSn}:${f.id}`);
-          if (f.mqtt_key) {
-            state.selectedHaKeys.add(`${peerSn}:${f.mqtt_key}`);
+          const cKey = getCompoundKeyForItem(f);
+          const isComp = Boolean(f.is_compound || f.sources || cKey);
+          if (isComp && cKey) {
+            state.selectedHaKeys.add(`${peerSn}:${cKey}`);
+          } else {
+            const pk = f.active_source_key || f.key || f.id;
+            state.selectedHaKeys.add(`${peerSn}:${pk}`);
           }
         });
 

@@ -1078,6 +1078,8 @@ class StateStore:
             options = sorted(list(set(OPERATING_MODES.keys())))
         elif mb_field and mb_field.ha_hint and mb_field.ha_hint.options:
             options = mb_field.ha_hint.options
+        elif mqtt_field and mqtt_field.ha_hint and mqtt_field.ha_hint.options:
+            options = mqtt_field.ha_hint.options
         elif is_writable:
             for cand_key in candidates:
                 pt_def = self.catalog.get_point_for_field(cand_key) if self.catalog else None
@@ -1087,6 +1089,11 @@ class StateStore:
 
         ha_platform = m.ha_platform
         ha_device_class = m.ha_device_class
+        if not ha_device_class:
+            if mqtt_field and mqtt_field.ha_hint and mqtt_field.ha_hint.device_class:
+                ha_device_class = mqtt_field.ha_hint.device_class
+            elif mb_field and mb_field.ha_hint and mb_field.ha_hint.device_class:
+                ha_device_class = mb_field.ha_hint.device_class
         ha_state_class = m.ha_state_class
         if is_writable:
             if options or m.ha_device_class == "enum" or m.id == "system_mode":

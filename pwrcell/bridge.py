@@ -355,6 +355,12 @@ class HomeAssistantBridge:
                     for s in getattr(c_view, "sources", []):
                         if getattr(s, "field_key", None):
                             new_active_member_keys.add(f"{sn_clean}:{s.field_key}")
+                    m_def = reg.get_by_id(getattr(c_view, "concept_key", ""))
+                    if m_def:
+                        for mf in m_def.mqtt_fields:
+                            new_active_member_keys.add(f"{sn_clean}:{mf}")
+                        for mbf in m_def.modbus_fields:
+                            new_active_member_keys.add(f"{sn_clean}:{mbf}")
                     payload_info = generate_discovery_payload(
                         c_view,
                         dev,
@@ -513,12 +519,15 @@ class HomeAssistantBridge:
                 return True
             selected_snapshot = set(self.selected_field_keys) | set(self._selected_set)
         c_views = self.client.state.get_compound_views(field.device_sn)
+        reg = MappingRegistry.get_instance()
         for c_view in c_views:
+            m_def = reg.get_by_id(getattr(c_view, "concept_key", ""))
             is_member = (
                 field.key == getattr(c_view, "mqtt_key", None)
                 or field.key in getattr(c_view, "modbus_candidates", [])
                 or any(getattr(s, "field_key", None) == field.key for s in getattr(c_view, "sources", []))
                 or (field.compound_key and c_view.key == field.compound_key)
+                or (m_def and (field.key in m_def.mqtt_fields or field.key in m_def.modbus_fields))
             )
             if is_member:
                 if is_field_selected(

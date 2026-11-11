@@ -552,6 +552,67 @@ class TestHomeAssistantBridge(unittest.TestCase):
         self.assertTrue(is_field_selected("battery.live.state_of_charge", "ANY", sel))
         self.assertFalse(is_field_selected("inverter.live.grid_power_w", "ABC123", {"abc123:inverter.live.grid_power_w"}))
 
+    def test_inverter_state_group_single_entity_and_member_suppression(self):
+        """Selecting inverter_state group results in a single clean enum entity in HA and suppresses all raw members."""
+        from pwrcell.state import FieldSource
+
+        inv = self.client.state.get_inverter()
+        inv_sn = inv.serial_number.strip().upper()
+
+        # Ingest MQTT telemetry for both state code and state name
+        self.client.state.set_field(
+            device_sn=inv_sn,
+            name="inverter_state_name",
+            sub_group="live",
+            value="GRID_CONNECTED",
+            raw_value="GRID_CONNECTED",
+            source=FieldSource.MQTT_PUSH,
+        )
+        self.client.state.set_field(
+            device_sn=inv_sn,
+            name="inverter_state",
+            sub_group="live",
+            value=2080,
+            raw_value=2080,
+            source=FieldSource.MQTT_PUSH,
+        )
+
+        # Select only the compound group
+        self.bridge.selected_field_keys = [f"{inv_sn}:inverter.compound.inverter_state"]
+        self.bridge._selected_set = set(self.bridge.selected_field_keys)
+        self.mock_mqttc.reset_mock()
+
+        self.bridge.publish_discovery()
+
+        published_configs = {}
+        for call in self.mock_mqttc.publish.call_args_list:
+            topic, payload = call[0][0], call[0][1]
+            if "config" in topic and payload != "":
+                published_configs[topic] = json.loads(payload)
+
+        # 1. Compound entity must be published with friendly name and enum options
+        comp_topic = f"homeassistant/sensor/pwrcell_{inv_sn.lower()}/inverter_state/config"
+        self.assertIn(comp_topic, published_configs)
+        comp_payload = published_configs[comp_topic]
+        self.assertEqual(comp_payload["name"], "Inverter Operational State")
+        self.assertEqual(comp_payload.get("device_class"), "enum")
+        self.assertIn("GRID_CONNECTED", comp_payload.get("options", []))
+
+        # 2. Raw member entities must NOT have active configs published
+        raw_name_topic = f"homeassistant/sensor/pwrcell_{inv_sn.lower()}/live_inverter_state_name/config"
+        raw_code_topic = f"homeassistant/sensor/pwrcell_{inv_sn.lower()}/live_inverter_state/config"
+        self.assertNotIn(raw_name_topic, published_configs)
+        self.assertNotIn(raw_code_topic, published_configs)
+
+        # 3. An update on raw member field must be suppressed and not publish a new discovery config
+        self.mock_mqttc.reset_mock()
+        f_name = inv.fields.get("inverter.live.inverter_state_name")
+        self.assertIsNotNone(f_name)
+        self.bridge._on_field_update(f_name)
+        for call in self.mock_mqttc.publish.call_args_list:
+            topic = call[0][0]
+            self.assertNotIn("live_inverter_state_name/config", topic)
+
 
 if __name__ == "__main__":
     unittest.main()

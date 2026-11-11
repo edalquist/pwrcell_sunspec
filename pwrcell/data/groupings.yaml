@@ -147,11 +147,11 @@ groups:
   name: Inverter Operational State
   device_type: inverter
   fields:
+  - inverter.live.inverter_state_name
   - inverter.live.inverter_state
   - inverter.inverter.StVnd
   - inverter.model_102.StVnd
   - inverter.model_64207.St
-  - inverter.live.inverter_state_name
   - inverter.model_102.St
   synonyms:
   - st

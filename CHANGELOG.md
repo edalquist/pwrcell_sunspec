@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.6] - 2026-11-11
+
+### Fixed
+- **Group Selection Generating Multiple HA Entities**: Fixed issue where selecting a single group row in the Web UI (e.g. "Inverter Operational State") resulted in multiple entities in Home Assistant (`sensor.pwrcell_inverter_14e9_inverter_operational_state` and `sensor.pwrcell_inverter_14e9_inverter_state_name`).
+  - In `pwrcell/ui/static/app.js`: Updated `toggleHaSelection` and peer device application to only select the compound key (`<SN>:<dev>.compound.<concept>`) for grouped items, never the raw member source keys (`f.active_source_key` or `f.key`), and to clear any individual member selections upon group selection.
+  - In `pwrcell/ha.py`: Updated `_LEGACY_CONCEPT_REMAP` to map `inverter.concept.inverter_state` and legacy `inverter.live.inverter_state_name` to `inverter.compound.inverter_state`, and `battery.concept.battery_soh` to `battery.compound.battery_soh`.
+  - In `pwrcell/bridge.py`: Expanded member suppression in `publish_discovery()` and `_is_field_suppressed_by_compound()` to include all mapping candidate members (`m.mqtt_fields` and `m.modbus_fields`), ensuring secondary MQTT and Modbus points (like `inverter.live.inverter_state_name`) are properly suppressed and removed from Home Assistant.
+  - In `pwrcell/data/groupings.yaml` & `pwrcell/state.py`: Prioritized `inverter.live.inverter_state_name` over numeric `inverter.live.inverter_state` in `inverter_state` mapping, and mapped MQTT `ha_hint.options` and `ha_hint.device_class` onto the compound view, so the unified compound sensor publishes the friendly enum string (e.g. `GRID_CONNECTED`) with declared options in Home Assistant.
+
 ## [3.1.5] - 2026-11-10
 
 ### Fixed

@@ -220,11 +220,13 @@ _LEGACY_CONCEPT_REMAP: Dict[str, str] = {
     "inverter.concept.grid_imported_energy_wh": "inverter.compound.grid_imported_energy",
     "inverter.concept.inverter_output_power": "inverter.compound.inverter_output_power",
     "inverter.concept.inverter_output_power_w": "inverter.compound.inverter_output_power",
-    "inverter.concept.inverter_state": "inverter.live.inverter_state_name",
+    "inverter.concept.inverter_state": "inverter.compound.inverter_state",
+    "inverter.live.inverter_state_name": "inverter.compound.inverter_state",
     "inverter.concept.a": "inverter.inverter.A",
     "inverter.concept.aphb": "inverter.inverter.AphB",
     "battery.concept.battery_voltage": "battery.compound.battery_voltage",
-    "battery.concept.battery_soh": "battery.live.state_of_health",
+    "battery.concept.battery_soh": "battery.compound.battery_soh",
+    "battery.live.state_of_health": "battery.compound.battery_soh",
     "pv_link.concept.iin": "pv_link.string_combiner.DCA",
 }
 

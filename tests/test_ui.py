@@ -709,11 +709,11 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertIn(f"{inv_sn}:inverter.inverter.Hz", qualified)
         self.assertIn(f"{inv_sn}:inverter.compound.grid_exported_energy", qualified)
         self.assertIn(f"{inv_sn}:inverter.compound.inverter_output_power", qualified)
-        self.assertIn(f"{inv_sn}:inverter.live.inverter_state_name", qualified)
+        self.assertIn(f"{inv_sn}:inverter.compound.inverter_state", qualified)
         self.assertIn(f"{inv_sn}:inverter.inverter.A", qualified)
         self.assertIn(f"{inv_sn}:inverter.inverter.AphB", qualified)
         self.assertIn(f"{bat_sn}:battery.compound.battery_voltage", qualified)
-        self.assertIn(f"{bat_sn}:battery.live.state_of_health", qualified)
+        self.assertIn(f"{bat_sn}:battery.compound.battery_soh", qualified)
         self.assertIn(f"{pv_sn}:pv_link.string_combiner.DCA", qualified)
 
         for k in qualified:
