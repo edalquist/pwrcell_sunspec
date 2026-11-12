@@ -395,9 +395,11 @@ class HomeAssistantBridge:
 
             # 2. Publish selected raw fields
             for f_key, field in list(dev.fields.items()):
+                comp_key_for_f = reg.get_raw_to_compound_map().get(f_key)
                 is_suppressed = (
                     f"{sn_clean}:{f_key}" in new_active_member_keys
                     or (field.compound_key and f"{sn_clean}:{field.compound_key}" in new_active_compounds)
+                    or (comp_key_for_f and f"{sn_clean}:{comp_key_for_f}" in new_active_compounds)
                 )
                 if is_suppressed:
                     # Suppress duplicate raw field because its compound view is active.

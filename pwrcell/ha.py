@@ -235,7 +235,7 @@ def _remap_concept_key(field_part: str) -> Optional[str]:
     if field_part in _LEGACY_CONCEPT_REMAP:
         return _LEGACY_CONCEPT_REMAP[field_part]
     if field_part.endswith("_None"):
-        return None
+        field_part = field_part[:-5]
     if ".concept." in field_part:
         dev_type, _, cid = field_part.partition(".concept.")
         from .mapping import MappingRegistry
@@ -420,8 +420,11 @@ def get_effective_ha_category(
             raw_candidates.append(active_src)
         if pt_name:
             raw_candidates.append(pt_name)
-            if model_id and dev_type:
-                raw_candidates.append(f"{dev_type}.standalone.{pt_name.lower()}_{model_id}")
+            if dev_type:
+                if model_id:
+                    raw_candidates.append(f"{dev_type}.standalone.{pt_name.lower()}_{model_id}")
+                else:
+                    raw_candidates.append(f"{dev_type}.standalone.{pt_name.lower()}")
         if mqtt_k:
             raw_candidates.append(mqtt_k)
 

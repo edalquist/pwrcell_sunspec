@@ -452,7 +452,9 @@ def group_device_fields(
 
         if has_override:
             if target_concept is None or str(target_concept).strip().lower() in ("", "null", "none", "standalone", "ungrouped"):
-                c_id = f"{dev_type}.standalone.{f.name.lower()}_{getattr(f, 'model_id', 'raw')}"
+                c_mid = getattr(f, "model_id", None)
+                c_m_suffix = f"_{c_mid}" if c_mid is not None else ""
+                c_id = f"{dev_type}.standalone.{f.name.lower()}{c_m_suffix}"
                 if c_id not in concept_metadata:
                     u_d_class = f.ha_hint.device_class if f.ha_hint else None
                     u_s_class = f.ha_hint.state_class if f.ha_hint else None
@@ -460,7 +462,7 @@ def group_device_fields(
                         u_d_class, u_s_class = infer_ha_classes(units=f.units, name=f.name)
                     concept_metadata[c_id] = {
                         "id": c_id,
-                        "concept_key": f"{f.name.lower()}_{getattr(f, 'model_id', 'raw')}",
+                        "concept_key": f"{f.name.lower()}{c_m_suffix}",
                         "name": f.name,
                         "label": f.label or f.name,
                         "description": f.description,
@@ -524,7 +526,9 @@ def group_device_fields(
         # Check if explicitly ungrouped in telemetry_mappings.yaml
         is_reg_ungrouped = bool(getattr(reg, "is_field_ungrouped", lambda *a, **kw: False)(f_key, f, dev_type))
         if is_reg_ungrouped:
-            c_id = f"{dev_type}.standalone.{f.name.lower()}_{getattr(f, 'model_id', 'raw')}"
+            c_mid = getattr(f, "model_id", None)
+            c_m_suffix = f"_{c_mid}" if c_mid is not None else ""
+            c_id = f"{dev_type}.standalone.{f.name.lower()}{c_m_suffix}"
             if c_id not in concept_metadata:
                 u_d_class = f.ha_hint.device_class if f.ha_hint else None
                 u_s_class = f.ha_hint.state_class if f.ha_hint else None
@@ -532,7 +536,7 @@ def group_device_fields(
                     u_d_class, u_s_class = infer_ha_classes(units=f.units, name=f.name)
                 concept_metadata[c_id] = {
                     "id": c_id,
-                    "concept_key": f"{f.name.lower()}_{getattr(f, 'model_id', 'raw')}",
+                    "concept_key": f"{f.name.lower()}{c_m_suffix}",
                     "name": f.name,
                     "label": f"{f.label or f.name} (Ungrouped)",
                     "description": f.description,
@@ -584,8 +588,10 @@ def group_device_fields(
             continue
 
         # Check if an unmapped field belongs to an existing custom concept bucket on this device
+        c_mid = getattr(f, "model_id", None)
+        c_m_suffix = f"_{c_mid}" if c_mid is not None else ""
         cand_keys = [
-            f"{f.name.lower()}_{getattr(f, 'model_id', 'raw')}",
+            f"{f.name.lower()}{c_m_suffix}",
             f.name.lower(),
             f.name,
         ]
@@ -632,7 +638,9 @@ def group_device_fields(
 
         # If auto-grouping heuristics are disabled, every unmapped field is strictly standalone
         if not getattr(reg, "auto_group_heuristics", True):
-            c_id = f"{dev_type}.standalone.{f.name.lower()}_{getattr(f, 'model_id', 'raw')}"
+            c_mid = getattr(f, "model_id", None)
+            c_m_suffix = f"_{c_mid}" if c_mid is not None else ""
+            c_id = f"{dev_type}.standalone.{f.name.lower()}{c_m_suffix}"
             if c_id not in concept_metadata:
                 u_d_class = f.ha_hint.device_class if f.ha_hint else None
                 u_s_class = f.ha_hint.state_class if f.ha_hint else None
@@ -640,7 +648,7 @@ def group_device_fields(
                     u_d_class, u_s_class = infer_ha_classes(units=f.units, name=f.name)
                 concept_metadata[c_id] = {
                     "id": c_id,
-                    "concept_key": f"{f.name.lower()}_{getattr(f, 'model_id', 'raw')}",
+                    "concept_key": f"{f.name.lower()}{c_m_suffix}",
                     "name": f.name,
                     "label": f.label or f.name,
                     "description": f.description,

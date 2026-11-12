@@ -164,7 +164,10 @@ groups:
   fields:
   - inverter.live.grid_imported_energy_wh
   - inverter.inverter_status.WhIn
+  - inverter.REbus_exp.Whin
   - inverter.model_64208.WhIn
+  - inverter.model_64204.Whin
+  - inverter.model_64204.WhIn
   synonyms:
   - whin
   - grid_imported_energy_wh

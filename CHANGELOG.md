@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.8] - 2026-11-12
+
+### Fixed
+- **Grouped Entity HA Discovery Synchronization & Default Config**:
+  - In `config/ha_default_config.yaml`: Updated default entity seed configuration to specify canonical compound entity keys (`pv_link.compound.accumulated_energy`, `pv_link.compound.rebus_power`, `pv_link.compound.device_temperature`, `inverter.compound.rebus_voltage`, `battery.compound.max_cell_voltage`, `battery.compound.min_cell_voltage`, `battery.compound.battery_power`, `battery.compound.battery_soc`, `battery.compound.battery_ac_charged_energy`, `battery.compound.battery_ac_discharged_energy`, `inverter.compound.inverter_output_energy`, `inverter.compound.solar_power`, `inverter.compound.system_mode`).
+  - In `pwrcell/bridge.py` and `pwrcell/ui/routes/ha.py`: Ensured `/api/ha/preview` and `publish_discovery()` suppress all raw members whose compound view is active, including checking `MappingRegistry.get_raw_to_compound_map()` and mapping candidates to prevent raw register leakage.
+- **Inverter Grid Imported Energy Grouping**:
+  - In `pwrcell/data/groupings.yaml`: Added `inverter.REbus_exp.Whin`, `inverter.model_64204.Whin`, and `inverter.model_64204.WhIn` (SunSpec Model 64204 REbus Export/Import model registers) to `grid_imported_energy`, grouping them cleanly and eliminating raw entity leakage (`rebus_exp_whin`).
+- **Elimination of `_None` Suffixes on Standalone Push Telemetry**:
+  - In `pwrcell/optimizer.py` & `pwrcell/ha.py`: Fixed standalone concept key generation for unmapped push telemetry fields where `model_id` is None, generating clean identifiers (e.g. `load_power_w`, `load_imported_energy_wh`, `solar_generation_energy_wh`, `inverter_max_power_w`) without appending malformed `_None` suffixes.
+
 ## [3.1.7] - 2026-11-11
 
 ### Fixed

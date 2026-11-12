@@ -360,6 +360,9 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                 "payload": gw_payload_info["payload"],
             })
 
+        from ...mapping import MappingRegistry
+        reg = MappingRegistry.get_instance()
+
         for dev in client.state.get_devices_snapshot():
             sn_clean = dev.serial_number.strip().upper()
             active_compounds = set()
@@ -371,7 +374,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                     c_view.key,
                     dev.serial_number,
                     selected,
-                    c_view.mqtt_key,
+                    getattr(c_view, "mqtt_key", None),
                 ):
                     active_compounds.add(f"{sn_clean}:{c_view.key}")
                     if getattr(c_view, "mqtt_key", None):
@@ -381,6 +384,12 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                     for s in getattr(c_view, "sources", []):
                         if getattr(s, "field_key", None):
                             active_members.add(f"{sn_clean}:{s.field_key}")
+                    m_def = reg.get_by_id(getattr(c_view, "concept_key", ""))
+                    if m_def:
+                        for mf in m_def.mqtt_fields:
+                            active_members.add(f"{sn_clean}:{mf}")
+                        for mbf in m_def.modbus_fields:
+                            active_members.add(f"{sn_clean}:{mbf}")
 
                     payload_info = generate_discovery_payload(c_view, dev, gateway_device=gateway, category_overrides=cat_overrides)
                     preview_list.append({
@@ -397,9 +406,11 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
 
             # Include raw fields
             for f_key, f in list(dev.fields.items()):
+                comp_key_for_f = reg.get_raw_to_compound_map().get(f_key)
                 if (
                     f"{sn_clean}:{f_key}" in active_members
                     or (f.compound_key and f"{sn_clean}:{f.compound_key}" in active_compounds)
+                    or (comp_key_for_f and f"{sn_clean}:{comp_key_for_f}" in active_compounds)
                 ):
                     continue
                 if is_field_selected(f_key, dev.serial_number, selected):

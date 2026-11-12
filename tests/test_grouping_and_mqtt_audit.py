@@ -152,6 +152,52 @@ class TestGroupingAndMqttAuditFixes(unittest.TestCase):
         self.state.refresh_compound_links(inv.serial_number)
         self.assertEqual(f.compound_key, "inverter.compound.grid_power")
 
+    def test_rebus_exp_whin_mapped_to_grid_imported_energy(self):
+        """Verify inverter.REbus_exp.Whin and model_64204.Whin map to grid_imported_energy."""
+        inv = self.state.register_device(
+            serial_number="0001000714E9",
+            slave_id=8,
+            device_type="inverter",
+            model_name="PWRcell Inverter",
+        )
+        f = self.state.set_field(
+            device_sn=inv.serial_number,
+            name="Whin",
+            label="Imported Energy",
+            value=12345.0,
+            units="Wh",
+            source=FieldSource.MODBUS_POLL,
+            sub_group="REbus_exp",
+            model_id=64204,
+        )
+        self.state.refresh_compound_links(inv.serial_number)
+        self.assertEqual(f.compound_key, "inverter.compound.grid_imported_energy")
+
+    def test_standalone_field_no_none_suffix(self):
+        """Verify unmapped push telemetry fields (model_id=None) do not append '_None' suffix."""
+        inv = self.state.register_device(
+            serial_number="0001000714E9",
+            slave_id=8,
+            device_type="inverter",
+            model_name="PWRcell Inverter",
+        )
+        self.state.set_field(
+            device_sn=inv.serial_number,
+            name="load_power_w",
+            label="Home Consumption Power",
+            value=1200.0,
+            units="W",
+            source=FieldSource.MQTT_PUSH,
+            sub_group="live",
+            model_id=None,
+        )
+        groups = self.state.get_unified_fields(inv.serial_number)
+        lp_grp = next((g for g in groups if "load_power_w" in g.concept_key), None)
+        self.assertIsNotNone(lp_grp)
+        self.assertFalse(lp_grp.concept_key.endswith("_None"), f"Concept key {lp_grp.concept_key} should not end with _None")
+        self.assertFalse(lp_grp.id.endswith("_None"), f"Group ID {lp_grp.id} should not end with _None")
+        self.assertEqual(lp_grp.concept_key, "load_power_w")
+
 
 if __name__ == "__main__":
     unittest.main()
