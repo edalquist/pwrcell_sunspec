@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.10] - 2026-11-12
+
+### Added
+- **Web Explorer UI Screenshots in Documentation**:
+  - Captured actual screenshots from the live Web Explorer in mock simulation mode (`python main.py explore --mock`).
+  - Added visual references in `docs/images/` and embedded into `docs/management_ui.md`:
+    - `ui_overview_unified.png`: Primary overview dashboard showing live header chips, device tree, minimal polling plan, and unified grid.
+    - `ui_rescan_discovery.png`: Device discovery modal showing slave ID range and cache purge option.
+    - `ui_all_registers_raw.png`: Raw register map view showing all SunSpec models, scale factors, and wire points.
+    - `ui_modbus_details.png`: Modbus Register Definition inspector modal detailing register offsets, types, and scale factor exponents.
+    - `ui_telemetry_comparison.png`: Telemetry comparison modal displaying agreement status, discrepancy tabs, and Sync Sample controls.
+    - `ui_safety_policy.png`: Blocked Modbus mutation fields modal illustrating safety-protected registers.
+    - `ui_mqtt_preview.png`: Home Assistant MQTT discovery JSON preview modal.
+
 ## [3.1.9] - 2026-11-12
 
 ### Added

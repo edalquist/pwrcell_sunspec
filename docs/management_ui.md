@@ -50,6 +50,8 @@ This document is a comprehensive functional reference covering every screen, con
 
 ## 1. UI Layout & Navigation Map
 
+![PWRcell Web Explorer Overview Dashboard](images/ui_overview_unified.png)
+
 ```
 +---------------------------------------------------------------------------------------------------------+
 | [2. HEADER]  Solar: 4.2kW | Load: 1.8kW | Grid: -2.4kW | Bat: 88% | Mode: [SELF_SUPPLY ▾]               |
@@ -129,6 +131,9 @@ Each entry in the list displays its model name, assigned slave ID, serial number
 
 ### Re-scan Modbus Network Modal
 Click the **🔄 Re-scan** button at the top of the sidebar to initiate hardware discovery:
+
+![Device Discovery Re-scan Modal](images/ui_rescan_discovery.png)
+
 - **Start Slave ID / End Slave ID**: Defines the Modbus slave address scanning range (default: `1` to `100`, expandable up to `247`).
 - **Force full re-scan (delete existing device cache)**: When checked, deletes `/data/devices.yaml` and clears cached SunSpec models on disk before scanning. Use this if you have added new PV Links, replaced an inverter board, or need to purge decommissioned devices from the list.
 - **Start Scan**: Executes the scan sequentially over Modbus TCP. Discovered devices populate the sidebar immediately.
@@ -163,6 +168,9 @@ Generac hardware exposes the same physical metric across multiple protocols and 
 - Prevents exporting duplicate or competing entities to Home Assistant.
 
 #### 2. All Registers View (📋 Raw)
+
+![All Registers Raw View](images/ui_all_registers_raw.png)
+
 - Displays every underlying SunSpec register, point, scale factor register (`*_SF`), and raw MQTT push field individually.
 - Useful for low-level protocol debugging, verifying firmware offsets, or inspecting raw integer representations.
 
@@ -249,6 +257,8 @@ Located in the **Type / Platform** column, this dropdown configures how Home Ass
 ### Action: Modbus Register Details Inspector (🔍)
 Click the **🔍 Inspect** button on any row to open the low-level **Modbus Register Definition Modal**:
 
+![Modbus Register Definition Inspector](images/ui_modbus_details.png)
+
 - **Model & Register Offset**: Displays the SunSpec Model ID, 16-bit register offset, and absolute Modbus address.
 - **Data Type & Access**: Reports wire encoding (e.g., `uint16`, `int16`, `int32`, `acc32`, `string`) and read/write permission (`R` or `RW`).
 - **Scale Factor Mapping**: Identifies the associated scale factor point (e.g., `CTPow_SF`), its register address, and current power-of-10 multiplier.
@@ -291,6 +301,8 @@ Click the **📏 Bounds** button to configure hardware boundaries:
 ## 7. Telemetry Comparison & Discrepancy Tool (`⚡ Compare Telemetry`)
 
 Click **⚡ Compare Telemetry** in the top header to open the correlation analysis workspace. This tool compares live SunSpec Modbus register reads directly against MQTT push messages to identify mapping errors, scaling issues, or sign conflicts.
+
+![Grouped Registers & Telemetry Comparison Tool](images/ui_telemetry_comparison.png)
 
 ```
 +----------------------------------------------------------------------------------------------------+
@@ -365,6 +377,8 @@ Expand the accordion at the bottom of the comparison modal:
 
 Click **🔒 Safety Policy** in the top header to review the system's protected mutation registry.
 
+![Safety Policy and Protected Modbus Registers](images/ui_safety_policy.png)
+
 ### Why Certain Registers are Blocked
 SunSpec defines many registers as read/write (`RW`). However, altering certain settings on a live grid-connected energy storage system is hazardous. Mutating these values can cause:
 - Violations of utility interconnection standards (e.g., UL 1741 SA anti-islanding trip times).
@@ -390,6 +404,9 @@ The persistent bottom drawer manages entity export to Home Assistant via MQTT Di
 
 ### Preview MQTT Discovery Modal
 Click **Preview MQTT Discovery** to view the exact JSON payloads and MQTT topic paths before publishing:
+
+![Home Assistant MQTT Discovery Preview Modal](images/ui_mqtt_preview.png)
+
 - Config Topic: `homeassistant/<platform>/<node_id>/<object_id>/config`
 - State Topic: `pwrcell/<device_serial>/state`
 - Validates entity names, unique IDs, device relationships (`via_device`), and unit strings.
