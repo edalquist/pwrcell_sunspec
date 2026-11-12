@@ -7,13 +7,15 @@ Home Assistant hints, and change subscription hooks.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+from pathlib import Path
 import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from .catalog import (
     HomeAssistantHint,
@@ -688,14 +690,50 @@ class UnifiedDevice:
 class StateStore:
     """Central state store managing all devices and field streams."""
 
-    def __init__(self, catalog: Optional[ModelCatalog] = None):
+    def __init__(self, catalog: Optional[ModelCatalog] = None, offset_file: Optional[Path] = None):
         self.catalog = catalog or get_catalog()
         self.devices: Dict[str, UnifiedDevice] = {}  # serial_number -> UnifiedDevice
         self.devices_by_slave_id: Dict[int, UnifiedDevice] = {}
         self._listeners: List[Callable[[StateField], None]] = []
         self._compound_listeners: List[Callable[[CompoundFieldView], None]] = []
         self._monotonic_drop_counts: Dict[tuple[str, str], tuple[int, float]] = {}
+        self._monotonic_offsets: Dict[tuple[str, str], float] = {}
+        self._offset_file = offset_file
+        self._load_monotonic_offsets()
         self._lock = threading.RLock()
+
+    def _get_offset_file(self) -> Path:
+        if self._offset_file is not None:
+            return self._offset_file
+        from .config import data_dir
+        return data_dir() / ".monotonic_offsets.json"
+
+    def _load_monotonic_offsets(self):
+        try:
+            p = self._get_offset_file()
+            if p.is_file():
+                raw = json.loads(p.read_text(encoding="utf-8"))
+                for k, v in raw.items():
+                    if ":" in k and isinstance(v, (int, float)):
+                        sn, f_key = k.split(":", 1)
+                        self._monotonic_offsets[(sn, f_key)] = float(v)
+        except Exception as e:
+            logger.debug("Could not load monotonic counter offsets: %s", e)
+
+    def _save_monotonic_offsets(self):
+        try:
+            p = self._get_offset_file()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            raw = {f"{sn}:{k}": v for (sn, k), v in self._monotonic_offsets.items() if v != 0.0}
+            p.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.debug("Could not save monotonic counter offsets: %s", e)
+
+    @staticmethod
+    def _apply_monotonic_offset(val: Union[int, float], off: float) -> Union[int, float]:
+        if isinstance(val, int) and (isinstance(off, int) or off.is_integer()):
+            return int(val + off)
+        return float(val + off)
 
     def register_device(
         self,
@@ -1388,50 +1426,145 @@ class StateStore:
             return cat_model.model_id, cat_model.name, cat_model.label
         return model_id, model_name, model_label
 
-    def _should_suppress_counter_drop(self, dev, key, name, existing, value, units, ha_hint) -> bool:
-        """Monotonicity protection for lifetime total_increasing energy counters.
+    def _process_counter_monotonicity(
+        self, dev: UnifiedDevice, key: str, name: str, existing: Optional[StateField],
+        value: Any, units: Optional[str], ha_hint: Optional[HomeAssistantHint]
+    ) -> Tuple[Any, bool]:
+        """Monotonicity and baseline offset protection for total_increasing energy counters.
 
-        PV Link counters (e.g. REbus_status.E, string_combiner.DCWh) are volatile daily/session
-        counters that reset when de-energized, so they are exempt. Returns True if the update
-        should be dropped as an anomalous reading.
+        Prevents negative deltas and negative solar generation spikes in Home Assistant statistics:
+        - Minor backward drops (e.g. PV Link dawn brownout uncommitted RAM loss of 5–500 Wh)
+          are converted into a cumulative baseline offset after debounce (2 consecutive readings).
+          The offset is added to all subsequent readings so power generation is never masked!
+        - Clean resets to zero (e.g. daily session resets on PV Links or meter resets) are accepted
+          after a brief debounce (3 consecutive readings of <= 1 Wh), resetting any accumulated offset.
+        - Major baseline drops (>90% reduction, e.g. device replacement) are accepted after debounce
+          (3 consecutive readings), resetting the offset.
+        - Negative counter values are corrupt/invalid and always suppressed.
+
+        Returns (adjusted_value, suppress_update).
         """
-        device_sn = dev.serial_number
         is_total_inc = (
-            dev.device_type != "pv_link"
-            and ((ha_hint and ha_hint.state_class == "total_increasing") or (units in ("Wh", "kWh") and not name.endswith("_w")))
+            (ha_hint and ha_hint.state_class == "total_increasing")
+            or (units in ("Wh", "kWh") and not name.endswith("_w"))
         )
-        if not (is_total_inc and isinstance(existing.value, (int, float)) and existing.value > 100.0):
-            return False
-        drop_key = (device_sn, key)
-        if not (isinstance(value, (int, float)) and value < existing.value):
-            self._monotonic_drop_counts.pop(drop_key, None)
-            return False
-        if not (value <= 0 or (existing.value - value) > (0.1 * existing.value)):
-            return False
+        if not (is_total_inc and isinstance(value, (int, float))):
+            return value, False
 
+        device_sn = dev.serial_number
+        drop_key = (device_sn, key)
+        current_offset = self._monotonic_offsets.get(drop_key, 0.0)
+
+        # Negative energy reading is corrupt/invalid for cumulative energy; always suppress
+        if value < 0:
+            dev_info = f" on {dev.serial_number}" + (f" (slave {dev.slave_id})" if dev.slave_id is not None else "")
+            logger.warning(
+                "Suppressed negative reading in cumulative energy counter %s%s (%s -> %s)",
+                key, dev_info, existing.value if existing else "None", value,
+            )
+            return (existing.value if existing else value), True
+
+        # Apply active offset to incoming candidate value
+        cand_val = self._apply_monotonic_offset(value, current_offset) if current_offset != 0.0 else value
+
+        if existing is None or not isinstance(existing.value, (int, float)) or existing.value <= 0:
+            return cand_val, False
+
+        if cand_val >= existing.value:
+            # Monotonic increase or steady; clear any pending drop debounce
+            self._monotonic_drop_counts.pop(drop_key, None)
+            return cand_val, False
+
+        # cand_val < existing.value -> a backward drop is observed
         dev_info = f" on {dev.serial_number}" + (f" (slave {dev.slave_id})" if dev.slave_id is not None else "")
         prev_count, prev_cand = self._monotonic_drop_counts.get(drop_key, (0, 0.0))
-        if value > 0 and prev_count > 0 and value >= prev_cand * 0.9:
-            new_count = prev_count + 1
-        elif value > 0:
-            new_count = 1
-        else:
-            new_count = 0
 
-        if new_count >= 3:
-            logger.warning(
-                "Accepted reset/lower baseline in cumulative energy counter %s%s after %d consecutive readings (%s -> %s)",
-                key, dev_info, new_count, existing.value, value,
-            )
+        # 1. Clean reset to zero (e.g. daily session reset on PV Links or meter reset)
+        is_zero_reset = (value == 0 or (0.0 < value <= 1.0 and existing.value > 10.0))
+        if is_zero_reset:
+            if prev_count > 0 and (0.0 <= prev_cand <= 1.0):
+                new_count = prev_count + 1
+            else:
+                new_count = 1
+
+            if new_count >= 3:
+                logger.info(
+                    "Accepted reset to zero in cumulative energy counter %s%s after %d consecutive readings (%s -> %s)",
+                    key, dev_info, new_count, existing.value, value,
+                )
+                self._monotonic_drop_counts.pop(drop_key, None)
+                if current_offset != 0.0:
+                    self._monotonic_offsets.pop(drop_key, None)
+                    self._save_monotonic_offsets()
+                return value, False
+
+            if prev_count == 0:
+                logger.debug(
+                    "Debouncing reset to zero in cumulative energy counter %s%s (%s -> %s)",
+                    key, dev_info, existing.value, value,
+                )
+            self._monotonic_drop_counts[drop_key] = (new_count, float(value))
+            return existing.value, True
+
+        # 2. Major baseline drop (>90% reduction, e.g. device replacement)
+        is_major_drop = (existing.value > 100.0 and cand_val < 0.1 * existing.value)
+        if is_major_drop:
+            if prev_count > 0 and cand_val >= prev_cand * 0.9:
+                new_count = prev_count + 1
+            else:
+                new_count = 1
+
+            if new_count >= 3:
+                logger.warning(
+                    "Accepted reset/lower baseline in cumulative energy counter %s%s after %d consecutive readings (%s -> %s)",
+                    key, dev_info, new_count, existing.value, cand_val,
+                )
+                self._monotonic_drop_counts.pop(drop_key, None)
+                if current_offset != 0.0:
+                    self._monotonic_offsets.pop(drop_key, None)
+                    self._save_monotonic_offsets()
+                return cand_val, False
+
+            if prev_count == 0:
+                logger.warning(
+                    "Suppressed major drop in cumulative energy counter %s%s (%s -> %s)",
+                    key, dev_info, existing.value, cand_val,
+                )
+            self._monotonic_drop_counts[drop_key] = (new_count, float(cand_val))
+            return existing.value, True
+
+        # 3. Minor backward drop (e.g. PV Link dawn brownout uncommitted RAM loss):
+        # Debounce for 2 consecutive readings. Once confirmed, add the lost delta to the offset.
+        lost_delta = float(existing.value) - float(cand_val)
+        if prev_count > 0 and abs(float(prev_cand) - float(cand_val)) <= max(10.0, lost_delta * 0.1):
+            new_count = prev_count + 1
+        else:
+            new_count = 1
+
+        if new_count >= 2:
+            new_offset = current_offset + lost_delta
+            self._monotonic_offsets[drop_key] = new_offset
+            self._save_monotonic_offsets()
             self._monotonic_drop_counts.pop(drop_key, None)
-            return False
-        if prev_count == 0:
-            logger.warning(
-                "Suppressed anomalous drop in cumulative energy counter %s%s (%s -> %s)",
-                key, dev_info, existing.value, value,
+            adjusted_value = self._apply_monotonic_offset(value, new_offset)
+            logger.info(
+                "Applied cumulative baseline offset +%s to %s%s after dawn brownout drop (%s -> raw %s, reported %s)",
+                lost_delta, key, dev_info, existing.value, value, adjusted_value,
             )
-        self._monotonic_drop_counts[drop_key] = (max(1, new_count), float(value))
-        return True
+            return adjusted_value, False
+
+        # First reading of minor backward drop: hold previous value during debounce
+        logger.debug(
+            "Debouncing minor backward drop in cumulative energy counter %s%s (%s -> %s, lost delta %s)",
+            key, dev_info, existing.value, cand_val, lost_delta,
+        )
+        self._monotonic_drop_counts[drop_key] = (new_count, float(cand_val))
+        return existing.value, True
+
+    def _should_suppress_counter_drop(self, dev, key, name, existing, value, units, ha_hint) -> bool:
+        """Deprecated compatibility wrapper around _process_counter_monotonicity."""
+        _, suppress = self._process_counter_monotonicity(dev, key, name, existing, value, units, ha_hint)
+        return suppress
 
     @staticmethod
     def _build_field(dev, key, existing, *, name, label, description, value, raw_value, units, source,
@@ -1624,7 +1757,10 @@ class StateStore:
                     mqtt_eq = None
 
             existing = dev.fields.get(key)
-            if existing is not None and self._should_suppress_counter_drop(dev, key, name, existing, value, units, ha_hint):
+            value, suppress = self._process_counter_monotonicity(
+                dev, key, name, existing, value, units, ha_hint
+            )
+            if suppress and existing is not None:
                 return existing
 
             changed = existing is None or existing.value != value

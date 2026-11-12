@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.12] - 2026-11-12
+
+### Fixed
+- **PV Link Energy Counter Continuity & Negative Solar Statistics**:
+  - Replaced high-water mark clamping with **Cumulative Baseline Offset Tracking** in `StateStore._process_counter_monotonicity`. When a PV Link suffers overnight uncommitted RAM loss at brownout (e.g. dropping 5–250 Wh from dusk to dawn flash recovery), the lost delta is automatically converted into a persistent cumulative offset after 2-poll debounce.
+  - **Zero Masking of Morning Solar Generation**: Unlike high-water mark freezing, every watt-hour produced at sunrise is immediately added to the offset baseline and published to Home Assistant, completely eliminating morning generation masking.
+  - **No Negative Energy Deltas in Home Assistant**: Prevents Home Assistant long-term statistics compiler from recording negative hourly solar production bars on the Energy Dashboard.
+  - Added debounced zero-reset handling (requiring 3 consecutive readings of $\le 1\text{ Wh}$) so clean daily session resets on PV Links or meter rollovers are passed through cleanly without transient glitch vulnerability.
+  - Persisted cumulative offsets to `.monotonic_offsets.json` in `data_dir()` so continuity survives add-on restarts.
+  - Always suppress corrupt/invalid negative energy readings on cumulative counters.
+  - Added comprehensive unit tests in `tests/test_state_and_controls.py` verifying brownout drop offset calculation, unmasked morning generation reporting, and restart persistence.
+
 ## [3.1.11] - 2026-11-12
 
 ### Changed

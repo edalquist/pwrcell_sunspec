@@ -472,7 +472,7 @@ class TestStateAndControls(unittest.TestCase):
         self.assertEqual(f_drop3.value, 500020)
 
     def test_pvlink_daily_energy_reset_allowed(self):
-        """Verify that PV link daily/session energy counters are allowed to reset at sunrise."""
+        """Verify that PV link energy counters suppress minor brownout drops and accept resets to zero."""
         from pwrcell.catalog import HomeAssistantHint
 
         pv_link = self.state.register_device(
@@ -493,18 +493,63 @@ class TestStateAndControls(unittest.TestCase):
         )
         self.assertEqual(f.value, 4456)
 
-        # Morning reset: PV link wakes up and reports 0 or session start 658 Wh
-        f_reset = self.state.set_field(
+        # Dawn brownout / RAM uncommitted loss: PV link drops slightly (e.g. 4456 -> 4250 Wh)
+        # Must be suppressed to protect total_increasing monotonicity and prevent negative solar generation
+        f_brownout = self.state.set_field(
             device_sn=pv_link.serial_number,
             name="E",
-            value=658,
+            value=4250,
             units="Wh",
             ha_hint=hint,
             sub_group="REbus_status",
         )
-        self.assertEqual(f_reset.value, 658)
+        self.assertEqual(f_brownout.value, 4456)
 
-        # Model 404 DCWh also resets
+        # Clean daily session reset to 0:
+        # First 2 polls of 0 are debounced (guard against transient read glitches)
+        f_reset1 = self.state.set_field(
+            device_sn=pv_link.serial_number,
+            name="E",
+            value=0,
+            units="Wh",
+            ha_hint=hint,
+            sub_group="REbus_status",
+        )
+        self.assertEqual(f_reset1.value, 4456)
+
+        f_reset2 = self.state.set_field(
+            device_sn=pv_link.serial_number,
+            name="E",
+            value=0,
+            units="Wh",
+            ha_hint=hint,
+            sub_group="REbus_status",
+        )
+        self.assertEqual(f_reset2.value, 4456)
+
+        # Third poll of 0 confirms reset -> accepted!
+        f_reset3 = self.state.set_field(
+            device_sn=pv_link.serial_number,
+            name="E",
+            value=0,
+            units="Wh",
+            ha_hint=hint,
+            sub_group="REbus_status",
+        )
+        self.assertEqual(f_reset3.value, 0)
+
+        # Subsequent positive generation increases normally
+        f_gen = self.state.set_field(
+            device_sn=pv_link.serial_number,
+            name="E",
+            value=15,
+            units="Wh",
+            ha_hint=hint,
+            sub_group="REbus_status",
+        )
+        self.assertEqual(f_gen.value, 15)
+
+        # Model 404 DCWh brownout drop is also suppressed
         f_dcwh = self.state.set_field(
             device_sn=pv_link.serial_number,
             name="DCWh",
@@ -515,15 +560,122 @@ class TestStateAndControls(unittest.TestCase):
         )
         self.assertEqual(f_dcwh.value, 4454)
 
-        f_dcwh_reset = self.state.set_field(
+        f_dcwh_drop = self.state.set_field(
             device_sn=pv_link.serial_number,
             name="DCWh",
-            value=698,
+            value=4300,
             units="Wh",
             ha_hint=hint,
             sub_group="string_combiner",
         )
-        self.assertEqual(f_dcwh_reset.value, 698)
+        self.assertEqual(f_dcwh_drop.value, 4454)
+
+    def test_pvlink_brownout_offset_prevents_masking(self):
+        """Verify that dawn brownout RAM loss is converted into a cumulative offset so morning generation is not masked."""
+        import tempfile
+        from pathlib import Path
+        from pwrcell.catalog import HomeAssistantHint
+        from pwrcell.state import StateStore
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            offset_file = Path(tmpdir) / ".monotonic_offsets.json"
+            store = StateStore(catalog=self.catalog, offset_file=offset_file)
+            pv_link = store.register_device(
+                serial_number="0001000361C7",
+                slave_id=4,
+                device_type="pv_link",
+                model_name="PV Link",
+            )
+            hint = HomeAssistantHint(platform="sensor", device_class="energy", state_class="total_increasing", unit_of_measurement="Wh")
+
+            # Day 1 sunset: PV link finishes the day at 35,206 Wh
+            f1 = store.set_field(
+                device_sn=pv_link.serial_number,
+                name="E",
+                value=35206,
+                units="Wh",
+                ha_hint=hint,
+                sub_group="REbus_status",
+            )
+            self.assertEqual(f1.value, 35206)
+
+            # Day 2 dawn: PV link boots with uncommitted RAM loss, raw counter is 35,000 Wh (206 Wh drop)
+            # Poll 1: Debouncing drop; held at 35,206
+            f2 = store.set_field(
+                device_sn=pv_link.serial_number,
+                name="E",
+                value=35000,
+                units="Wh",
+                ha_hint=hint,
+                sub_group="REbus_status",
+            )
+            self.assertEqual(f2.value, 35206)
+
+            # Poll 2: Confirmed drop -> cumulative offset (+206 Wh) is applied; reported value is 35,206 (delta = 0)
+            f3 = store.set_field(
+                device_sn=pv_link.serial_number,
+                name="E",
+                value=35000,
+                units="Wh",
+                ha_hint=hint,
+                sub_group="REbus_status",
+            )
+            self.assertEqual(f3.value, 35206)
+
+            # Poll 3 (sunrise, 7:15 AM): PV link generates 1 Wh and reports raw 35,001 Wh.
+            # NO MASKING: With offset +206 Wh, reported value is 35,207 (+1 Wh delta for Home Assistant)!
+            f4 = store.set_field(
+                device_sn=pv_link.serial_number,
+                name="E",
+                value=35001,
+                units="Wh",
+                ha_hint=hint,
+                sub_group="REbus_status",
+            )
+            self.assertEqual(f4.value, 35207)
+
+            # Poll 4 (morning generation, 8:00 AM): PV link reports raw 35,050 Wh (+49 Wh).
+            # Reported value is 35,050 + 206 = 35,256 Wh!
+            f5 = store.set_field(
+                device_sn=pv_link.serial_number,
+                name="E",
+                value=35050,
+                units="Wh",
+                ha_hint=hint,
+                sub_group="REbus_status",
+            )
+            self.assertEqual(f5.value, 35256)
+
+            # Poll 5 (further generation crossing old raw 35,206 Wh at 9:30 AM): raw is 35,210 Wh.
+            # Reported value is 35,210 + 206 = 35,416 Wh!
+            f6 = store.set_field(
+                device_sn=pv_link.serial_number,
+                name="E",
+                value=35210,
+                units="Wh",
+                ha_hint=hint,
+                sub_group="REbus_status",
+            )
+            self.assertEqual(f6.value, 35416)
+
+            # Verify persistence across StateStore restart:
+            # A new StateStore instance with the same offset_file should reload offset = 206 Wh.
+            store2 = StateStore(catalog=self.catalog, offset_file=offset_file)
+            pv_link2 = store2.register_device(
+                serial_number="0001000361C7",
+                slave_id=4,
+                device_type="pv_link",
+                model_name="PV Link",
+            )
+            f_reloaded = store2.set_field(
+                device_sn=pv_link2.serial_number,
+                name="E",
+                value=35220,
+                units="Wh",
+                ha_hint=hint,
+                sub_group="REbus_status",
+            )
+            self.assertEqual(f_reloaded.value, 35426)
 
     def test_telemetry_snapshot_publishes_zero_grid_voltage_and_limits(self):
         """Zero grid voltage (outage) and zero charge/discharge limits must update state rather than leaving stale values."""
