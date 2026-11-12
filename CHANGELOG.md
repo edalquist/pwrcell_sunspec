@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.9] - 2026-11-12
+
+### Added
+- **Management UI (Web Explorer) Technical Documentation**:
+  - Added comprehensive [Web Explorer Technical Guide](docs/management_ui.md) in `docs/management_ui.md` targeting technical users, developers, and energy systems engineers.
+  - Documented complete architecture (dual-stream MQTT/Modbus ingestion, SSE streaming, weighted set-cover minimal polling optimizer).
+  - Detailed guides for all UI components: Header telemetry & system mode control, hardware discovery tree, Unified Semantic vs. Raw register views, minimal model solver with manual source pinning, Modbus register inspector, writable setpoints/bounds validation, telemetry discrepancy analysis & polarity resolution, safety policy enforcement for hazardous registers, and Home Assistant MQTT Discovery management.
+  - Added cross-links from `README.md` and `DOCS.md`.
+
 ## [3.1.8] - 2026-11-12
 
 ### Fixed

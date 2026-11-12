@@ -72,6 +72,8 @@ The Web Explorer allows you to:
 - Issue real-time control commands (system mode changes, battery charge limits) with field validation.
 - Inspect the live correlation comparison table between MQTT protobuf pushes and SunSpec Modbus registers.
 
+For an in-depth walkthrough of all features, solver optimizations, and safety controls, see the [Web Explorer Technical Guide](docs/management_ui.md).
+
 ---
 
 ## Home Assistant Entities

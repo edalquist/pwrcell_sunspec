@@ -131,7 +131,7 @@ mqtt:
   # Or test with the built-in simulator:
   python main.py explore --mock
   ```
-  Open `http://localhost:5555` in your browser.
+  Open `http://localhost:5555` in your browser. Detailed feature and architecture documentation is available in the [Web Explorer Technical Guide](docs/management_ui.md).
 
 - **Run Combined Service (MQTT Bridge + Web UI)**:
   ```bash
