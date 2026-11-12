@@ -613,6 +613,84 @@ class TestHomeAssistantBridge(unittest.TestCase):
             topic = call[0][0]
             self.assertNotIn("live_inverter_state_name/config", topic)
 
+    def test_inverter_state_numeric_conversion_and_retained_compound_publish(self):
+        """Inverter operational state converts numeric code 2080 to GRID_CONNECTED and retains state updates."""
+        from pwrcell.state import FieldSource
+
+        inv = self.client.state.get_inverter()
+        inv_sn = inv.serial_number.strip().upper()
+
+        # Set only raw numeric StVnd on model 102 (no live string telemetry)
+        self.client.state.set_field(
+            device_sn=inv_sn,
+            name="StVnd",
+            model_id=102,
+            sub_group="model_102",
+            value=2080,
+            raw_value=2080,
+            source=FieldSource.MODBUS_POLL,
+        )
+
+        c_view = self.client.state.get_compound_view("inverter_state", inv_sn)
+        self.assertIsNotNone(c_view)
+        self.assertEqual(c_view.latest_value, "GRID_CONNECTED")
+        self.assertEqual(c_view.ha_device_class, "enum")
+        self.assertIn("GRID_CONNECTED", c_view.ha_options)
+
+        # Verify discovery payload has enum and valid options
+        disc = generate_discovery_payload(c_view, inv)
+        self.assertEqual(disc["payload"]["device_class"], "enum")
+        self.assertIn("GRID_CONNECTED", disc["payload"]["options"])
+
+        # Verify _on_compound_update publishes with retain=True
+        self.bridge.selected_field_keys = [f"{inv_sn}:inverter.compound.inverter_state"]
+        self.bridge._selected_set = set(self.bridge.selected_field_keys)
+        self.mock_mqttc.reset_mock()
+
+        self.bridge._on_compound_update(c_view)
+        state_calls = [
+            call for call in self.mock_mqttc.publish.call_args_list
+            if call[0][0] == f"pwrcell/{inv_sn.lower()}/inverter_state/state"
+        ]
+        self.assertTrue(len(state_calls) >= 1)
+        # Check retain=True keyword argument
+        self.assertTrue(state_calls[0].kwargs.get("retain") is True)
+        self.assertEqual(state_calls[0][0][1], "GRID_CONNECTED")
+
+    def test_system_mode_canonical_options_and_alias_normalization(self):
+        """System operating mode publishes canonical options in HA without duplicate synonyms."""
+        from pwrcell.state import FieldSource
+
+        inv = self.client.state.get_inverter()
+        inv_sn = inv.serial_number.strip().upper()
+
+        # Set live system mode with alias 'GRID_CONNECT'
+        self.client.state.set_field(
+            device_sn=inv_sn,
+            name="system_mode",
+            sub_group="live",
+            value="GRID_CONNECT",
+            raw_value=1,
+            source=FieldSource.MQTT_PUSH,
+        )
+
+        c_view = self.client.state.get_compound_view("system_mode", inv_sn)
+        self.assertIsNotNone(c_view)
+        # Aliases normalized to canonical SunSpec names
+        self.assertEqual(c_view.latest_value, "GRID_TIE")
+
+        disc = generate_discovery_payload(c_view, inv)
+        self.assertEqual(disc["platform"], "select")
+        # Ensure HA select options do not contain duplicate synonyms
+        options = disc["payload"]["options"]
+        self.assertIn("GRID_TIE", options)
+        self.assertNotIn("GRID_CONNECT", options)
+        self.assertIn("SELL", options)
+        self.assertNotIn("FULL_EXPORT", options)
+        self.assertIn("REMOTE_ARBITRAGE", options)
+        self.assertNotIn("ARBITRAGE", options)
+        self.assertNotIn("SAFETY_SHUTDOWN", options)  # Excluded by default security policy
+
 
 if __name__ == "__main__":
     unittest.main()

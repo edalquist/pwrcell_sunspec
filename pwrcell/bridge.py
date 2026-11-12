@@ -696,7 +696,7 @@ class HomeAssistantBridge:
         precision = payload_info.get("suggested_display_precision")
         val_str = format_state_value(c_view.latest_value, precision)
         if val_str is not None:
-            self._mqttc.publish(state_topic, val_str)
+            self._mqttc.publish(state_topic, val_str, retain=True)
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
         """Handle incoming command messages on subscribed command topics and HA birth status."""

@@ -1053,6 +1053,52 @@ class StateStore:
             latest_upd = max(mqtt_upd or 0.0, mb_upd or 0.0)
 
         # Compute delta and match percentage
+        if m.id == "inverter_state":
+            ha_device_class = "enum"
+            def _to_state_name(val):
+                if val is None:
+                    return None
+                val_int = None
+                if isinstance(val, int):
+                    val_int = val
+                elif isinstance(val, str) and val.isdigit():
+                    val_int = int(val)
+                if val_int is not None:
+                    from .mqtt import INVERTER_STATE_NAMES
+                    pt_st = self.catalog.get_point(64207, "St") if self.catalog else None
+                    sym = pt_st.lookup_symbol(val_int) if pt_st else None
+                    if sym:
+                        return sym.name
+                    if val_int in INVERTER_STATE_NAMES:
+                        return INVERTER_STATE_NAMES[val_int]
+                    return f"STATE_{val_int}"
+                return val
+
+            mb_val = _to_state_name(mb_val)
+            mqtt_val = _to_state_name(mqtt_val)
+            latest_val = _to_state_name(latest_val)
+        elif m.id == "system_mode":
+            from .controls import SUNSPEC_SYS_MD_NAMES
+            def _to_mode_name(val):
+                if val is None:
+                    return None
+                val_int = None
+                if isinstance(val, int):
+                    val_int = val
+                elif isinstance(val, str) and val.isdigit():
+                    val_int = int(val)
+                if val_int is not None:
+                    return SUNSPEC_SYS_MD_NAMES.get(val_int, f"MODE_{val_int}")
+                if isinstance(val, str):
+                    val_upper = val.strip().upper()
+                    alias_map = {"GRID_CONNECT": "GRID_TIE", "FULL_EXPORT": "SELL", "ARBITRAGE": "REMOTE_ARBITRAGE"}
+                    return alias_map.get(val_upper, val_upper)
+                return val
+
+            mb_val = _to_mode_name(mb_val)
+            mqtt_val = _to_mode_name(mqtt_val)
+            latest_val = _to_mode_name(latest_val)
+
         delta = None
         match_pct = None
         if isinstance(mqtt_val, (int, float)) and isinstance(mb_val, (int, float)):
@@ -1074,8 +1120,21 @@ class StateStore:
 
         options = None
         if m.id == "system_mode":
-            from .controls import OPERATING_MODES
-            options = sorted(list(set(OPERATING_MODES.keys())))
+            from .controls import get_canonical_system_operating_modes
+            canonical_modes = get_canonical_system_operating_modes(self.catalog)
+            options = sorted(list(canonical_modes.keys()))
+        elif m.id == "inverter_state":
+            ha_device_class = "enum"
+            from .mqtt import INVERTER_STATE_NAMES
+            pt_64207 = self.catalog.get_point(64207, "St") if self.catalog else None
+            if pt_64207 and pt_64207.symbols:
+                options = [s.name for s in sorted(pt_64207.symbols, key=lambda x: x.value)]
+            elif mb_field and mb_field.ha_hint and mb_field.ha_hint.options:
+                options = mb_field.ha_hint.options
+            elif mqtt_field and mqtt_field.ha_hint and mqtt_field.ha_hint.options:
+                options = mqtt_field.ha_hint.options
+            elif INVERTER_STATE_NAMES:
+                options = sorted(list(set(INVERTER_STATE_NAMES.values())))
         elif mb_field and mb_field.ha_hint and mb_field.ha_hint.options:
             options = mb_field.ha_hint.options
         elif mqtt_field and mqtt_field.ha_hint and mqtt_field.ha_hint.options:

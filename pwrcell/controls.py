@@ -73,6 +73,15 @@ def get_sunspec_sys_md_names(catalog: Optional[ModelCatalog] = None) -> Dict[int
     return names
 
 
+def get_canonical_system_operating_modes(catalog: Optional[ModelCatalog] = None) -> Dict[str, int]:
+    """Derive canonical system operating mode symbol mappings without synonym duplicates.
+
+    Prefers canonical names (GRID_TIE, SELL, REMOTE_ARBITRAGE) over aliases (GRID_CONNECT, FULL_EXPORT, ARBITRAGE).
+    """
+    sys_names = get_sunspec_sys_md_names(catalog)
+    return {name: val for val, name in sys_names.items()}
+
+
 class _DynamicDict(dict):
     """Lazy dictionary that resolves dynamically from a loader callback."""
     def __init__(self, loader):
@@ -153,10 +162,12 @@ class ControlDispatcher:
             mode_upper = mode.strip().upper()
             if mode_upper in OPERATING_MODES:
                 int_mode = OPERATING_MODES[mode_upper]
-                mode_name = mode_upper
+                mode_name = SUNSPEC_SYS_MD_NAMES.get(int_mode, mode_upper)
             elif point_def:
                 try:
                     int_mode, mode_name = point_def.validate_and_convert(mode_upper)
+                    if int_mode in SUNSPEC_SYS_MD_NAMES:
+                        mode_name = SUNSPEC_SYS_MD_NAMES[int_mode]
                 except ValueError:
                     pass
 
@@ -169,7 +180,9 @@ class ControlDispatcher:
             except (ValueError, TypeError):
                 raise ValueError(f"Invalid operating mode value '{mode}'")
 
-            if point_def and int_mode in point_def.symbols_by_value:
+            if int_mode in SUNSPEC_SYS_MD_NAMES:
+                mode_name = SUNSPEC_SYS_MD_NAMES[int_mode]
+            elif point_def and int_mode in point_def.symbols_by_value:
                 mode_name = point_def.symbols_by_value[int_mode].name
             elif int_mode in OPERATING_MODES.values():
                 mode_name = next((k for k, v in OPERATING_MODES.items() if v == int_mode), f"MODE_{int_mode}")

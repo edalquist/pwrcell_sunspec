@@ -148,11 +148,11 @@ groups:
   device_type: inverter
   fields:
   - inverter.live.inverter_state_name
-  - inverter.live.inverter_state
-  - inverter.inverter.StVnd
-  - inverter.model_102.StVnd
   - inverter.model_64207.St
   - inverter.model_102.St
+  - inverter.inverter.StVnd
+  - inverter.model_102.StVnd
+  - inverter.live.inverter_state
   synonyms:
   - st
   - stvnd
@@ -429,5 +429,4 @@ groups:
   synonyms:
   - a
   - total_dc_current
-ungrouped_fields:
-- inverter.concept.inverter_state
+ungrouped_fields: []

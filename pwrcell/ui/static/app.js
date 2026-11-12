@@ -2668,7 +2668,14 @@ function renderFieldTable() {
 
 function lookupEnumSymbol(field, val) {
   if (!field) return null;
-  const symbols = field.symbols;
+  let symbols = field.symbols;
+  if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
+    if (field.bounds?.symbols && Array.isArray(field.bounds.symbols) && field.bounds.symbols.length > 0) {
+      symbols = field.bounds.symbols;
+    } else if (field.ha_options && Array.isArray(field.ha_options) && field.ha_options.length > 0) {
+      symbols = field.ha_options.map(opt => ({ name: opt, value: opt, label: opt }));
+    }
+  }
   if (!symbols || !Array.isArray(symbols) || symbols.length === 0) return null;
 
   const testVals = [val];
@@ -3235,7 +3242,10 @@ function openWriteModal(field) {
   el.writeInputContainer.innerHTML = '';
 
   const isBitfieldField = field.is_bitfield || (field.point_type && field.point_type.startsWith('bitfield'));
-  const isEnumField = !isBitfieldField && (field.is_enum || (field.symbols && Array.isArray(field.symbols) && field.symbols.length > 0));
+  const hasSymbols = (field.symbols && Array.isArray(field.symbols) && field.symbols.length > 0)
+    || (field.bounds?.symbols && Array.isArray(field.bounds.symbols) && field.bounds.symbols.length > 0)
+    || (field.ha_options && Array.isArray(field.ha_options) && field.ha_options.length > 0);
+  const isEnumField = !isBitfieldField && (field.is_enum || hasSymbols);
 
   if (isBitfieldField && field.symbols && Array.isArray(field.symbols) && field.symbols.length > 0) {
     // Multi-checkbox checklist for bitfields
@@ -3314,8 +3324,13 @@ function openWriteModal(field) {
     sel.id = 'writeSelectInput';
 
     const activeSym = lookupEnumSymbol(field, field.value);
+    const symList = (field.symbols && Array.isArray(field.symbols) && field.symbols.length > 0)
+      ? field.symbols
+      : ((field.bounds?.symbols && Array.isArray(field.bounds.symbols) && field.bounds.symbols.length > 0)
+        ? field.bounds.symbols
+        : (field.ha_options || []).map(opt => ({ name: opt, value: opt, label: opt })));
 
-    field.symbols.forEach(sym => {
+    symList.forEach(sym => {
       const opt = document.createElement('option');
       const symName = typeof sym === 'object' && sym !== null ? sym.name : String(sym);
       const symVal = typeof sym === 'object' && sym !== null && sym.value !== undefined ? sym.value : null;

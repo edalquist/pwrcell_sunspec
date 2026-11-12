@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.7] - 2026-11-11
+
+### Fixed
+- **Inverter Operational State Reporting & Enum Options**: Fixed issue where `Inverter Operational State` was not showing or updating in Home Assistant.
+  - In `pwrcell/data/groupings.yaml`: Reordered Modbus candidates for `inverter_state` to prioritize `inverter.model_64207.St` (which contains full Generac SunSpec REbus state symbols) ahead of vendor-specific raw integer points (`StVnd`). Removed obsolete `inverter.concept.inverter_state` from `ungrouped_fields`.
+  - In `pwrcell/state.py`: Guaranteed that `inverter_state` compound views always resolve `ha_device_class = "enum"` with complete REbus status symbols (`GRID_CONNECTED`, `STANDBY`, etc.), and automatically convert raw integer codes (`2080`) or numeric strings to their canonical enum symbol name across Modbus, MQTT, and latest values so Home Assistant never receives invalid raw integer states for enum sensors.
+  - In `pwrcell/bridge.py`: Set `retain=True` for compound state updates in `_on_compound_update()`, preventing Home Assistant restarts or reconnects from falling back to stale or uninitialized state.
+- **System Operating Mode Option Deduplication & Normalization**:
+  - In `pwrcell/controls.py`: Added `get_canonical_system_operating_modes()` to provide deduplicated system modes without synonym collisions. Canonicalized written mode names in `set_system_mode()` so that aliases (e.g. `GRID_CONNECT`, `FULL_EXPORT`, `ARBITRAGE`) map to canonical SunSpec names (`GRID_TIE`, `SELL`, `REMOTE_ARBITRAGE`).
+  - In `pwrcell/state.py`: Populated `system_mode` compound view options with canonical modes and normalized alias values in `get_compound_view()`, eliminating duplicate synonyms in the Home Assistant select dropdown.
+- **Web Explorer Write Modal Enum Dropdown**:
+  - In `pwrcell/ui/static/app.js`: Updated `openWriteModal()` and `lookupEnumSymbol()` to detect enum fields via `field.bounds.symbols` and `field.ha_options` in addition to direct `field.symbols`, enabling dropdown selection for merged/compound enum fields like `System Operating Mode` instead of rendering a plain text input.
+
 ## [3.1.6] - 2026-11-11
 
 ### Fixed
