@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.13] - 2026-11-13
+
+### Fixed
+- **MQTT Retained State Continuity on Home Assistant Reconnects**:
+  - Updated `HomeAssistantBridge._on_field_update` in `pwrcell/bridge.py` to publish live raw field state updates with `retain=True` (matching `publish_discovery` and `_on_compound_update`).
+  - Prevents Mosquitto from holding stale retained `state_topic` payloads between discovery runs, eliminating false `total_increasing` counter reset spikes in Home Assistant Energy statistics when Home Assistant restarts or reloads MQTT.
+  - Added unit test `test_on_field_update_retains_state_to_prevent_stale_broker_values` in `tests/test_bridge.py`.
+
 ## [3.1.12] - 2026-11-12
 
 ### Fixed

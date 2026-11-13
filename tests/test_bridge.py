@@ -691,6 +691,27 @@ class TestHomeAssistantBridge(unittest.TestCase):
         self.assertNotIn("ARBITRAGE", options)
         self.assertNotIn("SAFETY_SHUTDOWN", options)  # Excluded by default security policy
 
+    def test_on_field_update_retains_state_to_prevent_stale_broker_values(self):
+        """Live raw field updates must publish with retain=True so HA reconnects never read stale broker values."""
+        self.client.state.subscribe(self.bridge._on_field_update)
+        self.bridge.selected_field_keys = ["0001000714E9:inverter.inverter.A"]
+
+        self.client.state.set_field(
+            device_sn="0001000714E9",
+            name="A",
+            sub_group="inverter",
+            value=14.2,
+            label="Inverter Current",
+        )
+
+        state_calls = [
+            call for call in self.mock_mqttc.publish.call_args_list
+            if call[0][0] == "pwrcell/0001000714e9/inverter_a/state"
+        ]
+        self.assertTrue(len(state_calls) >= 1)
+        self.assertTrue(state_calls[-1].kwargs.get("retain") is True)
+        self.assertEqual(state_calls[-1][0][1], "14.2")
+
 
 if __name__ == "__main__":
     unittest.main()

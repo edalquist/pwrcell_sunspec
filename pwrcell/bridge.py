@@ -595,7 +595,7 @@ class HomeAssistantBridge:
                     self._command_topic_to_field[cmd_topic] = field
                 self._mqttc.subscribe(cmd_topic)
 
-        self._publish_field_state(field, payload_info, retain=False)
+        self._publish_field_state(field, payload_info, retain=True)
 
     def _on_compound_update(self, c_view: Any):
         """Called when a compound view updates (only from active/selected source)."""
