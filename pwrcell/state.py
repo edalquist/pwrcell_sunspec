@@ -894,11 +894,10 @@ class StateStore:
                 from .mapping import TelemetryMappingDef
                 m = TelemetryMappingDef(
                     id=mapping_id,
-                    name=cdef.get("label", mapping_id),
                     label=cdef.get("label", mapping_id),
                     description=cdef.get("description", ""),
                     device_type=cdef.get("device_type", "inverter"),
-                    unit=cdef.get("units", ""),
+                    unit=cdef.get("units") or cdef.get("unit", ""),
                     transform=cdef.get("transform", "none"),
                     ha_platform=cdef.get("ha_platform", "sensor"),
                     ha_device_class=cdef.get("ha_device_class"),

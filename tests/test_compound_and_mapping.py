@@ -458,6 +458,50 @@ class TestConfigurableMappingsAndCompoundViews(unittest.TestCase):
             cleared_cg = load_custom_groupings(cust_cfg)
             self.assertEqual(cleared_cg["field_overrides"], {})
 
+    def test_get_compound_view_with_custom_concept(self):
+        """Verify get_compound_view and get_compound_views handle custom_concepts without TypeError."""
+        from unittest.mock import patch
+
+        self.state.set_field(
+            device_sn=self.inv.serial_number,
+            name="CustomSensor",
+            label="Custom Sensor",
+            value=42.5,
+            units="W",
+            sub_group="live",
+            source=FieldSource.MQTT_PUSH,
+        )
+
+        custom_data = {
+            "field_overrides": {
+                f"{self.inv.serial_number}:inverter.live.CustomSensor": "custom_test_concept",
+            },
+            "field_transforms": {},
+            "custom_concepts": {
+                "custom_test_concept": {
+                    "label": "My Custom Concept",
+                    "description": "User-defined custom concept",
+                    "device_type": "inverter",
+                    "units": "W",
+                    "transform": "none",
+                }
+            },
+            "dismissed_suggestions": [],
+            "custom_bounds": {},
+            "preferred_sources": {},
+        }
+
+        with patch("pwrcell.grouping.load_custom_groupings", return_value=custom_data):
+            view = self.state.get_compound_view("custom_test_concept", device_sn=self.inv.serial_number)
+            self.assertIsNotNone(view)
+            self.assertEqual(view.mapping_id, "custom_test_concept")
+            self.assertEqual(view.label, "My Custom Concept")
+            self.assertEqual(view.units, "W")
+            self.assertEqual(view.latest_value, 42.5)
+
+            views = self.state.get_compound_views(self.inv.serial_number)
+            self.assertTrue(any(v.mapping_id == "custom_test_concept" for v in views))
+
 
 if __name__ == "__main__":
     unittest.main()
