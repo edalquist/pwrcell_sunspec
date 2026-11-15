@@ -310,6 +310,7 @@ groups:
   fields:
   - battery.live.state_of_charge
   - battery.battery.SoC
+  - battery.lithium_ion_string.SoC
   - battery.model_802.SoC
   - battery.model_804.SoC
   synonyms:

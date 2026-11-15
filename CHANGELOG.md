@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.15] - 2026-11-15
+
+### Fixed
+- **Home Assistant Selection, Config Migration & MQTT Discovery Preview Sync (Issue #17)**:
+  - Fixed Web UI selection helpers (`getCompoundKeyForItem`, `isFieldSelected`, `toggleHaSelection`, `btnDeselectAll`, `btnApplySameType`, and `compoundKeyByRaw` lookup) in `pwrcell/ui/static/app.js` so standalone Unified View rows preserve their real raw keys instead of fabricating invalid `.compound.` keys, and compound selections/deselections cleanly manage member keys via `member_keys` exported by `ConceptView.to_dict()` (`pwrcell/concept.py`).
+  - Updated `btnPreviewHA` in `pwrcell/ui/static/app.js` and `/api/ha/preview` in `pwrcell/ui/routes/ha.py` to support live `POST` previews of unsaved UI selections and category overrides alongside `GET` previews, while pre-populating unpolled MQTT/Modbus definitions from `mqtt_telemetry.yaml` (`StateStore.ensure_field_definition` in `pwrcell/state.py`).
+  - Fixed `StateStore.get_compound_view()` in `pwrcell/state.py` so Modbus-only `inverter_state` views preserve `ha_device_class="enum"`.
+  - Updated `pwrcell/ha.py` (`qualify_legacy_ha_config`, `_remap_concept_key`, and shared `ensure_selected_field_definitions`, `collect_compound_member_keys`, `is_raw_field_suppressed` helpers) and `pwrcell/bridge.py` to repair orphaned `.standalone.`/invalid `.compound.` keys, respect per-device ungrouped exclusions when remapping or suppressing raw member entities, and keep `ha_config.yaml` vs preview/bridge discovery aligned.
+  - Updated `pwrcell/optimizer.py` (`group_device_fields`, `resolve_minimal_models_for_paths`) and `pwrcell/ui/routes/devices.py` to honor both `.compound.` and `.concept.` selections when resolving optimal Modbus polling models.
+  - Updated `pwrcell/mapping.py` (`load_mappings`, `save_mappings`, `TelemetryMappingDef.member_transforms`), added `battery.lithium_ion_string.SoC` to `battery_soc` in `pwrcell/data/groupings.yaml`, and removed stale/redundant entries from `config/ha_default_config.yaml`.
+
+### Added
+- **Expanded `DEBUG`-Level Diagnostic Logging & Regression Tests**:
+  - Added detailed `DEBUG` logging across `pwrcell/ha.py`, `pwrcell/state.py`, `pwrcell/ui/routes/ha.py` (save diffs and unmatched preview keys), `pwrcell/bridge.py` (reload diffs and skipped/unmatched keys), `pwrcell/mapping.py`, and `pwrcell/ui/static/app.js` (`console.debug` selection trace) to aid diagnostics.
+  - Added regression tests in `tests/test_issue_17_ha_config.py` (including Node-executed verification of `app.js` helpers and `assertLogs` debug-logging assertions) and updated default config assertions in `tests/test_ui.py`.
+
 ## [3.1.14] - 2026-11-14
 
 ### Fixed

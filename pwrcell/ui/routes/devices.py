@@ -194,8 +194,16 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
 
         selected_items = {}
         for g in groups:
+            comp_id = g.id.replace(".concept.", ".compound.") if ".concept." in g.id else g.id
             qual_id = f"{clean_sn}:{g.id}"
-            if g.is_selected or g.id in dev_ha_selected or qual_id in dev_ha_selected:
+            qual_comp = f"{clean_sn}:{comp_id}"
+            if (
+                g.is_selected
+                or g.id in dev_ha_selected
+                or qual_id in dev_ha_selected
+                or comp_id in dev_ha_selected
+                or qual_comp in dev_ha_selected
+            ):
                 cand_sources = set()
                 for s in g.sources:
                     if s.source_type == "MQTT":

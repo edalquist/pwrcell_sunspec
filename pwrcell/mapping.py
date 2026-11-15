@@ -93,6 +93,7 @@ class FieldGroupDef:
     def to_mapping_def(self) -> TelemetryMappingDef:
         mqtt_fields: List[str] = []
         modbus_fields: List[str] = []
+        member_transforms: Dict[str, str] = {}
         grp_transform = "none"
         d_type = self.device_type
         for m in self.fields:
@@ -112,6 +113,7 @@ class FieldGroupDef:
                 modbus_fields.append(p)
                 if m.transform and m.transform != "none":
                     grp_transform = m.transform
+                    member_transforms[p] = m.transform
 
         if not d_type:
             for m in self.fields:
@@ -134,6 +136,7 @@ class FieldGroupDef:
             modbus_fields=modbus_fields,
             synonyms=list(self.synonyms),
             transform=grp_transform,
+            member_transforms=member_transforms,
             unit=grp_unit or "",
             ha_device_class=d_class,
             ha_state_class=s_class,
@@ -164,6 +167,7 @@ class TelemetryMappingDef:
     modbus_fields: List[str] = field(default_factory=list)
     synonyms: List[str] = field(default_factory=list)
     transform: str = "none"  # 'negate', 'none', 'wh_to_kwh'
+    member_transforms: Dict[str, str] = field(default_factory=dict)
     transform_desc: str = ""
     unit: str = ""
     description: str = ""
@@ -183,6 +187,7 @@ class TelemetryMappingDef:
         modbus_candidates: Optional[List[str]] = None,
         synonyms: Optional[List[str]] = None,
         transform: str = "none",
+        member_transforms: Optional[Dict[str, str]] = None,
         transform_desc: str = "",
         unit: str = "",
         description: str = "",
@@ -217,6 +222,7 @@ class TelemetryMappingDef:
 
         self.synonyms = list(synonyms or [])
         self.transform = transform or "none"
+        self.member_transforms = dict(member_transforms or {})
         self.transform_desc = transform_desc or ""
         self.unit = unit or ""
         self.description = description or ""
@@ -514,12 +520,25 @@ def load_mappings(config_path: Optional[Path | str] = None) -> List[TelemetryMap
     path = _resolve_mappings_path(config_path)
 
     if not path.exists():
-        logger.info("Mappings configuration %s not found. Creating default configuration file.", path)
-        defaults = get_default_mappings()
-        save_mappings(defaults, path)
-        return defaults
+        pkg_data_path = Path(__file__).resolve().parent / "data" / DEFAULT_GROUPINGS_FILE
+        if pkg_data_path.exists() and path.resolve() != pkg_data_path.resolve():
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(pkg_data_path.read_bytes())
+                logger.info("Seeded default groupings configuration at %s from %s", path, pkg_data_path)
+                logger.debug("Copied packaged groupings YAML (%d bytes) to %s", path.stat().st_size, path)
+            except Exception as e:
+                logger.warning("Failed copying packaged groupings from %s to %s (%s); falling back to save_mappings", pkg_data_path, path, e)
+                defaults = get_default_mappings()
+                save_mappings(defaults, path)
+                return defaults
+        else:
+            logger.info("Mappings configuration %s not found. Creating default configuration file.", path)
+            defaults = get_default_mappings()
+            save_mappings(defaults, path)
+            return defaults
 
-    raw = load_mappings_config(config_path)
+    raw = load_mappings_config(config_path or path)
     if "groups" in raw:
         mappings = []
         for g_dict in raw.get("groups", []):
@@ -527,9 +546,22 @@ def load_mappings(config_path: Optional[Path | str] = None) -> List[TelemetryMap
             g_name = g_dict.get("name", g_id)
             fields = [GroupMemberDef.from_item(item) for item in g_dict.get("fields", [])]
             syns = list(g_dict.get("synonyms", []) or [])
-            g_def = FieldGroupDef(id=g_id, name=g_name, fields=fields, device_type=g_dict.get("device_type"), synonyms=syns)
+            g_def = FieldGroupDef(
+                id=g_id,
+                name=g_name,
+                fields=fields,
+                device_type=g_dict.get("device_type"),
+                synonyms=syns,
+                unit=g_dict.get("unit"),
+            )
             mappings.append(g_def.to_mapping_def())
         logger.info("Loaded %d field groups from %s", len(mappings), path)
+        logger.debug(
+            "Groupings config %s: auto_group_heuristics=%s, ungrouped_fields=%d",
+            path,
+            raw.get("auto_group_heuristics"),
+            len(raw.get("ungrouped_fields") or []),
+        )
         return mappings
 
     items = raw.get("mappings", [])
@@ -558,24 +590,36 @@ def save_mappings(
         groups_list = []
         for m in mappings:
             f_list = []
+            member_tfs = getattr(m, "member_transforms", None) or {}
             for mf in m.mqtt_fields:
                 f_list.append(mf)
             for mbf in m.modbus_fields:
-                if m.transform and m.transform != "none":
+                if member_tfs:
+                    tf = member_tfs.get(mbf)
+                    if tf and tf != "none":
+                        f_list.append({"path": mbf, "transform": tf})
+                    else:
+                        f_list.append(mbf)
+                elif m.transform and m.transform != "none":
                     f_list.append({"path": mbf, "transform": m.transform})
                 else:
                     f_list.append(mbf)
-            g_entry = {
+            g_entry: Dict[str, Any] = {
                 "id": m.id,
                 "name": m.label,
-                "fields": f_list,
             }
+            if m.device_type:
+                g_entry["device_type"] = m.device_type
+            g_entry["fields"] = f_list
             if m.synonyms:
                 g_entry["synonyms"] = list(m.synonyms)
+            if m.unit and "soc" not in (m.id or "").lower():
+                g_entry["unit"] = m.unit
             groups_list.append(g_entry)
 
         data: Dict[str, Any] = {
             "version": "2.0",
+            "auto_group_heuristics": bool(auto_group_heuristics),
             "groups": groups_list,
         }
         if u_list:

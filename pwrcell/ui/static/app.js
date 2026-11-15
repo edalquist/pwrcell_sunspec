@@ -501,19 +501,13 @@ async function selectDevice(serialNumber) {
     const combinedRawKeys = new Set();
     const compoundKeyByRaw = new Map();
     for (const cf of compoundFields) {
-      if (cf.mqtt_key) {
-        combinedRawKeys.add(cf.mqtt_key);
-        compoundKeyByRaw.set(cf.mqtt_key, cf.key);
-      }
-      if (cf.modbus_key) {
-        combinedRawKeys.add(cf.modbus_key);
-        compoundKeyByRaw.set(cf.modbus_key, cf.key);
-      }
-      if (Array.isArray(cf.modbus_candidates)) {
-        for (const cand of cf.modbus_candidates) {
-          combinedRawKeys.add(cand);
-          compoundKeyByRaw.set(cand, cf.key);
-        }
+      const cfCompoundKey = getCompoundKeyForItem(cf) || cf.id || cf.key;
+      const members = Array.isArray(cf.member_keys) && cf.member_keys.length > 0
+        ? cf.member_keys
+        : [cf.mqtt_key, cf.modbus_key, ...(Array.isArray(cf.modbus_candidates) ? cf.modbus_candidates : [])].filter(Boolean);
+      for (const mk of members) {
+        combinedRawKeys.add(mk);
+        compoundKeyByRaw.set(mk, cfCompoundKey);
       }
     }
 
@@ -605,11 +599,22 @@ function getFieldDeviceSn(f) {
 }
 
 function getCompoundKeyForItem(f) {
-  if (f?.device_type && f?.concept_key) {
+  if (!f) return null;
+  const fid = String(f.id || '');
+  if (fid.includes('.standalone.')) {
+    return null;
+  }
+  if (fid.includes('.compound.')) {
+    return fid;
+  }
+  if (fid.includes('.concept.')) {
+    return fid.replace('.concept.', '.compound.');
+  }
+  if (f.is_compound === true && f.device_type && f.concept_key) {
     return `${f.device_type}.compound.${f.concept_key}`;
   }
-  if (f?.id && f.id.includes('.concept.')) {
-    return f.id.replace('.concept.', '.compound.');
+  if (f.compound_key) {
+    return f.compound_key;
   }
   return null;
 }
@@ -634,6 +639,11 @@ function isFieldSelected(f) {
   if (f.sources && Array.isArray(f.sources)) {
     for (const s of f.sources) {
       if (checkKey(s.field_key)) return true;
+    }
+  }
+  if ((f.is_compound === true || (f.id && (f.id.includes('.concept.') || f.id.includes('.compound.')))) && Array.isArray(f.member_keys)) {
+    for (const mk of f.member_keys) {
+      if (checkKey(mk)) return true;
     }
   }
   return false;
@@ -785,59 +795,68 @@ function toggleHaSelection(f, isSelected) {
 
   const compKey = getCompoundKeyForItem(f);
   const scopedCompKey = (sn && compKey) ? `${sn}:${compKey}` : compKey;
-  const isCompound = Boolean(f.is_compound || f.sources || compKey);
+  const isCompound = Boolean(compKey);
 
   const primaryKey = f.active_source_key || f.key || f.id;
   const scopedPrimaryKey = sn ? `${sn}:${primaryKey}` : primaryKey;
-  const scopedId = (sn && f.id) ? `${sn}:${f.id}` : f.id;
-  const scopedKey = (sn && f.key) ? `${sn}:${f.key}` : f.key;
-  const scopedMqttKey = (sn && f.mqtt_key) ? `${sn}:${f.mqtt_key}` : f.mqtt_key;
 
   if (isSelected) {
     if (isCompound && scopedCompKey) {
-      state.selectedHaKeys.add(scopedCompKey);
-      // Clean up any individual member selections so they don't produce duplicate entities
-      state.selectedHaKeys.delete(scopedPrimaryKey);
-      state.selectedHaKeys.delete(primaryKey);
-      if (scopedKey) {
-        state.selectedHaKeys.delete(scopedKey);
-        state.selectedHaKeys.delete(f.key);
-      }
-      if (scopedMqttKey) state.selectedHaKeys.delete(scopedMqttKey);
-      if (f.mqtt_key) state.selectedHaKeys.delete(f.mqtt_key);
-      if (f.sources && Array.isArray(f.sources)) {
+      // Clean up any individual member selections first so they don't produce duplicate entities
+      const memberKeysToClear = new Set();
+      if (primaryKey && primaryKey !== compKey) memberKeysToClear.add(primaryKey);
+      if (f.key && f.key !== compKey) memberKeysToClear.add(f.key);
+      if (f.id && f.id !== compKey && f.id !== scopedCompKey) memberKeysToClear.add(f.id);
+      if (f.mqtt_key) memberKeysToClear.add(f.mqtt_key);
+      if (Array.isArray(f.sources)) {
         for (const s of f.sources) {
-          state.selectedHaKeys.delete(s.field_key);
-          if (sn) state.selectedHaKeys.delete(`${sn}:${s.field_key}`);
+          if (s.field_key) memberKeysToClear.add(s.field_key);
         }
       }
-    } else {
+      if (Array.isArray(f.member_keys)) {
+        for (const mk of f.member_keys) {
+          if (mk) memberKeysToClear.add(mk);
+        }
+      }
+      if (Array.isArray(f.modbus_candidates)) {
+        for (const cand of f.modbus_candidates) {
+          if (cand) memberKeysToClear.add(cand);
+        }
+      }
+      for (const mk of memberKeysToClear) {
+        state.selectedHaKeys.delete(mk);
+        if (sn) state.selectedHaKeys.delete(`${sn}:${mk}`);
+      }
+      state.selectedHaKeys.add(scopedCompKey);
+    } else if (scopedPrimaryKey) {
       state.selectedHaKeys.add(scopedPrimaryKey);
     }
   } else {
-    state.selectedHaKeys.delete(scopedPrimaryKey);
-    state.selectedHaKeys.delete(primaryKey);
-    if (scopedId) {
-      state.selectedHaKeys.delete(scopedId);
-      state.selectedHaKeys.delete(f.id);
-    }
-    if (scopedCompKey) {
-      state.selectedHaKeys.delete(scopedCompKey);
-      state.selectedHaKeys.delete(compKey);
-    }
-    if (scopedKey) {
-      state.selectedHaKeys.delete(scopedKey);
-      state.selectedHaKeys.delete(f.key);
-    }
-    if (scopedMqttKey) state.selectedHaKeys.delete(scopedMqttKey);
-    if (f.mqtt_key) state.selectedHaKeys.delete(f.mqtt_key);
-    if (f.sources && Array.isArray(f.sources)) {
-      for (const s of f.sources) {
-        state.selectedHaKeys.delete(s.field_key);
-        if (sn) state.selectedHaKeys.delete(`${sn}:${s.field_key}`);
-      }
+    const keysToRemove = new Set([
+      primaryKey,
+      f.id,
+      compKey,
+      f.key,
+      f.mqtt_key,
+      ...(Array.isArray(f.sources) ? f.sources.map(s => s.field_key) : []),
+      ...(Array.isArray(f.member_keys) ? f.member_keys : []),
+      ...(Array.isArray(f.modbus_candidates) ? f.modbus_candidates : []),
+    ].filter(Boolean));
+    for (const rk of keysToRemove) {
+      state.selectedHaKeys.delete(rk);
+      if (sn) state.selectedHaKeys.delete(`${sn}:${rk}`);
     }
   }
+  console.debug('[HA Selection]', {
+    action: isSelected ? 'select' : 'deselect',
+    sn,
+    id: f.id,
+    key: f.key,
+    compKey,
+    isCompound,
+    primaryKey,
+    totalSelected: state.selectedHaKeys.size,
+  });
   updateHaCounter();
   updateFilterCounts();
 }
@@ -4421,23 +4440,21 @@ function setupEventListeners() {
         }
       }
     }
-    state.activeFields.forEach(f => {
+    [...(state.activeFields || []), ...(state.unifiedFields || [])].forEach(f => {
       const compKey = getCompoundKeyForItem(f);
-      if (sn) {
-        state.selectedHaKeys.delete(`${sn}:${f.key}`);
-        if (f.id) state.selectedHaKeys.delete(`${sn}:${f.id}`);
-        if (compKey) state.selectedHaKeys.delete(`${sn}:${compKey}`);
-        if (f.mqtt_key) state.selectedHaKeys.delete(`${sn}:${f.mqtt_key}`);
-      }
-      state.selectedHaKeys.delete(f.key);
-      if (f.id) state.selectedHaKeys.delete(f.id);
-      if (compKey) state.selectedHaKeys.delete(compKey);
-      if (f.mqtt_key) state.selectedHaKeys.delete(f.mqtt_key);
-      if (f.sources && Array.isArray(f.sources)) {
-        for (const s of f.sources) {
-          state.selectedHaKeys.delete(s.field_key);
-          if (sn) state.selectedHaKeys.delete(`${sn}:${s.field_key}`);
-        }
+      const keysToClear = [
+        f.key,
+        f.id,
+        compKey,
+        f.mqtt_key,
+        f.active_source_key,
+        ...(Array.isArray(f.sources) ? f.sources.map(s => s.field_key) : []),
+        ...(Array.isArray(f.member_keys) ? f.member_keys : []),
+        ...(Array.isArray(f.modbus_candidates) ? f.modbus_candidates : []),
+      ].filter(Boolean);
+      for (const k of keysToClear) {
+        state.selectedHaKeys.delete(k);
+        if (sn) state.selectedHaKeys.delete(`${sn}:${k}`);
       }
     });
     updateHaCounter();
@@ -4508,7 +4525,7 @@ function setupEventListeners() {
         // 3. Apply selected fields to this peer device
         selectedFields.forEach(f => {
           const cKey = getCompoundKeyForItem(f);
-          const isComp = Boolean(f.is_compound || f.sources || cKey);
+          const isComp = Boolean(cKey);
           if (isComp && cKey) {
             state.selectedHaKeys.add(`${peerSn}:${cKey}`);
           } else {
@@ -4652,7 +4669,14 @@ function setupEventListeners() {
     try {
       el.previewModal.classList.add('open');
       el.previewCode.textContent = 'Generating MQTT Discovery preview...';
-      const res = await fetch(apiPath('api/ha/preview'));
+      const res = await fetch(apiPath('api/ha/preview'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          selected_fields: Array.from(state.selectedHaKeys),
+          category_overrides: state.haCategoryOverrides || {},
+        }),
+      });
       const data = await res.json();
       el.previewCode.textContent = JSON.stringify(data, null, 2);
     } catch (err) {

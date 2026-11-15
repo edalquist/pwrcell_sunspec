@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 import yaml
 
 from . import __version__
@@ -205,11 +205,21 @@ def load_ha_config(
     doc = _read_ha_config_doc(path)
     fields = list(doc.get("selected_fields") or [])
 
-    if not fields and allow_default_seed:
+    if fields:
+        logger.debug("Loaded %d selected HA field keys from %s", len(fields), path)
+    elif allow_default_seed:
         seed_path = get_default_seed_config_path()
         if seed_path.exists():
             seed_doc = _read_ha_config_doc(seed_path)
             fields = list(seed_doc.get("selected_fields") or [])
+            logger.debug(
+                "HA config %s missing/empty; seeded %d default keys from %s",
+                path,
+                len(fields),
+                seed_path,
+            )
+    else:
+        logger.debug("HA config %s has 0 selected fields (allow_default_seed=False)", path)
 
     return fields
 
@@ -231,21 +241,169 @@ _LEGACY_CONCEPT_REMAP: Dict[str, str] = {
 }
 
 
-def _remap_concept_key(field_part: str) -> Optional[str]:
-    if field_part in _LEGACY_CONCEPT_REMAP:
-        return _LEGACY_CONCEPT_REMAP[field_part]
+def _is_raw_field_excluded_from_compound(
+    field_key: str,
+    concept_id: str,
+    device_sn: Optional[str] = None,
+    reg: Optional[Any] = None,
+    custom_data: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return True if a raw field has been ungrouped or excluded from a compound group."""
+    from .mapping import MappingRegistry
+    from .grouping import is_field_excluded_from_mapping, load_custom_groupings
+
+    reg = reg or MappingRegistry.get_instance()
+    if reg.is_field_ungrouped(field_key):
+        return True
+    custom_data = custom_data if custom_data is not None else load_custom_groupings()
+    if device_sn:
+        if is_field_excluded_from_mapping(device_sn, field_key, concept_id, custom_data):
+            return True
+    else:
+        overrides = custom_data.get("field_overrides", {}) or {}
+        clean_fk = field_key.strip().lower()
+        clean_cid = (concept_id or "").strip().lower()
+        for ov_k, ov_tgt in overrides.items():
+            ov_field = ov_k.split(":", 1)[1] if ":" in ov_k else ov_k
+            if ov_field.strip().lower() == clean_fk:
+                if ov_tgt is None or str(ov_tgt).strip().lower() in ("", "null", "none", "standalone", "ungrouped"):
+                    return True
+                if clean_cid and str(ov_tgt).strip().lower() != clean_cid:
+                    return True
+    return False
+
+
+def _resolve_standalone_or_orphan_slug(
+    dev_type: str,
+    slug: str,
+    state_store: Optional[StateStore] = None,
+    sn_hint: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve a standalone slug (e.g. 'socmin_802' or 'load_power_w') back to its canonical StateField.key."""
+    clean_slug = (slug or "").strip()
+    if clean_slug.endswith("_None"):
+        clean_slug = clean_slug[:-5]
+    if not clean_slug or clean_slug.lower() == "none":
+        return None
+
+    pt_lower = clean_slug.lower()
+    mid_int: Optional[int] = None
+    if "_" in clean_slug:
+        prefix_part, suffix_part = clean_slug.rsplit("_", 1)
+        if suffix_part.isdigit() and prefix_part:
+            pt_lower = prefix_part.lower()
+            mid_int = int(suffix_part)
+
+    # 1. Inspect live fields on matching devices in state_store
+    if state_store and hasattr(state_store, "devices"):
+        candidate_devs = []
+        if sn_hint:
+            clean_sn = sn_hint.strip().upper()
+            for d in state_store.devices.values():
+                if d.serial_number.strip().upper() == clean_sn:
+                    candidate_devs.append(d)
+        if not candidate_devs:
+            candidate_devs = [d for d in state_store.devices.values() if d.device_type == dev_type]
+
+        for dev in candidate_devs:
+            if mid_int is not None:
+                for f in dev.fields.values():
+                    if f.model_id == mid_int and (f.name or "").lower() == pt_lower:
+                        return f.key
+            # Match un-indexed / MQTT fields or full point name without model suffix
+            full_lower = clean_slug.lower()
+            for f in dev.fields.values():
+                if f.model_id is None and (f.name or "").lower() == full_lower:
+                    return f.key
+            name_matches = [f.key for f in dev.fields.values() if (f.name or "").lower() == full_lower]
+            if len(name_matches) == 1:
+                return name_matches[0]
+
+    # 2. Static fallback via SunSpec catalog when mid_int is present
+    if mid_int is not None:
+        from .catalog import get_catalog
+        cat_model = get_catalog().get_model(mid_int)
+        if cat_model:
+            for pt in cat_model.points.values():
+                if (pt.name or "").lower() == pt_lower:
+                    return f"{dev_type}.{cat_model.name}.{pt.name}"
+
+    # 3. Static fallback via MQTT live spec index
+    from .state import _MQTT_LIVE_SPECS
+    spec_key = (dev_type.lower(), clean_slug.lower())
+    if spec_key in _MQTT_LIVE_SPECS:
+        return f"{dev_type}.live.{clean_slug}"
+    for (s_dev, s_name) in _MQTT_LIVE_SPECS:
+        if s_dev == dev_type.lower() and s_name.lower() == clean_slug.lower():
+            return f"{dev_type}.live.{s_name}"
+
+    return None
+
+
+def _remap_concept_key(
+    field_part: str,
+    state_store: Optional[StateStore] = None,
+    sn_hint: Optional[str] = None,
+) -> Optional[str]:
+    from .mapping import MappingRegistry
+    from .grouping import load_custom_groupings
+
+    reg = MappingRegistry.get_instance()
+    custom_data = load_custom_groupings()
+    custom_concepts = custom_data.get("custom_concepts") or {}
+
+    orig_part = field_part
     if field_part.endswith("_None"):
         field_part = field_part[:-5]
+
+    if field_part in _LEGACY_CONCEPT_REMAP:
+        mapped = _LEGACY_CONCEPT_REMAP[field_part]
+        if ".live." in field_part and ".compound." in mapped:
+            target_cid = mapped.split(".")[-1]
+            if _is_raw_field_excluded_from_compound(field_part, target_cid, sn_hint, reg=reg, custom_data=custom_data):
+                logger.debug(
+                    "Preserving ungrouped raw key '%s' on %s (skipping legacy remap to '%s')",
+                    field_part,
+                    sn_hint or "*",
+                    mapped,
+                )
+                return field_part
+        logger.debug("Remapped legacy HA key '%s' -> '%s' (sn=%s)", orig_part, mapped, sn_hint or "*")
+        return mapped
+
     if ".concept." in field_part:
         dev_type, _, cid = field_part.partition(".concept.")
-        from .mapping import MappingRegistry
-        reg = MappingRegistry.get_instance()
-        if reg.get_by_id(cid):
-            return f"{dev_type}.compound.{cid}"
-        from .grouping import load_custom_groupings
-        if cid in (load_custom_groupings().get("custom_concepts") or {}):
-            return f"{dev_type}.compound.{cid}"
+        if reg.get_by_id(cid) or cid in custom_concepts:
+            mapped = f"{dev_type}.compound.{cid}"
+            logger.debug("Migrated legacy concept key '%s' -> '%s' (sn=%s)", orig_part, mapped, sn_hint or "*")
+            return mapped
+        resolved = _resolve_standalone_or_orphan_slug(dev_type, cid, state_store, sn_hint)
+        if resolved:
+            logger.debug("Resolved legacy concept key '%s' -> '%s' (sn=%s)", orig_part, resolved, sn_hint or "*")
+            return resolved
+        logger.warning("Dropping obsolete legacy concept key '%s' (sn=%s)", orig_part, sn_hint or "*")
         return None
+
+    if ".standalone." in field_part:
+        dev_type, _, slug = field_part.partition(".standalone.")
+        resolved = _resolve_standalone_or_orphan_slug(dev_type, slug, state_store, sn_hint)
+        if resolved:
+            logger.debug("Repaired standalone HA key '%s' -> '%s' (sn=%s)", orig_part, resolved, sn_hint or "*")
+            return resolved
+        logger.warning("Dropping unresolvable standalone HA key '%s' (sn=%s)", orig_part, sn_hint or "*")
+        return None
+
+    if ".compound." in field_part:
+        dev_type, _, cid = field_part.partition(".compound.")
+        if reg.get_by_id(cid) or cid in custom_concepts:
+            return field_part
+        resolved = _resolve_standalone_or_orphan_slug(dev_type, cid, state_store, sn_hint)
+        if resolved:
+            logger.debug("Repaired invalid compound HA key '%s' -> '%s' (sn=%s)", orig_part, resolved, sn_hint or "*")
+            return resolved
+        logger.warning("Dropping invalid/unknown compound HA key '%s' (sn=%s)", orig_part, sn_hint or "*")
+        return None
+
     return field_part
 
 
@@ -265,13 +423,13 @@ def qualify_legacy_ha_config(selected_field_keys: Optional[List[str]], state_sto
             sn_part = sn_part.strip().upper()
             field_part = field_part.strip()
             # Remap or drop legacy concept/standalone artifacts
-            remapped = _remap_concept_key(field_part)
+            remapped = _remap_concept_key(field_part, state_store=state_store, sn_hint=sn_part)
             if not remapped:
                 continue
             qualified.add(f"{sn_part}:{remapped}")
         else:
             # Legacy unqualified key, e.g. 'inverter.live.grid_power_w' or 'pv_link.string_combiner.DCW'
-            remapped = _remap_concept_key(k_str)
+            remapped = _remap_concept_key(k_str, state_store=state_store)
             if not remapped:
                 continue
             k_str = remapped
@@ -283,7 +441,54 @@ def qualify_legacy_ha_config(selected_field_keys: Optional[List[str]], state_sto
                     qualified.add(f"{dev.serial_number.strip().upper()}:{k_str}")
             else:
                 # If device not found yet in state_store, keep key as fallback
+                logger.debug("No device of type '%s' registered yet; keeping unqualified key '%s'", dev_type, k_str)
                 qualified.add(k_str)
+
+    # Collapse redundant raw member keys whenever their active parent compound key is also selected
+    from .mapping import MappingRegistry
+    from .grouping import load_custom_groupings
+
+    reg = MappingRegistry.get_instance()
+    custom_data = load_custom_groupings()
+    field_overrides = custom_data.get("field_overrides", {}) or {}
+    to_remove: Set[str] = set()
+
+    for qk in list(qualified):
+        if ":" in qk:
+            sn_part, f_part = qk.split(":", 1)
+            sn_prefix = f"{sn_part}:"
+        else:
+            sn_part, f_part = "", qk
+            sn_prefix = ""
+        if ".compound." not in f_part:
+            continue
+        cid = f_part.split(".")[-1]
+        members: Set[str] = set()
+        m_def = reg.get_by_id(cid)
+        if m_def:
+            for mf in (list(m_def.mqtt_fields) + list(m_def.modbus_fields)):
+                if not _is_raw_field_excluded_from_compound(mf, cid, sn_part or None, reg=reg, custom_data=custom_data):
+                    members.add(mf)
+        for ov_k, ov_tgt in field_overrides.items():
+            if ov_tgt != cid:
+                continue
+            if ":" in ov_k:
+                ov_sn, ov_fk = ov_k.split(":", 1)
+                if sn_part and ov_sn.strip().upper() != sn_part:
+                    continue
+                members.add(ov_fk.strip())
+            else:
+                members.add(ov_k.strip())
+
+        for mf in members:
+            cand_raw = f"{sn_prefix}{mf}"
+            if cand_raw in qualified and cand_raw not in to_remove:
+                to_remove.add(cand_raw)
+                logger.debug("Collapsed redundant raw member '%s' into active compound '%s'", cand_raw, qk)
+
+    if to_remove:
+        qualified -= to_remove
+
     return sorted(list(qualified))
 
 
@@ -1044,3 +1249,131 @@ def generate_discovery_payload(
         "platform": platform,
         "payload": payload,
     }
+
+
+def ensure_selected_field_definitions(
+    state_store: StateStore,
+    dev: UnifiedDevice,
+    selected_keys: Iterable[str],
+    reg: Any = None,
+    custom_data: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Pre-populate StateField metadata definitions for any selected keys not yet polled on `dev`."""
+    from .mapping import MappingRegistry
+    from .grouping import is_field_excluded_from_mapping, load_custom_groupings
+
+    reg = reg or MappingRegistry.get_instance()
+    custom_data = custom_data if custom_data is not None else load_custom_groupings()
+    sn_clean = dev.serial_number.strip().upper()
+    field_overrides = custom_data.get("field_overrides", {}) or {}
+
+    for sel_key in selected_keys:
+        if not sel_key or not isinstance(sel_key, str):
+            continue
+        if ":" in sel_key:
+            target_sn, f_path = sel_key.split(":", 1)
+            if target_sn.strip().upper() != sn_clean:
+                continue
+        else:
+            f_path = sel_key
+            if not f_path.startswith(f"{dev.device_type}."):
+                continue
+
+        if f_path.startswith(f"{dev.device_type}.compound.") or f_path.startswith(f"{dev.device_type}.concept."):
+            cid = f_path.split(".")[-1]
+            m = reg.get_by_id(cid)
+            if m and m.device_type == dev.device_type:
+                for cand in (list(m.mqtt_fields) + list(m.modbus_fields)):
+                    if reg.is_field_ungrouped(cand) or is_field_excluded_from_mapping(sn_clean, cand, cid, custom_data):
+                        continue
+                    if cand not in dev.fields:
+                        state_store.ensure_field_definition(dev.serial_number, cand)
+            for ov_k, ov_tgt in field_overrides.items():
+                if ov_tgt != cid:
+                    continue
+                if ":" in ov_k:
+                    ov_sn, ov_fk = ov_k.split(":", 1)
+                    if ov_sn.strip().upper() != sn_clean:
+                        continue
+                else:
+                    ov_fk = ov_k
+                ov_fk = ov_fk.strip()
+                if ov_fk.startswith(f"{dev.device_type}.") and ov_fk not in dev.fields:
+                    state_store.ensure_field_definition(dev.serial_number, ov_fk)
+        elif f_path not in dev.fields:
+            state_store.ensure_field_definition(dev.serial_number, f_path)
+
+
+def collect_compound_member_keys(
+    sn_clean: str,
+    c_view: Any,
+    reg: Any = None,
+    custom_data: Optional[Dict[str, Any]] = None,
+) -> Set[str]:
+    """Collect qualified '<SN>:<field_key>' member keys actively governed by a compound view."""
+    from .mapping import MappingRegistry
+    from .grouping import is_field_excluded_from_mapping, load_custom_groupings
+
+    reg = reg or MappingRegistry.get_instance()
+    custom_data = custom_data if custom_data is not None else load_custom_groupings()
+    cid = getattr(c_view, "concept_key", "") or ""
+    members: Set[str] = set()
+
+    if getattr(c_view, "mqtt_key", None):
+        members.add(f"{sn_clean}:{c_view.mqtt_key}")
+    for s in getattr(c_view, "sources", []):
+        if getattr(s, "field_key", None):
+            members.add(f"{sn_clean}:{s.field_key}")
+    for cand in getattr(c_view, "modbus_candidates", []):
+        if not reg.is_field_ungrouped(cand) and not is_field_excluded_from_mapping(sn_clean, cand, cid, custom_data):
+            members.add(f"{sn_clean}:{cand}")
+
+    m_def = reg.get_by_id(cid)
+    if m_def:
+        for mf in (list(m_def.mqtt_fields) + list(m_def.modbus_fields)):
+            if not reg.is_field_ungrouped(mf) and not is_field_excluded_from_mapping(sn_clean, mf, cid, custom_data):
+                members.add(f"{sn_clean}:{mf}")
+
+    for ov_k, ov_tgt in (custom_data.get("field_overrides", {}) or {}).items():
+        if ov_tgt != cid:
+            continue
+        if ":" in ov_k:
+            ov_sn, ov_fk = ov_k.split(":", 1)
+            if ov_sn.strip().upper() != sn_clean:
+                continue
+        else:
+            ov_fk = ov_k
+        members.add(f"{sn_clean}:{ov_fk.strip()}")
+
+    return members
+
+
+def is_raw_field_suppressed(
+    sn_clean: str,
+    field_key: str,
+    field_compound_key: Optional[str],
+    active_compounds: Set[str],
+    active_members: Set[str],
+    reg: Any = None,
+    custom_data: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return True if a raw field is covered by an active parent compound entity."""
+    from .mapping import MappingRegistry
+    from .grouping import is_field_excluded_from_mapping, load_custom_groupings
+
+    if f"{sn_clean}:{field_key}" in active_members:
+        return True
+
+    reg = reg or MappingRegistry.get_instance()
+    custom_data = custom_data if custom_data is not None else load_custom_groupings()
+
+    for comp_cand in (field_compound_key, reg.get_raw_to_compound_map().get(field_key)):
+        if not comp_cand:
+            continue
+        if f"{sn_clean}:{comp_cand}" not in active_compounds:
+            continue
+        cid = comp_cand.split(".")[-1]
+        if not reg.is_field_ungrouped(field_key) and not is_field_excluded_from_mapping(sn_clean, field_key, cid, custom_data):
+            return True
+
+    return False

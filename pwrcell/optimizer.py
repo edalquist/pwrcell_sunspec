@@ -814,9 +814,11 @@ def group_device_fields(
                 )
             )
 
-        # Check if group id itself was selected
+        # Check if group id itself was selected (supports both .concept. and .compound.)
+        comp_id = c_id.replace(".concept.", ".compound.") if ".concept." in c_id else c_id
         qual_grp = f"{dev_sn}:{c_id}" if dev_sn else c_id
-        if c_id in selected_keys or qual_grp in selected_keys:
+        qual_comp = f"{dev_sn}:{comp_id}" if dev_sn else comp_id
+        if c_id in selected_keys or qual_grp in selected_keys or comp_id in selected_keys or qual_comp in selected_keys:
             grp_selected = True
 
         # Build candidate sources for the solver
@@ -897,6 +899,7 @@ def group_device_fields(
                 or is_scale_factor_point(name=meta.get("concept_key"))
             ),
             is_custom_override=any(s.is_custom_override for s in sources) or meta.get("is_custom_override", False),
+            is_compound=(".standalone." not in c_id),
         )
         from .ha import get_effective_ha_category
         group.ha_category = get_effective_ha_category(group, dev, category_overrides=category_overrides)
@@ -1106,12 +1109,26 @@ def resolve_minimal_models_for_paths(
                                     cand_set.add(int(grp))
                                 elif grp.startswith("model_") and grp[6:].isdigit():
                                     cand_set.add(int(grp[6:]))
-                                elif state_store and hasattr(state_store, "devices"):
-                                    for dev in state_store.devices.values():
-                                        if dev.device_type == d_type and cand_key in dev.fields:
-                                            mid = dev.fields[cand_key].model_id
-                                            if mid:
-                                                cand_set.add(mid)
+                                else:
+                                    matched_mid = None
+                                    if state_store and hasattr(state_store, "devices"):
+                                        for dev in state_store.devices.values():
+                                            if dev.device_type == d_type and cand_key in dev.fields:
+                                                mid = dev.fields[cand_key].model_id
+                                                if mid:
+                                                    matched_mid = mid
+                                                    break
+                                    if matched_mid is None:
+                                        from .poller import resolve_subgroup_to_model_id
+                                        matched_mid = resolve_subgroup_to_model_id(
+                                            d_type,
+                                            grp,
+                                            catalog=catalog,
+                                            state_store=state_store,
+                                            exact_path=cand_key,
+                                        )
+                                    if matched_mid is not None:
+                                        cand_set.add(matched_mid)
 
                 # Also check canonical concept synonyms
                 matched_concept = find_canonical_concept(d_type, c_id, None) or (c_id if c_id in CANONICAL_SYNONYMS.get(d_type, {}) else None)

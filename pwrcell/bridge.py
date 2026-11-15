@@ -23,17 +23,21 @@ from paho.mqtt.reasoncodes import ReasonCode
 from .client import PwrcellClient
 from .config import AppConfig, MqttConfig
 from .ha import (
+    collect_compound_member_keys,
+    ensure_selected_field_definitions,
     generate_discovery_payload,
     generate_gateway_discovery_payload,
     get_default_ha_config_path,
     get_device_info,
     get_recommended_field_keys,
     is_field_selected,
+    is_raw_field_suppressed,
     load_ha_category_overrides,
     load_ha_config,
     qualify_legacy_ha_config,
     ORIGIN_INFO,
 )
+from .grouping import is_field_excluded_from_mapping, load_custom_groupings
 from .mapping import MappingRegistry
 from .state import FieldSource, StateField
 
@@ -235,10 +239,26 @@ class HomeAssistantBridge:
 
     def reload_config_and_republish(self):
         """Reload selected entities and category overrides from ha_config.yaml and republish discovery."""
+        with self._lock:
+            prev_set = set(self.selected_field_keys)
         raw_keys = load_ha_config(self.ha_config_path)
-        self.selected_field_keys = qualify_legacy_ha_config(raw_keys, self.client.state)
-        self._selected_set = set(self.selected_field_keys)
+        new_selected = qualify_legacy_ha_config(raw_keys, self.client.state)
+        new_set = set(new_selected)
+        added = sorted(new_set - prev_set)
+        removed = sorted(prev_set - new_set)
+        self.selected_field_keys = new_selected
+        self._selected_set = new_set
         self.category_overrides = load_ha_category_overrides(self.ha_config_path)
+        logger.debug(
+            "Reloaded HA config from %s: %d selected keys (added=%d %s, removed=%d %s), %d category overrides",
+            self.ha_config_path or get_default_ha_config_path(),
+            len(self.selected_field_keys),
+            len(added),
+            added,
+            len(removed),
+            removed,
+            len(self.category_overrides),
+        )
         with self._lock:
             self._payload_info_cache.clear()
         if self.client.poller:
@@ -313,31 +333,19 @@ class HomeAssistantBridge:
             previously_published = set(self._published_discovery_topics) | persisted_topics
             self._device_online_state.clear()
 
+        reg = MappingRegistry.get_instance()
+        custom_data = load_custom_groupings()
+        matched_selected_keys: set[str] = set()
+
         for dev in self.client.state.get_devices_snapshot():
             sn_clean = dev.serial_number.strip().upper()
             self._publish_device_availability(dev, force=True)
+            dev_compounds = 0
+            dev_raw = 0
+            dev_suppressed = 0
 
             # 0. Pre-populate metadata for any selected fields (and compound members) not yet polled
-            reg = MappingRegistry.get_instance()
-            for sel_key in selected_keys:
-                if ":" in sel_key:
-                    target_sn, f_path = sel_key.split(":", 1)
-                    if target_sn.strip().upper() != sn_clean:
-                        continue
-                else:
-                    f_path = sel_key
-                    if not f_path.startswith(f"{dev.device_type}."):
-                        continue
-
-                if f_path.startswith(f"{dev.device_type}.compound.") or f_path.startswith(f"{dev.device_type}.concept."):
-                    cid = f_path.split(".")[-1]
-                    m = reg.get_by_id(cid)
-                    if m and m.device_type == dev.device_type:
-                        for cand in (list(m.mqtt_fields) + list(m.modbus_fields)):
-                            if cand not in dev.fields:
-                                self.client.state.ensure_field_definition(dev.serial_number, cand)
-                elif f_path not in dev.fields:
-                    self.client.state.ensure_field_definition(dev.serial_number, f_path)
+            ensure_selected_field_definitions(self.client.state, dev, selected_keys, reg=reg, custom_data=custom_data)
 
             # 1. Publish selected compound fields
             for c_view in self.client.state.get_compound_views(dev.serial_number):
@@ -348,19 +356,17 @@ class HomeAssistantBridge:
                     getattr(c_view, "mqtt_key", None),
                 ):
                     new_active_compounds.add(f"{sn_clean}:{c_view.key}")
-                    if getattr(c_view, "mqtt_key", None):
-                        new_active_member_keys.add(f"{sn_clean}:{c_view.mqtt_key}")
-                    for cand in getattr(c_view, "modbus_candidates", []):
-                        new_active_member_keys.add(f"{sn_clean}:{cand}")
-                    for s in getattr(c_view, "sources", []):
-                        if getattr(s, "field_key", None):
-                            new_active_member_keys.add(f"{sn_clean}:{s.field_key}")
-                    m_def = reg.get_by_id(getattr(c_view, "concept_key", ""))
-                    if m_def:
-                        for mf in m_def.mqtt_fields:
-                            new_active_member_keys.add(f"{sn_clean}:{mf}")
-                        for mbf in m_def.modbus_fields:
-                            new_active_member_keys.add(f"{sn_clean}:{mbf}")
+                    c_members = collect_compound_member_keys(sn_clean, c_view, reg=reg, custom_data=custom_data)
+                    new_active_member_keys.update(c_members)
+                    for cand_k in (
+                        [c_view.key, c_view.key.replace(".compound.", ".concept.")]
+                        + [mk.split(":", 1)[1] for mk in c_members if ":" in mk]
+                    ):
+                        if f"{sn_clean}:{cand_k}" in selected_set:
+                            matched_selected_keys.add(f"{sn_clean}:{cand_k}")
+                        if cand_k in selected_set:
+                            matched_selected_keys.add(cand_k)
+
                     payload_info = generate_discovery_payload(
                         c_view,
                         dev,
@@ -375,6 +381,7 @@ class HomeAssistantBridge:
                     self._mqttc.publish(config_topic, config_payload, retain=True)
                     current_discovery_topics.add(config_topic)
                     published_count += 1
+                    dev_compounds += 1
 
                     old_s_topic = payload_info.get("old_sensor_topic")
                     if old_s_topic:
@@ -395,15 +402,18 @@ class HomeAssistantBridge:
 
             # 2. Publish selected raw fields
             for f_key, field in list(dev.fields.items()):
-                comp_key_for_f = reg.get_raw_to_compound_map().get(f_key)
-                is_suppressed = (
-                    f"{sn_clean}:{f_key}" in new_active_member_keys
-                    or (field.compound_key and f"{sn_clean}:{field.compound_key}" in new_active_compounds)
-                    or (comp_key_for_f and f"{sn_clean}:{comp_key_for_f}" in new_active_compounds)
-                )
-                if is_suppressed:
+                if is_raw_field_suppressed(
+                    sn_clean,
+                    f_key,
+                    field.compound_key,
+                    new_active_compounds,
+                    new_active_member_keys,
+                    reg=reg,
+                    custom_data=custom_data,
+                ):
                     # Suppress duplicate raw field because its compound view is active.
                     # Clear any previously retained discovery and state topics for this suppressed field.
+                    dev_suppressed += 1
                     payload_info = generate_discovery_payload(
                         field,
                         dev,
@@ -418,6 +428,10 @@ class HomeAssistantBridge:
                     continue
 
                 if is_field_selected(f_key, dev.serial_number, selected_set):
+                    if f"{sn_clean}:{f_key}" in selected_set:
+                        matched_selected_keys.add(f"{sn_clean}:{f_key}")
+                    if f_key in selected_set:
+                        matched_selected_keys.add(f_key)
                     payload_info = generate_discovery_payload(
                         field,
                         dev,
@@ -435,6 +449,7 @@ class HomeAssistantBridge:
                     self._mqttc.publish(config_topic, config_payload, retain=True)
                     current_discovery_topics.add(config_topic)
                     published_count += 1
+                    dev_raw += 1
 
                     old_s_topic = payload_info.get("old_sensor_topic")
                     if old_s_topic:
@@ -452,6 +467,19 @@ class HomeAssistantBridge:
                     # Publish initial state if value exists
                     if field.value is not None:
                         self._publish_field_state(field, payload_info, retain=True)
+
+            logger.debug(
+                "Discovery for %s (%s): %d compound, %d raw published (%d raw members suppressed)",
+                dev.serial_number,
+                dev.device_type,
+                dev_compounds,
+                dev_raw,
+                dev_suppressed,
+            )
+
+        unmatched_selected = sorted(selected_set - matched_selected_keys)
+        if unmatched_selected:
+            logger.debug("Discovery unmatched selected keys (%d): %s", len(unmatched_selected), unmatched_selected)
 
         # 3. Ensure top-level parent gateway device node (via_device) exists in Home Assistant
         if gateway:
@@ -514,16 +542,24 @@ class HomeAssistantBridge:
         if not field.device_sn:
             return False
         clean_sn = field.device_sn.strip().upper()
+        reg = MappingRegistry.get_instance()
+        if reg.is_field_ungrouped(field.key):
+            return False
+        custom_data = load_custom_groupings()
         with self._lock:
             if f"{clean_sn}:{field.key}" in self._active_member_keys:
                 return True
             if field.compound_key and f"{clean_sn}:{field.compound_key}" in self._active_compound_keys:
-                return True
+                cid_fk = field.compound_key.split(".")[-1]
+                if not is_field_excluded_from_mapping(clean_sn, field.key, cid_fk, custom_data):
+                    return True
             selected_snapshot = set(self.selected_field_keys) | set(self._selected_set)
         c_views = self.client.state.get_compound_views(field.device_sn)
-        reg = MappingRegistry.get_instance()
         for c_view in c_views:
-            m_def = reg.get_by_id(getattr(c_view, "concept_key", ""))
+            cid = getattr(c_view, "concept_key", "") or ""
+            if reg.is_field_ungrouped(field.key) or is_field_excluded_from_mapping(clean_sn, field.key, cid, custom_data):
+                continue
+            m_def = reg.get_by_id(cid)
             is_member = (
                 field.key == getattr(c_view, "mqtt_key", None)
                 or field.key in getattr(c_view, "modbus_candidates", [])

@@ -289,6 +289,37 @@ class ConceptView:
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for REST API responses."""
+        member_keys: List[str] = []
+        if self.is_compound and ".standalone." not in (self.id or ""):
+            seen_mk: set[str] = set()
+
+            def _add_mk(fk: Optional[str]):
+                if fk and fk not in seen_mk:
+                    seen_mk.add(fk)
+                    member_keys.append(fk)
+
+            for s in self.sources:
+                _add_mk(getattr(s, "field_key", None))
+            for cand in (self.modbus_candidates or []):
+                _add_mk(cand)
+            if self.concept_key:
+                try:
+                    from .mapping import MappingRegistry
+                    from .grouping import is_field_excluded_from_mapping, load_custom_groupings
+
+                    reg = MappingRegistry.get_instance()
+                    m_def = reg.get_by_id(self.concept_key)
+                    if m_def:
+                        custom_data = load_custom_groupings()
+                        for mf in (list(m_def.mqtt_fields) + list(m_def.modbus_fields)):
+                            if reg.is_field_ungrouped(mf):
+                                continue
+                            if is_field_excluded_from_mapping(self.device_sn, mf, self.concept_key, custom_data):
+                                continue
+                            _add_mk(mf)
+                except Exception:
+                    pass
+
         return {
             "id": self.id,
             "key": self.active_source_key or self.id,
@@ -348,6 +379,7 @@ class ConceptView:
             "is_scale_factor": self.is_scale_factor,
             "is_custom_override": self.is_custom_override,
             "is_compound": self.is_compound,
+            "member_keys": member_keys,
             "source_count": len(self.sources),
             "sunspec_model_count": len({s.model_id for s in self.sources if s.model_id is not None}),
         }

@@ -9,10 +9,13 @@ from flask import Blueprint, Response, jsonify, request
 
 from ...client import PwrcellClient
 from ...ha import (
+    collect_compound_member_keys,
+    ensure_selected_field_definitions,
     generate_discovery_payload,
     generate_gateway_discovery_payload,
     get_recommended_field_keys,
     is_field_selected,
+    is_raw_field_suppressed,
     load_ha_category_overrides,
     load_ha_config,
     qualify_legacy_ha_config,
@@ -42,9 +45,21 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             if dev_sn:
                 target_serials.add(str(dev_sn).strip().upper())
 
+            prev_existing = qualify_legacy_ha_config(
+                load_ha_config(allow_default_seed=False),
+                client.state,
+            )
+
+            logger.debug(
+                "POST /api/ha/config received: incoming_count=%d, target_serials=%s, merge=%s, cat_overrides=%s",
+                len(incoming) if isinstance(incoming, list) else 0,
+                sorted(target_serials),
+                merge,
+                len(body.get("category_overrides") or {}) if body.get("category_overrides") is not None else "unchanged",
+            )
+
             if merge and target_serials:
-                existing = load_ha_config()
-                existing = qualify_legacy_ha_config(existing, client.state)
+                existing = prev_existing
 
                 # Keep all fields from devices not in target_serials
                 merged = set()
@@ -75,6 +90,17 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             else:
                 final_selected = sorted(list(set(qualify_legacy_ha_config(incoming, client.state))))
 
+            added = sorted(set(final_selected) - set(prev_existing))
+            removed = sorted(set(prev_existing) - set(final_selected))
+            logger.debug(
+                "POST /api/ha/config saving: total=%d, added=%d %s, removed=%d %s",
+                len(final_selected),
+                len(added),
+                added,
+                len(removed),
+                removed,
+            )
+
             cat_overrides = body.get("category_overrides")
             save_ha_config(final_selected, category_overrides=cat_overrides)
             if hasattr(client, "bridge") and client.bridge:
@@ -91,8 +117,15 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         else:
             selected = load_ha_config()
             qualified = qualify_legacy_ha_config(selected, client.state)
-            if set(qualified) != set(selected):
+            migrated = set(qualified) != set(selected)
+            if migrated:
                 save_ha_config(qualified)
+            logger.debug(
+                "GET /api/ha/config: raw=%d, qualified=%d, auto_migrated=%s",
+                len(selected),
+                len(qualified),
+                migrated,
+            )
             return jsonify({
                 "selected_fields": qualified,
                 "category_overrides": load_ha_category_overrides(),
@@ -338,14 +371,28 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             logger.error("Failed generating default HA config: %s", e)
             return jsonify({"status": "error", "error": str(e)}), 500
 
-    @bp.route("/api/ha/preview")
+    @bp.route("/api/ha/preview", methods=["GET", "POST"])
     def get_ha_preview():
-        selected = load_ha_config()
-        cat_overrides = load_ha_category_overrides()
+        source_mode = request.method
+        if request.method == "POST":
+            body = request.get_json(silent=True) or {}
+            raw_selected = body["selected_fields"] if "selected_fields" in body and isinstance(body["selected_fields"], list) else load_ha_config()
+            cat_overrides = (
+                {str(k).strip(): str(v).strip().lower() for k, v in (body["category_overrides"] or {}).items() if k and v}
+                if "category_overrides" in body and isinstance(body.get("category_overrides"), dict)
+                else load_ha_category_overrides()
+            )
+        else:
+            raw_selected = load_ha_config()
+            cat_overrides = load_ha_category_overrides()
+
+        selected = qualify_legacy_ha_config(raw_selected, client.state)
+        selected_set = set(selected)
         preview_list = []
         gateway = client.state.get_beacon() or client.state.get_inverter()
 
         # Include parent gateway device node so via_device is never orphaned
+        gateway_count = 0
         if gateway:
             gw_payload_info = generate_gateway_discovery_payload(gateway)
             preview_list.append({
@@ -359,37 +406,45 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                 "platform": gw_payload_info["platform"],
                 "payload": gw_payload_info["payload"],
             })
+            gateway_count = 1
 
         from ...mapping import MappingRegistry
+        from ...grouping import load_custom_groupings
+
         reg = MappingRegistry.get_instance()
+        custom_data = load_custom_groupings()
+        matched_selected_keys: set[str] = set()
+        compound_count = 0
+        raw_count = 0
 
         for dev in client.state.get_devices_snapshot():
             sn_clean = dev.serial_number.strip().upper()
-            active_compounds = set()
-            active_members = set()
+            active_compounds: set[str] = set()
+            active_members: set[str] = set()
+
+            # Pre-populate missing metadata definitions so selected fields & compounds preview even before first poll
+            ensure_selected_field_definitions(client.state, dev, selected, reg=reg, custom_data=custom_data)
 
             # Include compound fields
             for c_view in client.state.get_compound_views(dev.serial_number):
                 if is_field_selected(
                     c_view.key,
                     dev.serial_number,
-                    selected,
+                    selected_set,
                     getattr(c_view, "mqtt_key", None),
                 ):
                     active_compounds.add(f"{sn_clean}:{c_view.key}")
-                    if getattr(c_view, "mqtt_key", None):
-                        active_members.add(f"{sn_clean}:{c_view.mqtt_key}")
-                    for cand in getattr(c_view, "modbus_candidates", []):
-                        active_members.add(f"{sn_clean}:{cand}")
-                    for s in getattr(c_view, "sources", []):
-                        if getattr(s, "field_key", None):
-                            active_members.add(f"{sn_clean}:{s.field_key}")
-                    m_def = reg.get_by_id(getattr(c_view, "concept_key", ""))
-                    if m_def:
-                        for mf in m_def.mqtt_fields:
-                            active_members.add(f"{sn_clean}:{mf}")
-                        for mbf in m_def.modbus_fields:
-                            active_members.add(f"{sn_clean}:{mbf}")
+                    c_members = collect_compound_member_keys(sn_clean, c_view, reg=reg, custom_data=custom_data)
+                    active_members.update(c_members)
+
+                    for cand_k in (
+                        [c_view.key, c_view.key.replace(".compound.", ".concept.")]
+                        + [mk.split(":", 1)[1] for mk in c_members if ":" in mk]
+                    ):
+                        if f"{sn_clean}:{cand_k}" in selected_set:
+                            matched_selected_keys.add(f"{sn_clean}:{cand_k}")
+                        if cand_k in selected_set:
+                            matched_selected_keys.add(cand_k)
 
                     payload_info = generate_discovery_payload(c_view, dev, gateway_device=gateway, category_overrides=cat_overrides)
                     preview_list.append({
@@ -403,17 +458,26 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                         "platform": payload_info["platform"],
                         "payload": payload_info["payload"],
                     })
+                    compound_count += 1
 
             # Include raw fields
             for f_key, f in list(dev.fields.items()):
-                comp_key_for_f = reg.get_raw_to_compound_map().get(f_key)
-                if (
-                    f"{sn_clean}:{f_key}" in active_members
-                    or (f.compound_key and f"{sn_clean}:{f.compound_key}" in active_compounds)
-                    or (comp_key_for_f and f"{sn_clean}:{comp_key_for_f}" in active_compounds)
+                if is_raw_field_suppressed(
+                    sn_clean,
+                    f_key,
+                    f.compound_key,
+                    active_compounds,
+                    active_members,
+                    reg=reg,
+                    custom_data=custom_data,
                 ):
                     continue
-                if is_field_selected(f_key, dev.serial_number, selected):
+                if is_field_selected(f_key, dev.serial_number, selected_set):
+                    if f"{sn_clean}:{f_key}" in selected_set:
+                        matched_selected_keys.add(f"{sn_clean}:{f_key}")
+                    if f_key in selected_set:
+                        matched_selected_keys.add(f_key)
+
                     payload_info = generate_discovery_payload(f, dev, gateway_device=gateway, category_overrides=cat_overrides)
                     preview_list.append({
                         "field_key": f_key,
@@ -426,6 +490,38 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                         "platform": payload_info["platform"],
                         "payload": payload_info["payload"],
                     })
+                    raw_count += 1
+
+        unmatched = sorted(selected_set - matched_selected_keys)
+        logger.debug(
+            "%s /api/ha/preview: raw_selected=%d, qualified=%d, entities=%d (gateway=%d, compound=%d, raw=%d), unmatched=%d",
+            source_mode,
+            len(raw_selected),
+            len(selected),
+            len(preview_list),
+            gateway_count,
+            compound_count,
+            raw_count,
+            len(unmatched),
+        )
+        if unmatched:
+            known_devs = {d.serial_number.strip().upper(): d for d in client.state.get_devices_snapshot()}
+            reasons = []
+            for uk in unmatched:
+                if ":" in uk:
+                    u_sn, u_path = uk.split(":", 1)
+                    u_dev = known_devs.get(u_sn.strip().upper())
+                    if not u_dev:
+                        reasons.append(f"{uk} (device_not_registered)")
+                    elif ".compound." in u_path or ".concept." in u_path:
+                        reasons.append(f"{uk} (compound_view_unavailable)")
+                    elif u_path not in u_dev.fields:
+                        reasons.append(f"{uk} (field_definition_missing)")
+                    else:
+                        reasons.append(f"{uk} (suppressed_or_unmatched)")
+                else:
+                    reasons.append(f"{uk} (unscoped_no_matching_device)")
+            logger.debug("%s /api/ha/preview unmatched selected keys: %s", source_mode, reasons)
 
         return jsonify(preview_list)
 

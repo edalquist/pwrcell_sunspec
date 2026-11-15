@@ -591,8 +591,9 @@ class TestWebExplorerApi(unittest.TestCase):
         # Load from seed directly
         raw_seed = load_ha_config(seed_path, allow_default_seed=False)
         self.assertGreater(len(raw_seed), 0)
-        self.assertIn("inverter.live.grid_power_w", raw_seed)
-        self.assertIn("battery.live.state_of_charge", raw_seed)
+        self.assertIn("inverter.compound.grid_power", raw_seed)
+        self.assertIn("battery.compound.battery_soc", raw_seed)
+        self.assertNotIn("battery.standalone.socmin_802", raw_seed)
 
         # Qualify against state store
         qualified = qualify_legacy_ha_config(raw_seed, self.client.state)
@@ -600,8 +601,8 @@ class TestWebExplorerApi(unittest.TestCase):
 
         inv_sn = self.client.state.get_inverter().serial_number.strip().upper()
         bat_sn = self.client.state.get_battery().serial_number.strip().upper()
-        self.assertIn(f"{inv_sn}:inverter.live.grid_power_w", qualified)
-        self.assertIn(f"{bat_sn}:battery.live.state_of_charge", qualified)
+        self.assertIn(f"{inv_sn}:inverter.compound.grid_power", qualified)
+        self.assertIn(f"{bat_sn}:battery.compound.battery_soc", qualified)
 
         # PV Links should be mapped to all 5 PV links
         pv_links = [d for d in self.client.state.devices.values() if d.device_type == "pv_link"]
@@ -609,7 +610,7 @@ class TestWebExplorerApi(unittest.TestCase):
         for pv in pv_links:
             sn = pv.serial_number.strip().upper()
             self.assertIn(f"{sn}:pv_link.REbus_status.V", qualified)
-            self.assertIn(f"{sn}:pv_link.REbus_status.P", qualified)
+            self.assertIn(f"{sn}:pv_link.compound.rebus_power", qualified)
 
     def test_ha_config_with_null_selected_fields(self):
         """Verify GET /api/ha/config gracefully seeds from ha_default_config when ha_config.yaml has null/empty selected_fields."""
@@ -626,7 +627,7 @@ class TestWebExplorerApi(unittest.TestCase):
                 selected = resp.get_json().get("selected_fields", [])
                 self.assertGreater(len(selected), 0)
                 inv_sn = self.client.state.get_inverter().serial_number.strip().upper()
-                self.assertIn(f"{inv_sn}:inverter.live.grid_power_w", selected)
+                self.assertIn(f"{inv_sn}:inverter.compound.grid_power", selected)
 
     def test_export_default_config_api_and_helpers(self):
         """Verify unqualify_ha_config and export_default_config helper and API endpoint."""

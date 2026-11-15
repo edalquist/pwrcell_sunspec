@@ -11,7 +11,6 @@ selected_fields:
 - battery.battery.SoCMin
 - battery.battery.SoCRsvMax
 - battery.battery.SoCRsvMin
-- battery.battery.SoH
 - battery.battery.State
 - battery.compound.battery_exported_energy
 - battery.compound.battery_imported_energy
@@ -22,17 +21,13 @@ selected_fields:
 - battery.lithium_ion_string.ModTmpMax
 - battery.lithium_ion_string.ModTmpMin
 - battery.compound.battery_power
-- battery.live.battery_power_w
 - battery.live.max_discharge_power_w
 - battery.compound.battery_soc
-- battery.live.state_of_charge
 - battery.compound.battery_soh
 - battery.compound.battery_ac_charged_energy
 - battery.compound.battery_ac_discharged_energy
-- battery.standalone.socmin_802
 - inverter.REbus_exp.Px1
 - inverter.REbus_exp.Px2
-- inverter.REbus_exp.Whin
 - inverter.REbus_status.I
 - inverter.REbus_status.P
 - inverter.REbus_status.T
@@ -54,7 +49,6 @@ selected_fields:
 - inverter.inverter.VA
 - inverter.inverter.VAr
 - inverter.compound.grid_power
-- inverter.live.grid_power_w
 - inverter.live.inverter_max_power_w
 - inverter.compound.inverter_output_energy
 - inverter.compound.inverter_state
@@ -67,7 +61,6 @@ selected_fields:
 - pv_link.compound.rebus_power
 - pv_link.compound.device_temperature
 - pv_link.REbus_status.I
-- pv_link.REbus_status.P
 - pv_link.REbus_status.St
 - pv_link.REbus_status.V
 controllable_fields:

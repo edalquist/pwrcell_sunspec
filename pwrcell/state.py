@@ -199,6 +199,30 @@ def _load_mqtt_telemetry_specs():
 
 _SNAPSHOT_FIELD_SPECS, _CHANNEL_FIELD_SPECS = _load_mqtt_telemetry_specs()
 
+_MQTT_DEV_KEY_TO_TYPE = {
+    "inv": "inverter",
+    "inverter": "inverter",
+    "bat": "battery",
+    "battery": "battery",
+    "beacon": "rebus_beacon",
+    "rebus_beacon": "rebus_beacon",
+}
+
+
+def _build_mqtt_live_spec_index() -> Dict[Tuple[str, str], Tuple[str, str, Optional[str], HomeAssistantHint]]:
+    index: Dict[Tuple[str, str], Tuple[str, str, Optional[str], HomeAssistantHint]] = {}
+    for s_dev, s_name, s_label, s_desc, _s_attr, s_units, s_hint, _cond, _conv in _SNAPSHOT_FIELD_SPECS:
+        d_type = _MQTT_DEV_KEY_TO_TYPE.get(s_dev, s_dev)
+        index[(d_type, s_name)] = (s_label, s_desc, s_units, s_hint)
+    for _names, _ch_type, specs in _CHANNEL_FIELD_SPECS:
+        for s_dev, s_name, s_label, s_desc, _s_attr, s_units, s_hint, _cond, _conv in specs:
+            d_type = _MQTT_DEV_KEY_TO_TYPE.get(s_dev, s_dev)
+            index.setdefault((d_type, s_name), (s_label, s_desc, s_units, s_hint))
+    return index
+
+
+_MQTT_LIVE_SPECS = _build_mqtt_live_spec_index()
+
 
 
 from .concept import (
@@ -906,11 +930,19 @@ class StateStore:
                     modbus_fields=[],
                 )
             else:
+                logger.debug("get_compound_view: unknown mapping_id '%s' (device_sn=%s)", mapping_id, device_sn)
                 return None
 
         # Determine target device
         target_dev = self.get_device(device_sn) if device_sn else None
         if target_dev and m.device_type and target_dev.device_type != m.device_type:
+            logger.debug(
+                "get_compound_view: mapping '%s' expects device_type=%s but device %s is %s",
+                mapping_id,
+                m.device_type,
+                device_sn,
+                target_dev.device_type,
+            )
             return None
 
         if not target_dev:
@@ -928,6 +960,7 @@ class StateStore:
                 else:
                     target_dev = self.get_inverter() or self.get_beacon()
         if not target_dev:
+            logger.debug("get_compound_view: no target device found for mapping '%s' (device_sn=%s)", mapping_id, device_sn)
             return None
 
         target_sn = target_dev.serial_number if target_dev else ""
@@ -1011,6 +1044,13 @@ class StateStore:
 
         # Suppress compound view if all underlying fields were excluded or missing
         if not mqtt_field and not mb_fields:
+            logger.debug(
+                "get_compound_view: suppressed '%s' on %s (no unexcluded populated MQTT or Modbus fields; mqtt_cands=%s, mb_cands=%s)",
+                mapping_id,
+                target_sn,
+                mqtt_cands,
+                candidates,
+            )
             return None
 
         mb_field = mb_fields[0] if mb_fields else None
@@ -1184,7 +1224,7 @@ class StateStore:
                     break
 
         ha_platform = m.ha_platform
-        ha_device_class = m.ha_device_class
+        ha_device_class = "enum" if m.id == "inverter_state" else m.ha_device_class
         if not ha_device_class:
             if mqtt_field and mqtt_field.ha_hint and mqtt_field.ha_hint.device_class:
                 ha_device_class = mqtt_field.ha_hint.device_class
@@ -1857,45 +1897,64 @@ class StateStore:
         size = 1
         is_scale_factor = False
         if sub_group == "live":
-            label = name.replace("_", " ").title()
             model_name = "live"
             model_label = "Push Telemetry"
             source = FieldSource.MQTT_PUSH
-            if name == "system_mode":
-                from .mqtt import SYSTEM_MODE_NAMES
-                sys_opts = sorted(list(set(SYSTEM_MODE_NAMES.values()))) if SYSTEM_MODE_NAMES else None
-                ha_hint = HomeAssistantHint(platform="sensor", device_class="enum" if sys_opts else None, options=sys_opts)
-            elif name == "inverter_state_name":
-                from .mqtt import INVERTER_STATE_NAMES
-                inv_opts = sorted(list(set(INVERTER_STATE_NAMES.values()))) if INVERTER_STATE_NAMES else None
-                ha_hint = HomeAssistantHint(platform="sensor", device_class="enum" if inv_opts else None, options=inv_opts, entity_category="diagnostic")
-            elif "state" in name or "status" in name:
-                ha_hint = HomeAssistantHint(platform="sensor", entity_category="diagnostic")
+            spec = _MQTT_LIVE_SPECS.get((dev_type, name))
+            if spec:
+                label, description, units, base_hint = spec
+                opts = list(base_hint.options) if base_hint and base_hint.options else None
+                if not opts and name == "system_mode":
+                    from .mqtt import SYSTEM_MODE_NAMES
+                    opts = sorted(list(set(SYSTEM_MODE_NAMES.values()))) if SYSTEM_MODE_NAMES else None
+                elif not opts and name == "inverter_state_name":
+                    from .mqtt import INVERTER_STATE_NAMES
+                    opts = sorted(list(set(INVERTER_STATE_NAMES.values()))) if INVERTER_STATE_NAMES else None
+                ha_hint = HomeAssistantHint(
+                    platform=base_hint.platform if base_hint else "sensor",
+                    device_class=base_hint.device_class if base_hint else None,
+                    state_class=base_hint.state_class if base_hint else None,
+                    unit_of_measurement=units if units is not None else (base_hint.unit_of_measurement if base_hint else None),
+                    entity_category=base_hint.entity_category if base_hint else None,
+                    options=opts,
+                )
             else:
-                d_class, s_class = infer_ha_classes(units=units, name=name, platform="sensor")
-                if not units:
-                    if d_class == "energy":
-                        units = "Wh"
-                    elif d_class == "power":
-                        units = "W"
-                    elif d_class == "voltage":
-                        units = "V"
-                    elif d_class == "current":
-                        units = "A"
-                    elif d_class == "frequency":
-                        units = "Hz"
-                    elif d_class == "temperature":
-                        units = "°C"
-                    elif d_class == "battery":
-                        units = "%"
+                label = name.replace("_", " ").title()
+                if name == "system_mode":
+                    from .mqtt import SYSTEM_MODE_NAMES
+                    sys_opts = sorted(list(set(SYSTEM_MODE_NAMES.values()))) if SYSTEM_MODE_NAMES else None
+                    ha_hint = HomeAssistantHint(platform="sensor", device_class="enum" if sys_opts else None, options=sys_opts)
+                elif name == "inverter_state_name":
+                    from .mqtt import INVERTER_STATE_NAMES
+                    inv_opts = sorted(list(set(INVERTER_STATE_NAMES.values()))) if INVERTER_STATE_NAMES else None
+                    ha_hint = HomeAssistantHint(platform="sensor", device_class="enum" if inv_opts else None, options=inv_opts, entity_category="diagnostic")
+                elif "state" in name or "status" in name:
+                    ha_hint = HomeAssistantHint(platform="sensor", entity_category="diagnostic")
+                else:
+                    d_class, s_class = infer_ha_classes(units=units, name=name, platform="sensor")
+                    if not units:
+                        if d_class == "energy":
+                            units = "Wh"
+                        elif d_class == "power":
+                            units = "W"
+                        elif d_class == "voltage":
+                            units = "V"
+                        elif d_class == "current":
+                            units = "A"
+                        elif d_class == "frequency":
+                            units = "Hz"
+                        elif d_class == "temperature":
+                            units = "°C"
+                        elif d_class == "battery":
+                            units = "%"
 
-                if d_class or s_class:
-                    ha_hint = HomeAssistantHint(
-                        platform="sensor",
-                        device_class=d_class,
-                        state_class=s_class,
-                        unit_of_measurement=units,
-                    )
+                    if d_class or s_class:
+                        ha_hint = HomeAssistantHint(
+                            platform="sensor",
+                            device_class=d_class,
+                            state_class=s_class,
+                            unit_of_measurement=units,
+                        )
         elif self.catalog:
             cat_model = self.catalog.get_model_by_name(sub_group)
             if not cat_model and sub_group.startswith("model_"):
@@ -1922,7 +1981,30 @@ class StateStore:
                     offset = cat_point.offset
                     size = cat_point.size
                     ha_hint = self.catalog.derive_ha_metadata(cat_point, model_id)
+                else:
+                    logger.debug(
+                        "ensure_field_definition: point '%s' not found in catalog model %s (%s) for '%s'",
+                        name,
+                        cat_model.model_id,
+                        cat_model.name,
+                        field_key,
+                    )
+            else:
+                logger.debug(
+                    "ensure_field_definition: catalog model '%s' not found for '%s' on %s",
+                    sub_group,
+                    field_key,
+                    device_sn,
+                )
 
+        logger.debug(
+            "Pre-populated field definition '%s' on device %s (source=%s, model_id=%s, units=%s)",
+            field_key,
+            device_sn,
+            source.value,
+            model_id,
+            units,
+        )
         return self.set_field(
             device_sn=device_sn,
             name=name,
