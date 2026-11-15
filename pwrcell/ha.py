@@ -75,11 +75,18 @@ def is_ha_writable_allowed(field: Any) -> bool:
         return mapping_id in HA_WRITABLE_ALLOWLIST
     pt_name = getattr(field, "name", "") or str(getattr(field, "key", "")).split(".")[-1]
     f_key = getattr(field, "key", "")
-    if pt_name in HA_WRITABLE_ALLOWLIST or f_key in HA_WRITABLE_ALLOWLIST:
+    active_fk = getattr(field, "active_source_key", None)
+    if (
+        pt_name in HA_WRITABLE_ALLOWLIST
+        or f_key in HA_WRITABLE_ALLOWLIST
+        or (active_fk and active_fk in HA_WRITABLE_ALLOWLIST)
+    ):
         return True
     try:
         from .bounds import get_custom_bounds
-        if get_custom_bounds(f_key, getattr(field, "device_sn", None), pt_name):
+        if get_custom_bounds(f_key, getattr(field, "device_sn", None), pt_name) or (
+            active_fk and get_custom_bounds(active_fk, getattr(field, "device_sn", None), pt_name)
+        ):
             return True
     except Exception:
         pass
@@ -307,16 +314,30 @@ def _resolve_standalone_or_orphan_slug(
             candidate_devs = [d for d in state_store.devices.values() if d.device_type == dev_type]
 
         for dev in candidate_devs:
+            full_lower = clean_slug.lower()
+            for f in dev.fields.values():
+                f_sub = f.key.split(".", 1)[-1].replace(".", "_").lower() if "." in f.key else f.key.lower()
+                if f_sub == full_lower:
+                    return f.key
+                f_gp = getattr(f, "group_path", None)
+                if f_gp:
+                    gp_slug = re.sub(r"[^a-z0-9]+", "_", f_gp.lower()).strip("_")
+                    pt_slug = re.sub(r"[^a-z0-9]+", "_", (f.name or "").lower()).strip("_")
+                    grp_ck = f"m{f.model_id}_{gp_slug}_{pt_slug}" if f.model_id is not None else f"{gp_slug}_{pt_slug}"
+                    if full_lower == grp_ck:
+                        return f.key
             if mid_int is not None:
                 for f in dev.fields.values():
-                    if f.model_id == mid_int and (f.name or "").lower() == pt_lower:
+                    if f.model_id == mid_int and not getattr(f, "group_path", None) and (f.name or "").lower() == pt_lower:
                         return f.key
             # Match un-indexed / MQTT fields or full point name without model suffix
-            full_lower = clean_slug.lower()
             for f in dev.fields.values():
                 if f.model_id is None and (f.name or "").lower() == full_lower:
                     return f.key
-            name_matches = [f.key for f in dev.fields.values() if (f.name or "").lower() == full_lower]
+            name_matches = [
+                f.key for f in dev.fields.values()
+                if not getattr(f, "group_path", None) and (f.name or "").lower() == full_lower
+            ]
             if len(name_matches) == 1:
                 return name_matches[0]
 
@@ -680,6 +701,12 @@ def get_effective_ha_category(
             return hint.entity_category
         return getattr(field, "entity_category", None)
 
+    if getattr(field, "group_path", None):
+        hint = getattr(field, "ha_hint", None)
+        if hint and getattr(hint, "entity_category", None) == "config":
+            return "config"
+        return "diagnostic"
+
     f_key = getattr(field, "key", getattr(field, "field_key", None)) or getattr(field, "id", "")
     sub_key = str(f_key).split(".", 1)[-1].replace(".", "_").lower() if f_key else ""
     pt_name_lower = str(getattr(field, "name", "")).lower()
@@ -933,9 +960,10 @@ def generate_discovery_payload(
 ) -> Dict[str, Any]:
     """Generate modern Home Assistant MQTT Discovery configuration dictionary and topics."""
     is_compound = field.is_compound
+    is_concept = bool(is_compound or hasattr(field, "concept_key"))
     is_writable = is_ha_writable_allowed(field)
 
-    if is_compound:
+    if is_concept:
         platform = field.ha_platform if (is_writable or field.ha_platform == "sensor") else "sensor"
         if is_writable and platform == "sensor":
             if getattr(field, "ha_options", None) or getattr(field, "ha_device_class", None) == "enum":
@@ -958,7 +986,7 @@ def generate_discovery_payload(
 
     clean_sn = device.serial_number.strip().lower()
 
-    if is_compound:
+    if is_concept:
         concept_id = getattr(field, "concept_key", None) or getattr(field, "mapping_id", None) or getattr(field, "name", "")
         sub_key = str(concept_id).lower().replace(".", "_")
     else:
@@ -1021,9 +1049,10 @@ def generate_discovery_payload(
     sub_key_lower = sub_key.lower()
     pt_name_lower = str(getattr(field, "name", "")).lower()
 
+    has_group = bool(getattr(field, "group_path", None))
     legacy_config_topics = []
     candidates = {sub_key}
-    if pt_name_lower:
+    if pt_name_lower and not has_group:
         candidates.add(pt_name_lower)
     for c in candidates:
         for pfx in ("compound_", "concept_"):
@@ -1032,30 +1061,31 @@ def generate_discovery_payload(
     # Exclude current config_topic and deduplicate
     legacy_config_topics = [t for t in dict.fromkeys(legacy_config_topics) if t != config_topic]
 
-    # Friendly entity naming instead of raw SunSpec unit names
-    if name_clean in ("Watts", "W") or sub_key_lower in ("inverter_w", "w"):
-        name_clean = "Active Power"
-    elif name_clean in ("Amps", "A") or sub_key_lower in ("inverter_a", "string_combiner_dca"):
-        if device.device_type == "pv_link" or "string" in sub_key_lower or "dca" in sub_key_lower:
-            name_clean = "String Current"
-        else:
-            name_clean = "AC Output Current"
-    elif name_clean in ("Amps PhaseA", "AphA") or sub_key_lower in ("inverter_apha", "apha"):
-        name_clean = "Phase A Current"
-    elif name_clean in ("Amps PhaseB", "AphB") or sub_key_lower in ("inverter_aphb", "aphb"):
-        name_clean = "Phase B Current"
-    elif name_clean in ("Amps PhaseC", "AphC") or sub_key_lower in ("inverter_aphc", "aphc"):
-        name_clean = "Phase C Current"
-    elif name_clean.startswith("Phase Voltage AN") or sub_key_lower in ("inverter_phvpha", "phvpha"):
-        name_clean = "Phase A Voltage"
-    elif name_clean.startswith("Phase Voltage BN") or sub_key_lower in ("inverter_phvphb", "phvphb"):
-        name_clean = "Phase B Voltage"
-    elif name_clean.startswith("Phase Voltage CN") or sub_key_lower in ("inverter_phvphc", "phvphc"):
-        name_clean = "Phase C Voltage"
-    elif name_clean == "REbus Voltage " or sub_key_lower.endswith("rebus_status_v"):
-        name_clean = "REbus Voltage"
-    elif sub_key_lower in ("battery_soc", "state_of_charge") and name_clean.lower() in ("battery soc", "soc"):
-        name_clean = "State of Charge"
+    # Friendly entity naming instead of raw SunSpec unit names (top-level entities only)
+    if not has_group:
+        if name_clean in ("Watts", "W") or sub_key_lower in ("inverter_w", "w"):
+            name_clean = "Active Power"
+        elif name_clean in ("Amps", "A") or sub_key_lower in ("inverter_a", "string_combiner_dca"):
+            if device.device_type == "pv_link" or "string" in sub_key_lower or "dca" in sub_key_lower:
+                name_clean = "String Current"
+            else:
+                name_clean = "AC Output Current"
+        elif name_clean in ("Amps PhaseA", "AphA") or sub_key_lower in ("inverter_apha", "apha"):
+            name_clean = "Phase A Current"
+        elif name_clean in ("Amps PhaseB", "AphB") or sub_key_lower in ("inverter_aphb", "aphb"):
+            name_clean = "Phase B Current"
+        elif name_clean in ("Amps PhaseC", "AphC") or sub_key_lower in ("inverter_aphc", "aphc"):
+            name_clean = "Phase C Current"
+        elif name_clean.startswith("Phase Voltage AN") or sub_key_lower in ("inverter_phvpha", "phvpha"):
+            name_clean = "Phase A Voltage"
+        elif name_clean.startswith("Phase Voltage BN") or sub_key_lower in ("inverter_phvphb", "phvphb"):
+            name_clean = "Phase B Voltage"
+        elif name_clean.startswith("Phase Voltage CN") or sub_key_lower in ("inverter_phvphc", "phvphc"):
+            name_clean = "Phase C Voltage"
+        elif name_clean == "REbus Voltage " or sub_key_lower.endswith("rebus_status_v"):
+            name_clean = "REbus Voltage"
+        elif sub_key_lower in ("battery_soc", "state_of_charge") and name_clean.lower() in ("battery soc", "soc"):
+            name_clean = "State of Charge"
 
     device_info = get_device_info(device, gateway_device=gateway_device)
 
@@ -1083,7 +1113,7 @@ def generate_discovery_payload(
         "origin": ORIGIN_INFO,
     }
 
-    if is_compound:
+    if is_concept:
         if platform == "select":
             payload["command_topic"] = command_topic
             if getattr(field, "ha_options", None):
@@ -1254,7 +1284,7 @@ def generate_discovery_payload(
 
     precision = None
     if platform == "sensor":
-        if is_compound:
+        if is_concept:
             precision = getattr(field, "ha_suggested_display_precision", None)
             if precision is None:
                 precision = get_suggested_precision(field.ha_unit or field.units, field.ha_device_class)

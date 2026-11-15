@@ -22,11 +22,15 @@ from .catalog import (
     ModelCatalog,
     SUNSPEC_SENTINELS_BY_TYPE,
     SunspecPointDef,
+    format_group_field_label,
+    format_group_label,
     get_catalog,
     get_suggested_precision,
     infer_ha_classes,
     is_scale_factor_point,
     is_sunspec_sentinel,
+    should_ingest_model_groups,
+    strip_group_indices,
 )
 from .mapping import MappingRegistry, apply_transform
 from .mqtt import LiveTelemetrySnapshot
@@ -266,6 +270,10 @@ class StateField:
     model_id: Optional[int] = None
     model_name: Optional[str] = None
     model_label: Optional[str] = None
+    group_name: Optional[str] = None
+    group_index: Optional[int] = None
+    group_path: Optional[str] = None
+    group_label: Optional[str] = None
     last_updated: float = field(default_factory=time.time)
 
     @property
@@ -628,6 +636,10 @@ class StateField:
             "model_id": self.model_id,
             "model_name": self.model_name,
             "model_label": self.model_label,
+            "group_name": self.group_name,
+            "group_index": self.group_index,
+            "group_path": self.group_path,
+            "group_label": self.group_label,
             "last_updated": self.last_updated,
             "data_age": round(max(0.0, time.time() - self.last_updated), 1) if self.last_updated > 0 else None,
         }
@@ -1455,10 +1467,11 @@ class StateStore:
             return model_id, "live", "Push Telemetry"
         if sub_group == "compound":
             return model_id, "compound", "Merged Telemetry"
-        cat_model = self.catalog.get_model_by_name(sub_group)
-        if not cat_model and sub_group.startswith("model_"):
+        base_group = sub_group.split(".", 1)[0] if "." in sub_group else sub_group
+        cat_model = self.catalog.get_model_by_name(base_group)
+        if not cat_model and base_group.startswith("model_"):
             try:
-                cat_model = self.catalog.get_model(int(sub_group[6:]))
+                cat_model = self.catalog.get_model(int(base_group[6:]))
             except ValueError:
                 pass
         if cat_model:
@@ -1609,7 +1622,8 @@ class StateStore:
     def _build_field(dev, key, existing, *, name, label, description, value, raw_value, units, source,
                      access, symbols, point_type, is_enum, is_bitfield, bitmask_flags, is_scale_factor,
                      scale_factor_point, offset, size, ha_hint, model_id, model_name, model_label,
-                     mqtt_eq, c_key, substate=None) -> StateField:
+                     mqtt_eq, c_key, substate=None, group_name=None, group_index=None,
+                     group_path=None, group_label=None) -> StateField:
         """Create a new StateField, or merge incoming metadata over an existing one."""
         def pick(new, old_attr):
             if new is not None or existing is None:
@@ -1654,9 +1668,10 @@ class StateStore:
                     merged_substate = raw_value & 0x000F
 
         merged_ha_hint = pick(ha_hint, "ha_hint")
+        eff_group_path = pick(group_path, "group_path")
         if not merged_ha_hint:
             inf_d, inf_s = infer_ha_classes(units=merged_units, name=name, platform="sensor")
-            cat = "diagnostic" if is_diagnostic_point(name, model_id) else None
+            cat = "diagnostic" if (eff_group_path or is_diagnostic_point(name, model_id)) else None
             if inf_d or inf_s or cat:
                 merged_ha_hint = HomeAssistantHint(
                     platform="sensor",
@@ -1700,6 +1715,10 @@ class StateStore:
             model_id=pick(model_id, "model_id"),
             model_name=pick(model_name, "model_name"),
             model_label=pick(model_label, "model_label"),
+            group_name=pick(group_name, "group_name"),
+            group_index=pick(group_index, "group_index"),
+            group_path=eff_group_path,
+            group_label=pick(group_label, "group_label"),
             last_updated=time.time(),
         )
 
@@ -1729,6 +1748,10 @@ class StateStore:
         model_id: Optional[int] = None,
         model_name: Optional[str] = None,
         model_label: Optional[str] = None,
+        group_name: Optional[str] = None,
+        group_index: Optional[int] = None,
+        group_path: Optional[str] = None,
+        group_label: Optional[str] = None,
     ) -> StateField:
         """Set a field value, notify listeners and compound subscribers if changed."""
         with self._lock:
@@ -1783,17 +1806,26 @@ class StateStore:
                 dev.supported_models = sorted(list(set(dev.supported_models + [model_id])))
 
             group_prefix = f"{sub_group}." if sub_group else ""
-            key = f"{dev.device_type}.{group_prefix}{name}"
-            mb_to_mqtt = get_active_modbus_to_mqtt_mapping()
-            raw_to_comp = get_active_raw_to_compound_mapping()
-            mqtt_eq = mb_to_mqtt.get(key)
-            c_key = raw_to_comp.get(key) or (raw_to_comp.get(mqtt_eq) if mqtt_eq else None)
-            if c_key:
-                from .grouping import is_field_excluded_from_mapping
-                cid = c_key.split(".")[-1]
-                if is_field_excluded_from_mapping(dev.serial_number, key, cid):
-                    c_key = None
-                    mqtt_eq = None
+            if group_path:
+                clean_gp = group_path.strip(".")
+                if sub_group and (sub_group == clean_gp or sub_group.endswith(f".{clean_gp}")):
+                    key = f"{dev.device_type}.{group_prefix}{name}"
+                else:
+                    key = f"{dev.device_type}.{group_prefix}{clean_gp}.{name}"
+                mqtt_eq = None
+                c_key = None
+            else:
+                key = f"{dev.device_type}.{group_prefix}{name}"
+                mb_to_mqtt = get_active_modbus_to_mqtt_mapping()
+                raw_to_comp = get_active_raw_to_compound_mapping()
+                mqtt_eq = mb_to_mqtt.get(key)
+                c_key = raw_to_comp.get(key) or (raw_to_comp.get(mqtt_eq) if mqtt_eq else None)
+                if c_key:
+                    from .grouping import is_field_excluded_from_mapping
+                    cid = c_key.split(".")[-1]
+                    if is_field_excluded_from_mapping(dev.serial_number, key, cid):
+                        c_key = None
+                        mqtt_eq = None
 
             existing = dev.fields.get(key)
             value, suppress = self._process_counter_monotonicity(
@@ -1812,13 +1844,15 @@ class StateStore:
                 offset=offset, size=size, ha_hint=ha_hint,
                 model_id=model_id, model_name=model_name, model_label=model_label,
                 mqtt_eq=mqtt_eq, c_key=c_key, substate=substate,
+                group_name=group_name, group_index=group_index,
+                group_path=group_path, group_label=group_label,
             )
             dev.fields[key] = field_obj
 
             if value is not None or raw_value is not None:
                 dev.last_seen = time.time()
             listeners = list(self._listeners) if changed else []
-            compound_listeners = list(self._compound_listeners) if changed else []
+            compound_listeners = list(self._compound_listeners) if (changed and not group_path) else []
 
         # Check if this field affects any compound view
         affected_view = None
@@ -1872,11 +1906,23 @@ class StateStore:
             return None
 
         sub_group = parts[1] if len(parts) >= 3 else ""
+        group_path = ".".join(parts[2:-1]) if (len(parts) >= 4 and sub_group not in ("live", "compound")) else None
         name = parts[-1]
 
         # Compound fields are handled separately by get_compound_views()
         if sub_group == "compound":
             return None
+
+        group_name: Optional[str] = None
+        group_index: Optional[int] = None
+        group_label: Optional[str] = None
+        if group_path:
+            gp_segs = [s for s in group_path.split(".") if s]
+            if len(gp_segs) >= 2 and gp_segs[-1].isdigit():
+                group_index = int(gp_segs[-1])
+                group_name = gp_segs[-2]
+            elif gp_segs:
+                group_name = gp_segs[-1]
 
         label = name
         description = ""
@@ -1966,9 +2012,14 @@ class StateStore:
                 model_id = cat_model.model_id
                 model_name = cat_model.name
                 model_label = cat_model.label
-                cat_point = cat_model.points.get(name)
+                cat_point = cat_model.get_group_point(group_path, name) if group_path else cat_model.points.get(name)
+                if group_path:
+                    cat_grp_path = strip_group_indices(group_path)
+                    grp_def = cat_model.groups.get(cat_grp_path)
+                    group_label = format_group_label(group_path, grp_def.label if grp_def else None, model_id=model_id)
                 if cat_point:
-                    label = cat_point.label or name
+                    base_label = cat_point.label or name
+                    label = format_group_field_label(group_label, base_label) if group_label else base_label
                     description = cat_point.desc or ""
                     units = cat_point.units
                     access = cat_point.access or "R"
@@ -1979,8 +2030,16 @@ class StateStore:
                     is_scale_factor = cat_point.is_scale_factor
                     scale_factor_point = cat_point.sf
                     offset = cat_point.offset
+                    if group_path and cat_point.within_group_offset is not None:
+                        cat_grp_path = strip_group_indices(group_path)
+                        grp_def = cat_model.groups.get(cat_grp_path)
+                        if grp_def:
+                            inst_idx = group_index if (group_index and group_index >= 1) else 1
+                            offset = grp_def.base_offset + (inst_idx - 1) * grp_def.size + cat_point.within_group_offset
                     size = cat_point.size
                     ha_hint = self.catalog.derive_ha_metadata(cat_point, model_id)
+                    if group_path and ha_hint and not cat_point.is_writable and not ha_hint.entity_category:
+                        ha_hint.entity_category = "diagnostic"
                 else:
                     logger.debug(
                         "ensure_field_definition: point '%s' not found in catalog model %s (%s) for '%s'",
@@ -2028,6 +2087,10 @@ class StateStore:
             model_name=model_name,
             model_label=model_label,
             source=source,
+            group_name=group_name,
+            group_index=group_index,
+            group_path=group_path,
+            group_label=group_label,
         )
 
     def update_from_telemetry_snapshot(self, snapshot: LiveTelemetrySnapshot):
@@ -2080,8 +2143,10 @@ class StateStore:
         raw_values: Dict[str, Any],
         computed_values: Optional[Dict[str, Any]] = None,
         instance_index: int = 0,
+        groups_data: Optional[List[Dict[str, Any]]] = None,
+        include_bulk_tables: bool = False,
     ):
-        """Update fields from a polled SunSpec Modbus model block.
+        """Update fields from a polled SunSpec Modbus model block and optional sub-groups.
 
         Accurately resolves SunSpec scale factors once, avoiding duplicate multiplier issues.
         """
@@ -2091,123 +2156,204 @@ class StateStore:
         model_name = f"{base_model_name}_{instance_index}" if instance_index > 0 else base_model_name
         model_label = f"{base_model_label} (#{instance_index})" if instance_index > 0 else base_model_label
 
-        # Collect all valid scale factor point values in this block.
-        # SunSpec scale factors MUST be in range [-10, 10] and must not be sentinels.
-        scale_factors: Dict[str, int] = {}
-        for pt_name, val in raw_values.items():
-            pt_d = model_def.points.get(pt_name) if model_def else None
-            is_sf_point = is_scale_factor_point(
-                name=pt_name,
-                point_type=pt_d.type if pt_d else None,
-                label=pt_d.label if pt_d else None,
-                explicit=bool(pt_d and pt_d.is_scale_factor),
-            )
-            if is_sf_point and isinstance(val, (int, float)):
-                if not is_sunspec_sentinel(val, "sunssf") and -10 <= val <= 10:
-                    int_val = int(val)
-                    scale_factors[pt_name] = int_val
-                    scale_factors[pt_name.lower()] = int_val
-                    scale_factors[pt_name.upper()] = int_val
+        def _collect_sfs(block_raw: Dict[str, Any], grp_path: Optional[str] = None) -> Dict[str, int]:
+            """Collect valid SunSpec scale factor point values (in [-10, 10], non-sentinel)."""
+            sfs: Dict[str, int] = {}
+            for pt_name, val in block_raw.items():
+                if not model_def:
+                    pt_d = None
+                elif grp_path:
+                    pt_d = model_def.get_group_point(grp_path, pt_name)
+                else:
+                    pt_d = model_def.points.get(pt_name)
+                is_sf_point = is_scale_factor_point(
+                    name=pt_name,
+                    point_type=pt_d.type if pt_d else None,
+                    label=pt_d.label if pt_d else None,
+                    explicit=bool(pt_d and pt_d.is_scale_factor),
+                )
+                if is_sf_point and isinstance(val, (int, float)):
+                    if not is_sunspec_sentinel(val, "sunssf") and -10 <= val <= 10:
+                        int_val = int(val)
+                        sfs[pt_name] = int_val
+                        sfs[pt_name.lower()] = int_val
+                        sfs[pt_name.upper()] = int_val
+            return sfs
 
-        for pt_name, raw_val in raw_values.items():
-            pt_def = model_def.points.get(pt_name) if model_def else None
-            if pt_name in ("ID", "L", "Pad") or pt_name.startswith("Pad") or (pt_def and pt_def.type == "pad"):
-                continue
-            label = pt_def.label if pt_def else pt_name
-            desc = pt_def.desc if pt_def else ""
-            units = pt_def.units if pt_def else None
-            access = pt_def.access if pt_def else "R"
-            pt_type = pt_def.type if pt_def else None
+        def _ingest_block(
+            block_raw: Dict[str, Any],
+            block_computed: Optional[Dict[str, Any]],
+            block_sfs: Dict[str, int],
+            group_name: Optional[str] = None,
+            group_index: Optional[int] = None,
+            group_path: Optional[str] = None,
+            group_label: Optional[str] = None,
+        ):
+            grp_def = None
+            if model_def and group_path:
+                grp_def = model_def.groups.get(strip_group_indices(group_path))
 
-            # Determine final scaled value:
-            # Case 1: Sentinel value or None represents an unimplemented register (checked at raw level by point type)
-            if raw_val is None or is_sunspec_sentinel(raw_val, pt_type):
-                raw_val = None
-                scaled_val = None
-            # Case 2: Pre-computed value provided (e.g. from safe_point_cvalue or MockPointValue.scaled_value)
-            elif computed_values is not None and pt_name in computed_values:
-                cand = computed_values[pt_name]
-                if cand is not None and isinstance(cand, (int, float)):
-                    if math.isnan(cand) or math.isinf(cand) or abs(cand) > 1e12:
-                        scaled_val = None
-                        raw_val = None
+            for pt_name, raw_val in block_raw.items():
+                if not model_def:
+                    pt_def = None
+                elif group_path:
+                    pt_def = model_def.get_group_point(group_path, pt_name)
+                else:
+                    pt_def = model_def.points.get(pt_name)
+
+                # Top-level fixed blocks skip header points ID/L/Pad; subgroups only skip Pad
+                if group_path:
+                    if pt_name == "Pad" or pt_name.startswith("Pad") or (pt_def and pt_def.type == "pad"):
+                        continue
+                else:
+                    if pt_name in ("ID", "L", "Pad") or pt_name.startswith("Pad") or (pt_def and pt_def.type == "pad"):
+                        continue
+
+                base_label = pt_def.label if pt_def else pt_name
+                label = format_group_field_label(group_label, base_label) if group_label else base_label
+                desc = pt_def.desc if pt_def else ""
+                units = pt_def.units if pt_def else None
+                access = pt_def.access if pt_def else "R"
+                pt_type = pt_def.type if pt_def else None
+
+                pt_sf = None
+                if pt_def and pt_def.sf:
+                    sf_name = pt_def.sf
+                    pt_sf = block_sfs.get(sf_name) if sf_name in block_sfs else (
+                        block_sfs.get(sf_name.lower()) if sf_name.lower() in block_sfs else block_sfs.get(sf_name.upper())
+                    )
+
+                # Determine final scaled value:
+                # Case 1: Sentinel value or None represents an unimplemented register (checked at raw level by point type)
+                if raw_val is None or is_sunspec_sentinel(raw_val, pt_type):
+                    raw_val = None
+                    scaled_val = None
+                # Case 2: Pre-computed value provided (e.g. from safe_point_cvalue or MockPointValue.scaled_value)
+                elif block_computed is not None and pt_name in block_computed:
+                    cand = block_computed[pt_name]
+                    if cand is not None and isinstance(cand, (int, float)):
+                        if math.isnan(cand) or math.isinf(cand) or abs(cand) > 1e12:
+                            scaled_val = None
+                            raw_val = None
+                        else:
+                            scaled_val = cand
                     else:
                         scaled_val = cand
+                        if cand is None:
+                            raw_val = None
+                elif group_path and pt_sf is not None and isinstance(raw_val, (int, float)) and not (pt_def and (pt_def.is_enum or pt_def.is_bitfield)):
+                    val_scaled = raw_val * (10 ** pt_sf)
+                    scaled_val = round(val_scaled, abs(pt_sf)) if pt_sf < 0 else val_scaled
                 else:
-                    scaled_val = cand
-                    if cand is None:
-                        raw_val = None
-            else:
-                scaled_val = raw_val
+                    scaled_val = raw_val
 
-            # If enum, lookup against enum symbols:
-            # scaled_val becomes the enum symbol name, while raw_val remains the integer register value
-            is_sentinel = raw_val is None or is_sunspec_sentinel(raw_val, pt_type)
-            substate = None
-            if pt_def and pt_def.is_enum and not is_sentinel:
-                lookup_val = raw_val if raw_val is not None else scaled_val
-                sym = pt_def.lookup_symbol(lookup_val)
-                if sym is not None:
-                    scaled_val = sym.name
-                if pt_def.has_substate_encoding:
-                    substate = pt_def.get_substate(lookup_val)
+                # If enum, lookup against enum symbols:
+                # scaled_val becomes the enum symbol name, while raw_val remains the integer register value
+                is_sentinel = raw_val is None or is_sunspec_sentinel(raw_val, pt_type)
+                substate = None
+                if pt_def and pt_def.is_enum and not is_sentinel:
+                    lookup_val = raw_val if raw_val is not None else scaled_val
+                    sym = pt_def.lookup_symbol(lookup_val)
+                    if sym is not None:
+                        scaled_val = sym.name
+                    if pt_def.has_substate_encoding:
+                        substate = pt_def.get_substate(lookup_val)
 
-            # If bitfield, decode integer bitmask into list of active symbol names:
-            # scaled_val becomes the list of active flag names, while raw_val remains the integer register value
-            bitmask_flags = None
-            if pt_def and pt_def.is_bitfield and not is_sentinel:
-                bit_val = raw_val if isinstance(raw_val, int) else (int(raw_val) if isinstance(raw_val, str) and (raw_val.isdigit() or (raw_val.startswith("-") and raw_val[1:].isdigit())) else None)
-                if bit_val is not None:
-                    bitmask_flags = pt_def.decode_bitfield(bit_val)
-                    scaled_val = bitmask_flags
-                elif isinstance(scaled_val, list):
-                    bitmask_flags = scaled_val
+                # If bitfield, decode integer bitmask into list of active symbol names:
+                # scaled_val becomes the list of active flag names, while raw_val remains the integer register value
+                bitmask_flags = None
+                if pt_def and pt_def.is_bitfield and not is_sentinel:
+                    bit_val = raw_val if isinstance(raw_val, int) else (
+                        int(raw_val) if isinstance(raw_val, str) and (raw_val.isdigit() or (raw_val.startswith("-") and raw_val[1:].isdigit())) else None
+                    )
+                    if bit_val is not None:
+                        bitmask_flags = pt_def.decode_bitfield(bit_val)
+                        scaled_val = bitmask_flags
+                    elif isinstance(scaled_val, list):
+                        bitmask_flags = scaled_val
 
-            # Derive HA hints
-            pt_sf = None
-            if pt_def and pt_def.sf:
-                sf_name = pt_def.sf
-                pt_sf = scale_factors.get(sf_name) if sf_name in scale_factors else (
-                    scale_factors.get(sf_name.lower()) if sf_name.lower() in scale_factors else scale_factors.get(sf_name.upper())
+                ha_hint = self.catalog.derive_ha_metadata(pt_def, model_id=model_id, sf_value=pt_sf) if pt_def else None
+                if group_path and ha_hint and pt_def and not pt_def.is_writable and not ha_hint.entity_category:
+                    ha_hint.entity_category = "diagnostic"
+
+                # Symbol definitions if enum or bitfield
+                symbols_defs = [s.to_dict() for s in pt_def.symbols] if (pt_def and (pt_def.is_enum or pt_def.is_bitfield or pt_def.symbols)) else None
+
+                # Detect scale factor point
+                is_sf = is_scale_factor_point(
+                    name=pt_name,
+                    point_type=pt_def.type if pt_def else None,
+                    label=base_label,
+                    explicit=bool(pt_def and pt_def.is_scale_factor),
                 )
-            ha_hint = self.catalog.derive_ha_metadata(pt_def, model_id=model_id, sf_value=pt_sf) if pt_def else None
 
-            # Symbol definitions if enum or bitfield
-            symbols_defs = [s.to_dict() for s in pt_def.symbols] if (pt_def and (pt_def.is_enum or pt_def.is_bitfield or pt_def.symbols)) else None
+                pt_offset = pt_def.offset if pt_def else None
+                if group_path and pt_def and pt_def.within_group_offset is not None and grp_def:
+                    inst_num = group_index if (group_index and group_index >= 1) else 1
+                    pt_offset = grp_def.base_offset + (inst_num - 1) * grp_def.size + pt_def.within_group_offset
 
-            # Detect scale factor point
-            is_sf = is_scale_factor_point(
-                name=pt_name,
-                point_type=pt_def.type if pt_def else None,
-                label=label,
-                explicit=bool(pt_def and pt_def.is_scale_factor),
-            )
+                self.set_field(
+                    device_sn=serial_number,
+                    name=pt_name,
+                    label=label,
+                    description=desc,
+                    value=scaled_val,
+                    raw_value=raw_val,
+                    units=units,
+                    source=FieldSource.MODBUS_POLL,
+                    access=access,
+                    symbols=symbols_defs,
+                    point_type=pt_def.type if pt_def else None,
+                    is_enum=pt_def.is_enum if pt_def else False,
+                    is_bitfield=pt_def.is_bitfield if pt_def else False,
+                    bitmask_flags=bitmask_flags,
+                    is_scale_factor=is_sf,
+                    scale_factor_point=pt_def.sf if pt_def else None,
+                    substate=substate,
+                    offset=pt_offset,
+                    size=pt_def.size if pt_def else 1,
+                    ha_hint=ha_hint,
+                    sub_group=model_name,
+                    model_id=model_id,
+                    model_name=model_name,
+                    model_label=model_label,
+                    group_name=group_name,
+                    group_index=group_index,
+                    group_path=group_path,
+                    group_label=group_label,
+                )
 
-            self.set_field(
-                device_sn=serial_number,
-                name=pt_name,
-                label=label,
-                description=desc,
-                value=scaled_val,
-                raw_value=raw_val,
-                units=units,
-                source=FieldSource.MODBUS_POLL,
-                access=access,
-                symbols=symbols_defs,
-                point_type=pt_def.type if pt_def else None,
-                is_enum=pt_def.is_enum if pt_def else False,
-                is_bitfield=pt_def.is_bitfield if pt_def else False,
-                bitmask_flags=bitmask_flags,
-                is_scale_factor=is_sf,
-                scale_factor_point=pt_def.sf if pt_def else None,
-                substate=substate,
-                offset=pt_def.offset if pt_def else None,
-                size=pt_def.size if pt_def else 1,
-                ha_hint=ha_hint,
-                sub_group=model_name,
+        # Ingest fixed-block points first
+        scale_factors = _collect_sfs(raw_values)
+        _ingest_block(raw_values, computed_values, scale_factors)
+
+        # Ingest permitted sub-group instances (merging parent + group-local scale factors)
+        for grp in (groups_data or []):
+            g_name = grp.get("group_name") or ""
+            g_path = grp.get("group_path")
+            if not g_path:
+                continue
+            if not should_ingest_model_groups(model_id, g_name, include_bulk_tables=include_bulk_tables):
+                continue
+            g_raw = grp.get("raw_values") or {}
+            g_comp = grp.get("computed_values")
+            g_index = grp.get("group_index")
+            grp_def = model_def.groups.get(strip_group_indices(g_path)) if model_def else None
+            g_label = grp.get("group_label") or format_group_label(
+                g_path,
+                grp_def.label if grp_def else None,
                 model_id=model_id,
-                model_name=model_name,
-                model_label=model_label,
+            )
+            g_sfs = dict(scale_factors)
+            g_sfs.update(_collect_sfs(g_raw, grp_path=g_path))
+            _ingest_block(
+                g_raw,
+                g_comp,
+                g_sfs,
+                group_name=g_name or None,
+                group_index=g_index,
+                group_path=g_path,
+                group_label=g_label,
             )
 
     def subscribe(self, listener: Callable[[StateField], None]):
@@ -2274,23 +2420,34 @@ class StateStore:
             # Point and model definition from catalog
             pt_def = None
             model_def = None
+            target_gp = getattr(target_field, "group_path", None) if target_field else None
             if target_field:
                 if target_field.model_id:
                     model_def = self.catalog.get_model(target_field.model_id)
                     if model_def:
-                        pt_def = model_def.points.get(target_field.name)
+                        pt_def = (
+                            model_def.get_group_point(target_gp, target_field.name)
+                            if target_gp
+                            else model_def.points.get(target_field.name)
+                        )
                 if not pt_def:
                     pt_def = self.catalog.get_point_for_field(target_field.key)
                     if pt_def and not model_def:
                         for m in self.catalog.models.values():
-                            if target_field.name in m.points:
+                            if (target_gp and m.get_group_point(target_gp, target_field.name)) or target_field.name in m.points:
                                 model_def = m
                                 break
 
             # If target_field lacks offset or size, sync from pt_def
             if target_field and pt_def:
-                if target_field.offset is None and pt_def.offset is not None:
-                    target_field.offset = pt_def.offset
+                if target_field.offset is None:
+                    if target_gp and pt_def.within_group_offset is not None and model_def:
+                        grp_def = model_def.groups.get(strip_group_indices(target_gp))
+                        if grp_def:
+                            inst_num = target_field.group_index if (target_field.group_index and target_field.group_index >= 1) else 1
+                            target_field.offset = grp_def.base_offset + (inst_num - 1) * grp_def.size + pt_def.within_group_offset
+                    elif pt_def.offset is not None:
+                        target_field.offset = pt_def.offset
                 if target_field.scale_factor_point is None and pt_def.sf:
                     target_field.scale_factor_point = pt_def.sf
                 if target_field.size == 1 and pt_def.size != 1:
@@ -2299,13 +2456,28 @@ class StateStore:
             # Scale factor info
             sf_info = None
             sf_name = pt_def.sf if pt_def else (target_field.scale_factor_point if target_field else None)
+            target_model_name = (target_field.model_name if (target_field and target_field.model_name) else (model_def.name if model_def else ""))
             if sf_name and model_def:
-                sf_pt_def = model_def.points.get(sf_name)
-                sf_key = f"{dev.device_type}.{model_def.name}.{sf_name}"
+                sf_pt_def = model_def.get_group_point(target_gp, sf_name) if target_gp else model_def.points.get(sf_name)
+                if not sf_pt_def:
+                    sf_pt_def = model_def.points.get(sf_name)
+                sf_m_slug = target_model_name or model_def.name
+                sf_key = (
+                    f"{dev.device_type}.{sf_m_slug}.{target_gp}.{sf_name}"
+                    if (target_gp and sf_pt_def and sf_pt_def.group_path)
+                    else f"{dev.device_type}.{sf_m_slug}.{sf_name}"
+                )
                 sf_field = dev.fields.get(sf_key)
+                if not sf_field and target_gp:
+                    sf_field = (
+                        dev.fields.get(f"{dev.device_type}.{sf_m_slug}.{target_gp}.{sf_name}")
+                        or dev.fields.get(f"{dev.device_type}.{model_def.name}.{target_gp}.{sf_name}")
+                        or dev.fields.get(f"{dev.device_type}.{sf_m_slug}.{sf_name}")
+                        or dev.fields.get(f"{dev.device_type}.{model_def.name}.{sf_name}")
+                    )
                 if not sf_field:
                     for f in dev.fields.values():
-                        if f.model_id == model_def.model_id and f.name == sf_name:
+                        if f.model_id == model_def.model_id and f.name == sf_name and (not f.group_path or f.group_path == target_gp):
                             sf_field = f
                             break
                 if not sf_field:
@@ -2328,7 +2500,7 @@ class StateStore:
                     "label": sf_pt_def.label if sf_pt_def else (sf_field.label if sf_field else sf_name),
                     "description": sf_pt_def.desc if sf_pt_def else (sf_field.description if sf_field else ""),
                     "type": "sunssf",
-                    "offset": sf_pt_def.offset if sf_pt_def else (sf_field.offset if sf_field else None),
+                    "offset": sf_field.offset if (sf_field and sf_field.offset is not None) else (sf_pt_def.offset if sf_pt_def else None),
                     "size": sf_pt_def.size if sf_pt_def else 1,
                     "value": sf_val,
                     "raw_value": sf_raw,
@@ -2339,23 +2511,29 @@ class StateStore:
 
             # Scaled points (if this field is a scale factor, or for the associated scale factor)
             scaled_points = []
+            seen_scaled_keys: set[str] = set()
             is_sf = target_field.is_scale_factor if target_field else False
             query_sf_name = target_field.name if is_sf else sf_name
             if query_sf_name and model_def:
+                m_slug = target_model_name or model_def.name
                 for p_name, p_d in model_def.points.items():
+                    if p_d.group_path:
+                        continue
                     if p_d.sf == query_sf_name:
-                        p_key = f"{dev.device_type}.{model_def.name}.{p_name}"
-                        pf = dev.fields.get(p_key)
+                        p_key = f"{dev.device_type}.{m_slug}.{p_name}"
+                        pf = dev.fields.get(p_key) or dev.fields.get(f"{dev.device_type}.{model_def.name}.{p_name}")
                         raw_v = pf.raw_value if pf else None
                         raw_h = None
                         if isinstance(raw_v, int):
                             raw_h = f"0x{raw_v & 0xFFFF:04X}" if p_d.size == 1 else f"0x{raw_v & 0xFFFFFFFF:08X}"
+                        entry_key = pf.key if pf else p_key
+                        seen_scaled_keys.add(entry_key)
                         scaled_points.append({
                             "name": p_name,
-                            "key": pf.key if pf else p_key,
-                            "label": p_d.label or (pf.label if pf else p_name),
+                            "key": entry_key,
+                            "label": (pf.label if pf else None) or p_d.label or p_name,
                             "description": p_d.desc or (pf.description if pf else ""),
-                            "offset": p_d.offset,
+                            "offset": pf.offset if (pf and pf.offset is not None) else p_d.offset,
                             "size": p_d.size,
                             "type": p_d.type,
                             "raw_value": raw_v,
@@ -2364,15 +2542,49 @@ class StateStore:
                             "units": p_d.units or (pf.units if pf else None),
                             "is_writable": p_d.is_writable,
                         })
+                for pf in dev.fields.values():
+                    if pf.model_id == model_def.model_id and pf.group_path and pf.scale_factor_point == query_sf_name:
+                        if target_gp and not is_sf and pf.group_path != target_gp:
+                            continue
+                        if pf.key in seen_scaled_keys:
+                            continue
+                        seen_scaled_keys.add(pf.key)
+                        gp_d = model_def.get_group_point(pf.group_path, pf.name)
+                        raw_v = pf.raw_value
+                        raw_h = None
+                        if isinstance(raw_v, int):
+                            raw_h = f"0x{raw_v & 0xFFFF:04X}" if pf.size == 1 else f"0x{raw_v & 0xFFFFFFFF:08X}"
+                        scaled_points.append({
+                            "name": pf.name,
+                            "key": pf.key,
+                            "label": pf.label or (gp_d.label if gp_d else pf.name),
+                            "description": pf.description or (gp_d.desc if gp_d else ""),
+                            "offset": pf.offset if pf.offset is not None else (gp_d.offset if gp_d else None),
+                            "size": pf.size,
+                            "type": pf.point_type or (gp_d.type if gp_d else None),
+                            "raw_value": raw_v,
+                            "raw_hex": raw_h,
+                            "value": pf.value,
+                            "units": pf.units or (gp_d.units if gp_d else None),
+                            "is_writable": gp_d.is_writable if gp_d else pf.is_writable,
+                        })
 
             # Associated registers
             associated_registers = []
             if model_def and target_field:
-                assoc_defs = model_def.get_associated_points(target_field.name)
+                assoc_defs = model_def.get_associated_points(target_field.name, group_path=target_gp)
+                m_slug = target_model_name or model_def.name
                 for item in assoc_defs:
                     p_d = item["point_def"]
-                    p_key = f"{dev.device_type}.{model_def.name}.{p_d.name}"
-                    pf = dev.fields.get(p_key)
+                    if target_gp and p_d.group_path:
+                        p_key = f"{dev.device_type}.{m_slug}.{target_gp}.{p_d.name}"
+                    else:
+                        p_key = f"{dev.device_type}.{m_slug}.{p_d.name}"
+                    pf = dev.fields.get(p_key) or (
+                        dev.fields.get(f"{dev.device_type}.{model_def.name}.{target_gp}.{p_d.name}")
+                        if (target_gp and p_d.group_path)
+                        else dev.fields.get(f"{dev.device_type}.{model_def.name}.{p_d.name}")
+                    )
                     raw_v = pf.raw_value if pf else None
                     raw_h = None
                     if isinstance(raw_v, int):
@@ -2380,10 +2592,10 @@ class StateStore:
                     associated_registers.append({
                         "name": p_d.name,
                         "key": pf.key if pf else p_key,
-                        "label": p_d.label or (pf.label if pf else p_d.name),
+                        "label": (pf.label if pf else None) or p_d.label or p_d.name,
                         "description": p_d.desc or (pf.description if pf else ""),
                         "relationship": item["relationship"],
-                        "offset": p_d.offset,
+                        "offset": pf.offset if (pf and pf.offset is not None) else p_d.offset,
                         "size": p_d.size,
                         "type": p_d.type,
                         "raw_value": raw_v,
@@ -2479,6 +2691,12 @@ class StateStore:
                     "total_points": len(model_def.points) if model_def else 0,
                 } if (model_def or (target_field and target_field.model_id)) else None,
                 "point_def": pt_def.to_dict(sf_value=sf_val_num) if pt_def else None,
+                "group": {
+                    "name": target_field.group_name,
+                    "index": target_field.group_index,
+                    "path": target_field.group_path,
+                    "label": target_field.group_label,
+                } if (target_field and target_field.group_path) else None,
                 "bounds": bounds_info,
                 "scale_factor": sf_info,
                 "scaled_points": scaled_points,

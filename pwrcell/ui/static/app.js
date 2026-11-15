@@ -939,9 +939,9 @@ function compareFields(a, b, sortCriteria) {
         break;
       }
       case 'name': {
-        cmp = getNameSortValue(a).localeCompare(getNameSortValue(b));
+        cmp = getNameSortValue(a).localeCompare(getNameSortValue(b), undefined, { numeric: true, sensitivity: 'base' });
         if (cmp === 0) {
-          cmp = (a.key || '').localeCompare(b.key || '');
+          cmp = (a.key || '').localeCompare(b.key || '', undefined, { numeric: true, sensitivity: 'base' });
         }
         break;
       }
@@ -1871,6 +1871,7 @@ function renderFieldTable() {
       <td class="field-model-cell">
         <div class="source-pill-group">
           ${sourcePillsHtml}
+          ${(f.group_label || f.group_path) ? `<span class="badge-subgroup" title="SunSpec Sub-group: ${escapeHtml(f.group_path || '')}">${escapeHtml(f.group_label || f.group_path)}</span>` : ''}
         </div>
       </td>
       <td>
@@ -2309,10 +2310,13 @@ function renderFieldTable() {
     const tr = document.createElement('tr');
     tr.id = `row-${sanitizeId(f.key)}`;
 
+    const subGroupBadge = (f.group_label || f.group_path)
+      ? ` <span class="badge-subgroup" title="SunSpec Sub-group: ${escapeHtml(f.group_path || '')}">${escapeHtml(f.group_label || f.group_path)}</span>`
+      : '';
     const modelCellContent = f.is_compound
       ? `<span class="badge-compound" title="Unified compound view merging MQTT and Modbus">⚡ Compound</span>`
       : (f.model_id
-          ? `<span class="badge-model" title="SunSpec Model ${f.model_id}: ${f.model_label || f.model_name || ''}">M${f.model_id}</span>`
+          ? `<span class="badge-model" title="SunSpec Model ${f.model_id}: ${f.model_label || f.model_name || ''}">M${f.model_id}</span>${subGroupBadge}`
           : `<span class="badge-push-simple" title="Direct Push MQTT">Push</span>`);
 
     if (f.is_compound) {
@@ -2659,6 +2663,7 @@ function renderFieldTable() {
       });
     }
 
+    const isDefaultOrModelSort = !state.sortCriteria.length || state.sortCriteria.every(c => c.column === 'model');
     groupArray.forEach(grp => {
       const headerTr = document.createElement('tr');
       headerTr.className = 'model-group-row';
@@ -2672,7 +2677,42 @@ function renderFieldTable() {
         </td>
       `;
       fragment.appendChild(headerTr);
-      grp.fields.forEach(f => {
+      const orderedFields = isDefaultOrModelSort
+        ? [...grp.fields].sort((a, b) => {
+            const ag = a.group_path ? 1 : 0;
+            const bg = b.group_path ? 1 : 0;
+            if (ag !== bg) return ag - bg;
+            if (ag && bg) {
+              const gNameCmp = (a.group_name || '').localeCompare(b.group_name || '');
+              if (gNameCmp !== 0) return gNameCmp;
+              const aIdx = a.group_index ?? 0;
+              const bIdx = b.group_index ?? 0;
+              if (aIdx !== bIdx) return aIdx - bIdx;
+            }
+            const aOff = a.offset ?? 999999;
+            const bOff = b.offset ?? 999999;
+            if (aOff !== bOff) return aOff - bOff;
+            return (a.label || a.name || '').localeCompare(b.label || b.name || '', undefined, { numeric: true, sensitivity: 'base' });
+          })
+        : grp.fields;
+      let lastGroupPath = null;
+      orderedFields.forEach(f => {
+        if (f.group_path && f.group_path !== lastGroupPath) {
+          lastGroupPath = f.group_path;
+          const subTr = document.createElement('tr');
+          subTr.className = 'subgroup-divider-row';
+          subTr.innerHTML = `
+            <td colspan="8">
+              <div class="subgroup-divider-header">
+                <span class="subgroup-divider-title">${escapeHtml(f.group_label || f.group_path)}</span>
+                <span class="subgroup-divider-path">${escapeHtml(f.group_path)}</span>
+              </div>
+            </td>
+          `;
+          fragment.appendChild(subTr);
+        } else if (!f.group_path) {
+          lastGroupPath = null;
+        }
         fragment.appendChild(renderSingleRow(f));
       });
     });
@@ -3684,7 +3724,11 @@ function renderFieldDetailsModal(data) {
   const bitsStr = `${sizeStr * 16}-bit`;
   const accessStr = f.access === 'RW' || pt.access === 'RW' ? 'Read-Write (RW)' : 'Read-Only (R)';
   const fcStr = f.access === 'RW' || pt.access === 'RW' ? 'FC03 / FC06, FC16' : 'FC03 (Read)';
+  const grpInfo = (data.group && data.group.path) ? data.group : (f.group_path ? { label: f.group_label, path: f.group_path } : null);
   const modelTag = model.model_id ? `Model ${model.model_id} (${model.name})` : (f.model_name || 'N/A');
+  const groupTagHtml = grpInfo
+    ? ` &bull; <span class="badge-subgroup" title="${escapeHtml(grpInfo.path)}">${escapeHtml(grpInfo.label || grpInfo.path)}</span>`
+    : '';
 
   html += `
     <div class="details-summary-grid">
@@ -3711,7 +3755,7 @@ function renderFieldDetailsModal(data) {
         <div class="details-card-val">
           <span>Offset ${offsetStr}</span>
         </div>
-        <span class="details-card-sub">${modelTag} • ${sizeStr} word (${bitsStr}, ${fcStr})</span>
+        <span class="details-card-sub">${modelTag}${groupTagHtml} &bull; ${sizeStr} word (${bitsStr}, ${fcStr})</span>
       </div>
 
       <div class="details-card">

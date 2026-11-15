@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-11-15
+
+### Added
+- **Generic SunSpec Sub-Group Support (Per-Module Battery Telemetry & Nested Groups)**:
+  - Recursively parses SunSpec sub-group metamodel definitions (`SunspecGroupDef`, `SunspecPointDef` group metadata, `ModelCatalog`, `SunspecModelDef.get_group_point()`) across all models without colliding with fixed-block register names (`pwrcell/catalog.py`).
+  - Surfacing of per-battery-module telemetry from Model `804` (`lithium_ion_string_module`) and Model `64252` (`DCB105_module` warranty/module health metrics), Model `64200` (`devices` REbus directory slots including `ID`), and nested SunSpec sub-groups (`704`, `705` `Crv.Pt`, etc.).
+  - Explicit group metadata (`group_name`, `group_index`, `group_path`, `group_label`) on `StateField`, `ConceptSource`, `ConceptView`, Modbus register details, and REST APIs (`pwrcell/state.py`, `pwrcell/concept.py`).
+  - Polls SunSpec `battery.lithium_ion_string` (`804`) in `DEFAULT_SLOW_PATHS` and recursively extracts live `pysunspec2` sub-groups (`extract_model_groups` in `pwrcell/poller.py`) and recorded fixtures (`MockFixtureLoader` in `pwrcell/fixtures.py`, `pwrcell/client.py`).
+  - Added add-on/config option `include_bulk_table_groups` (default `false`, opt-in in `config.yaml`, `pwrcell/config.py`, `pwrcell/setup_key.py`) so large curve/schedule lookup tables (`126`, `129`–`144`, `705`–`712`, `64229`–`64257`) can be enabled on demand while raw flash buffers (Model `64258` `flash_reader.sector`) are always excluded.
+  - Added `group_path` traversal to `SerializedModbusClient.write_point_value()` (`pwrcell/modbus.py`) and `ControlDispatcher.write_field()` (`pwrcell/controls.py`) so writable sub-group points can be updated safely while preserving group metadata.
+  - Added Web Explorer UI sub-group instance dividers (`.subgroup-divider-row`), `.badge-subgroup` pills, natural numeric name sorting (`Module 1`, `Module 2`, ..., `Module 10`), and sub-group details in the register modal (`pwrcell/ui/static/app.js`, `pwrcell/ui/static/style.css`).
+  - Added comprehensive unit test suite in `tests/test_sunspec_groups.py`.
+
+### Changed
+- **Semantic Grouping & Home Assistant MQTT Discovery for Sub-Groups**:
+  - Updated `group_device_fields()` (`pwrcell/optimizer.py`) to isolate sub-group points into instance-scoped concepts (`<device_type>.concept.m<model_id>_<group_path>_<point>`) so values never merge across modules/instances or into bank-level metrics.
+  - Updated `pwrcell/ha.py` so sub-group entities attach to their parent `UnifiedDevice`, default to `entity_category: "diagnostic"`, preserve instance-prefixed entity labels and saved config slugs (`_resolve_standalone_or_orphan_slug`), and avoid colliding with top-level legacy discovery topics.
+
+### Fixed
+- Cleared invalid unit/scale-factor metadata on SunSpec Model `804` `ModCellVMinCell` and defaulted `%` units on Model `64252` `DCB105_module` `SOC`/`SOH` points in `pwrcell/catalog.py`.
+
 ## [3.1.16] - 2026-11-15
 
 ### Fixed

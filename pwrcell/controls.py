@@ -482,12 +482,18 @@ class ControlDispatcher:
                 device_tcp = self.modbus_client.get_or_create_device(target_dev.slave_id)
                 # write_point_value assigns point.cvalue = value, which expects scaled engineering units for numeric points
                 cvalue_to_write = display_val if (point_def and point_def.is_numeric) else raw_val
-                readback = self.modbus_client.write_point_value(
-                    device=device_tcp,
-                    model_id=model_id,
-                    point_name=target_field.name,
-                    value=cvalue_to_write,
+                group_path = getattr(target_field, "group_path", None) or (
+                    ".".join(parts[2:-1]) if (len(parts) >= 4 and parts[1] not in ("live", "compound")) else None
                 )
+                write_kwargs: Dict[str, Any] = {
+                    "device": device_tcp,
+                    "model_id": model_id,
+                    "point_name": target_field.name,
+                    "value": cvalue_to_write,
+                }
+                if group_path:
+                    write_kwargs["group_path"] = group_path
+                readback = self.modbus_client.write_point_value(**write_kwargs)
                 if readback is not None and readback != cvalue_to_write:
                     logger.warning(
                         "Write read-back mismatch on %s: requested %r, device returned %r",
@@ -543,6 +549,10 @@ class ControlDispatcher:
             model_id=target_field.model_id,
             model_name=target_field.model_name,
             model_label=target_field.model_label,
+            group_name=getattr(target_field, "group_name", None),
+            group_index=getattr(target_field, "group_index", None),
+            group_path=getattr(target_field, "group_path", None),
+            group_label=getattr(target_field, "group_label", None),
         )
         return display_val
 

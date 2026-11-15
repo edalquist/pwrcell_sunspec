@@ -503,16 +503,42 @@ class SerializedModbusClient:
         point_name: str,
         value: Any,
         index: int = 0,
+        group_path: Optional[str] = None,
     ) -> Any:
-        """Write a value to a writable register point and verify by re-reading the block."""
+        """Write a value to a writable register point (including sub-groups) and verify by re-reading the block."""
         models_list = device.models.get(model_id)
         if not models_list or index >= len(models_list):
             raise ValueError(f"Model {model_id}[{index}] not found on slave {device.slave_id}")
 
         model = models_list[index]
-        point = model.points.get(point_name)
+        target_container = model
+        if group_path:
+            segs = [s for s in group_path.split(".") if s]
+            i = 0
+            while i < len(segs):
+                seg = segs[i]
+                groups_dict = getattr(target_container, "groups", None)
+                if not isinstance(groups_dict, dict) or seg not in groups_dict:
+                    raise ValueError(f"Group '{seg}' in '{group_path}' not found in model {model_id}")
+                grp_obj = groups_dict[seg]
+                if i + 1 < len(segs) and segs[i + 1].isdigit():
+                    grp_idx = int(segs[i + 1]) - 1
+                    if not isinstance(grp_obj, (list, tuple)) or grp_idx < 0 or grp_idx >= len(grp_obj):
+                        raise ValueError(f"Group '{seg}[{segs[i + 1]}]' out of range in model {model_id}")
+                    target_container = grp_obj[grp_idx]
+                    i += 2
+                else:
+                    if isinstance(grp_obj, (list, tuple)):
+                        if not grp_obj:
+                            raise ValueError(f"Group '{seg}' is empty in model {model_id}")
+                        target_container = grp_obj[0]
+                    else:
+                        target_container = grp_obj
+                    i += 1
+        point = target_container.points.get(point_name)
         if not point:
-            raise ValueError(f"Point {point_name} not found in model {model_id}")
+            loc = f"model {model_id} group '{group_path}'" if group_path else f"model {model_id}"
+            raise ValueError(f"Point {point_name} not found in {loc}")
 
         def _write():
             self._ensure_device_connected(device)

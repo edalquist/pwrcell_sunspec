@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .catalog import ModelCatalog, SunspecPointDef, get_catalog
+from .catalog import ModelCatalog, SunspecPointDef, get_catalog, is_sunspec_sentinel, should_ingest_model_groups
 
 try:
     from .protos import energy_record_set_pb2
@@ -50,6 +50,7 @@ class MockDeviceModel:
     name: str
     label: str
     points: Dict[str, MockPointValue] = field(default_factory=dict)
+    groups: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -92,10 +93,16 @@ def resolve_device_type(model_name: str) -> str:
 class MockFixtureLoader:
     """Loads recorded device dumps from model_dump/ directory."""
 
-    def __init__(self, dump_dir: Optional[Path | str] = None, catalog: Optional[ModelCatalog] = None):
+    def __init__(
+        self,
+        dump_dir: Optional[Path | str] = None,
+        catalog: Optional[ModelCatalog] = None,
+        include_bulk_table_groups: bool = False,
+    ):
         repo_root = Path(__file__).resolve().parent.parent
         self.dump_dir = Path(dump_dir) if dump_dir else (repo_root / "model_dump")
         self.catalog = catalog or get_catalog()
+        self.include_bulk_table_groups = include_bulk_table_groups
         self.devices: Dict[str, MockDevice] = {}  # serial_number -> MockDevice
         self.devices_by_slave_id: Dict[int, MockDevice] = {}
         self._load()
@@ -160,31 +167,141 @@ class MockFixtureLoader:
                 label=model_label_str,
             )
 
-            # First pass: collect scale factors in this model
-            scale_factors: Dict[str, int] = {}
-            for k, val in m_dict.items():
-                if k in ("ID", "L"):
-                    continue
-                if k.endswith("_sf") or k.endswith("_SF"):
-                    if isinstance(val, (int, float)):
-                        scale_factors[k] = int(val)
+            def _collect_block_sfs(block_dict: Dict[str, Any], grp_path: Optional[str] = None) -> Dict[str, int]:
+                sfs: Dict[str, int] = {}
+                for k, val in block_dict.items():
+                    if k in ("ID", "L") or isinstance(val, (list, dict)):
+                        continue
+                    if isinstance(val, (int, float)) and not is_sunspec_sentinel(val, "sunssf") and -10 <= val <= 10:
+                        if k.endswith("_sf") or k.endswith("_SF"):
+                            sfs[k] = int(val)
+                        elif catalog_model:
+                            pd = catalog_model.get_group_point(grp_path, k) if grp_path else catalog_model.points.get(k)
+                            if pd and pd.is_scale_factor:
+                                sfs[k] = int(val)
+                if catalog_model and not grp_path:
+                    for pt_def in catalog_model.points.values():
+                        if pt_def.group_path:
+                            continue
+                        if pt_def.sf and pt_def.sf in block_dict and pt_def.sf not in sfs:
+                            sf_val = block_dict[pt_def.sf]
+                            if isinstance(sf_val, (int, float)) and not is_sunspec_sentinel(sf_val, "sunssf") and -10 <= sf_val <= 10:
+                                sfs[pt_def.sf] = int(sf_val)
+                return sfs
 
-            # Also check catalog point def for sf
-            if catalog_model:
-                for pt_def in catalog_model.points.values():
-                    if pt_def.sf and pt_def.sf in m_dict and pt_def.sf not in scale_factors:
-                        sf_val = m_dict[pt_def.sf]
-                        if isinstance(sf_val, (int, float)):
-                            scale_factors[pt_def.sf] = int(sf_val)
+            def _resolve_point_value(
+                pt_name: str,
+                raw_val: Any,
+                pt_def: Optional[SunspecPointDef],
+                sfs: Dict[str, int],
+            ) -> tuple[Any, Optional[int], Optional[str], bool, Optional[List[str]]]:
+                pt_type = pt_def.type if pt_def else "unknown"
+                if raw_val is None or is_sunspec_sentinel(raw_val, pt_type):
+                    return None, None, None, (pt_def.is_bitfield if pt_def else False), None
 
-            # Second pass: build point values
+                scaled_val = raw_val
+                sf_applied = None
+                sf_name = pt_def.sf if (pt_def and pt_def.sf) else f"{pt_name}_sf"
+                if sf_name not in sfs and f"{pt_name}_SF" in sfs:
+                    sf_name = f"{pt_name}_SF"
+
+                is_bf = pt_def.is_bitfield if pt_def else False
+                if sf_name in sfs and isinstance(raw_val, (int, float)) and not (pt_def and (pt_def.is_enum or is_bf)):
+                    sf_applied = sfs[sf_name]
+                    scaled_val = raw_val * (10 ** sf_applied)
+                    if sf_applied < 0:
+                        scaled_val = round(scaled_val, abs(sf_applied))
+
+                sym_name = None
+                bitmask_flags = None
+                if pt_def and pt_def.is_enum and isinstance(raw_val, int):
+                    sym = pt_def.lookup_symbol(raw_val)
+                    if sym:
+                        sym_name = sym.name
+                elif is_bf and isinstance(raw_val, int):
+                    bitmask_flags = pt_def.decode_bitfield(raw_val)
+
+                final_val = sym_name if sym_name is not None else (
+                    bitmask_flags if is_bf and bitmask_flags is not None else scaled_val
+                )
+                return final_val, sf_applied, sym_name, is_bf, bitmask_flags
+
+            def _parse_group_entries(
+                grp_key: str,
+                grp_val: Any,
+                parent_path: str,
+                parent_sfs: Dict[str, int],
+            ):
+                if not should_ingest_model_groups(
+                    model_id,
+                    grp_key,
+                    include_bulk_tables=self.include_bulk_table_groups,
+                ):
+                    return
+
+                if isinstance(grp_val, list):
+                    instances = [
+                        (idx, item)
+                        for idx, item in enumerate(grp_val, start=1)
+                        if isinstance(item, dict)
+                    ]
+                elif isinstance(grp_val, dict):
+                    instances = [(None, grp_val)]
+                else:
+                    return
+
+                for grp_idx, inst_dict in instances:
+                    inst_path = f"{parent_path}.{grp_key}" if parent_path else grp_key
+                    if grp_idx is not None:
+                        inst_path = f"{inst_path}.{grp_idx}"
+
+                    local_sfs = dict(parent_sfs)
+                    local_sfs.update(_collect_block_sfs(inst_dict, grp_path=inst_path))
+
+                    grp_raw: Dict[str, Any] = {}
+                    grp_comp: Dict[str, Any] = {}
+                    nested: List[tuple[str, Any]] = []
+
+                    for k, v in inst_dict.items():
+                        if k == "Pad" or k.startswith("Pad"):
+                            continue
+                        if isinstance(v, (list, dict)):
+                            nested.append((k, v))
+                            continue
+                        pt_def = catalog_model.get_group_point(inst_path, k) if catalog_model else None
+                        if pt_def and pt_def.type == "pad":
+                            continue
+                        scaled_v, _, _, _, _ = _resolve_point_value(k, v, pt_def, local_sfs)
+                        grp_raw[k] = v
+                        grp_comp[k] = scaled_v
+
+                    if grp_raw:
+                        device_model.groups.append({
+                            "group_name": grp_key,
+                            "group_index": grp_idx,
+                            "group_path": inst_path,
+                            "raw_values": grp_raw,
+                            "computed_values": grp_comp,
+                        })
+
+                    for sub_k, sub_v in nested:
+                        _parse_group_entries(sub_k, sub_v, inst_path, local_sfs)
+
+            scale_factors = _collect_block_sfs(m_dict)
+
+            # Build scalar points and recursively ingest sub-groups
             for pt_name, raw_val in m_dict.items():
+                if isinstance(raw_val, (list, dict)):
+                    _parse_group_entries(pt_name, raw_val, "", scale_factors)
+                    continue
                 if pt_name in ("ID", "L", "Pad", "repeating"):
                     continue
                 if pt_name.startswith("Pad"):
                     continue
 
                 pt_def = catalog_model.points.get(pt_name) if catalog_model else None
+                if pt_def and pt_def.group_path:
+                    pt_def = None
                 label = pt_def.label if pt_def else pt_name
                 desc = pt_def.desc if pt_def else ""
                 units = pt_def.units if pt_def else None
@@ -192,38 +309,15 @@ class MockFixtureLoader:
                 access = pt_def.access if pt_def else "R"
                 is_writable = pt_def.is_writable if pt_def else False
 
-                # Compute scaled value
-                scaled_val = raw_val
-                sf_applied = None
-
-                sf_name = pt_def.sf if (pt_def and pt_def.sf) else f"{pt_name}_sf"
-                if sf_name not in scale_factors and f"{pt_name}_SF" in scale_factors:
-                    sf_name = f"{pt_name}_SF"
-
-                if sf_name in scale_factors and isinstance(raw_val, (int, float)):
-                    sf_applied = scale_factors[sf_name]
-                    # SunSpec scale factor: 10^sf
-                    scaled_val = raw_val * (10 ** sf_applied)
-                    # Round to reasonable precision
-                    if sf_applied < 0:
-                        scaled_val = round(scaled_val, abs(sf_applied))
-
-                # Resolve enum symbol name if enum, or active flags if bitfield
-                sym_name = None
-                bitmask_flags = None
-                is_bitfield = pt_def.is_bitfield if pt_def else False
-                if pt_def and pt_def.is_enum and isinstance(raw_val, int):
-                    sym = pt_def.lookup_symbol(raw_val)
-                    if sym:
-                        sym_name = sym.name
-                elif is_bitfield and isinstance(raw_val, int):
-                    bitmask_flags = pt_def.decode_bitfield(raw_val)
+                final_val, sf_applied, sym_name, is_bitfield, bitmask_flags = _resolve_point_value(
+                    pt_name, raw_val, pt_def, scale_factors
+                )
 
                 mock_point = MockPointValue(
                     name=pt_name,
                     model_id=model_id,
                     raw_value=raw_val,
-                    scaled_value=sym_name if sym_name is not None else (bitmask_flags if is_bitfield and bitmask_flags is not None else scaled_val),
+                    scaled_value=final_val,
                     label=label,
                     desc=desc,
                     units=units,

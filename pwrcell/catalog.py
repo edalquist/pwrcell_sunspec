@@ -44,6 +44,119 @@ MODEL_PVRSS_CONFIG = 64263
 MODEL_PVRSS_TELEMETRY = 64264
 
 
+# SunSpec models whose repeating groups contain raw memory/flash buffers (always excluded)
+EXCLUDED_RAW_BUFFER_GROUP_MODELS: frozenset[int] = frozenset({
+    MODEL_FLASH_READER,
+})
+
+# SunSpec models whose repeating groups hold large multi-point curve/schedule lookup tables (opt-in)
+BULK_TABLE_GROUP_MODELS: frozenset[int] = frozenset({
+    126, 129, 130, 131, 132, 133, 134, 135, 136,
+    137, 138, 139, 140, 141, 142, 143, 144,
+    705, 706, 707, 708, 709, 710, 711, 712,
+    64229, 64230, 64235, 64236, 64254, 64255, 64256, 64257,
+})
+
+
+def should_ingest_model_groups(
+    model_id: Optional[int],
+    group_name: str = "",
+    include_bulk_tables: bool = False,
+) -> bool:
+    """Return True if SunSpec sub-groups for `model_id` / `group_name` should be ingested."""
+    if model_id in EXCLUDED_RAW_BUFFER_GROUP_MODELS:
+        return False
+    if (group_name or "").strip().lower() == "sector":
+        return False
+    if model_id in BULK_TABLE_GROUP_MODELS:
+        return bool(include_bulk_tables)
+    return True
+
+
+def strip_group_indices(group_path: str) -> str:
+    """Strip 1-based numeric instance indices from a SunSpec group_path to get its catalog path.
+
+    Examples:
+        'lithium_ion_string_module.1' -> 'lithium_ion_string_module'
+        'Crv.1.Pt.2' -> 'Crv.Pt'
+        'DERCtlAC' -> 'DERCtlAC'
+    """
+    if not group_path:
+        return ""
+    segs = [s for s in group_path.split(".") if s and not s.isdigit()]
+    return ".".join(segs)
+
+
+_GROUP_SEGMENT_LABELS: Dict[str, str] = {
+    "lithium_ion_string_module": "Module",
+    "dcb105_module": "Module",
+    "dlg_module": "Module",
+    "module": "Module",
+    "string": "String",
+    "devices": "Device Slot",
+    "curve": "Curve",
+    "crv": "Curve",
+    "pt": "Point",
+}
+
+
+def format_group_label(
+    group_path: str,
+    group_def_label: Optional[str] = None,
+    model_id: Optional[int] = None,
+) -> str:
+    """Format a human-readable group instance label such as 'Module 1' or 'Curve 1 / Point 2'."""
+    if not group_path:
+        return ""
+    parts = [p for p in group_path.split(".") if p]
+    rendered: List[str] = []
+    i = 0
+    while i < len(parts):
+        seg = parts[i]
+        idx: Optional[str] = None
+        if i + 1 < len(parts) and parts[i + 1].isdigit():
+            idx = parts[i + 1]
+            i += 2
+        else:
+            i += 1
+
+        seg_lower = seg.lower()
+        if seg_lower == "repeating":
+            base = "Schedule" if model_id == MODEL_SCHEDULE else "Entry"
+        elif seg_lower in _GROUP_SEGMENT_LABELS:
+            base = _GROUP_SEGMENT_LABELS[seg_lower]
+        elif seg_lower.endswith("_module"):
+            base = "Module"
+        elif i >= len(parts) and group_def_label and group_def_label.strip() and group_def_label.strip() != seg:
+            base = group_def_label.strip()
+        else:
+            base = seg.replace("_", " ").strip().title()
+
+        rendered.append(f"{base} {idx}" if idx is not None else base)
+
+    return " / ".join(rendered)
+
+
+def format_group_field_label(group_label: str, point_label: str) -> str:
+    """Prefix a point label with its group instance label without awkward repetition."""
+    g_lbl = (group_label or "").strip()
+    p_lbl = (point_label or "").strip()
+    if not g_lbl:
+        return p_lbl
+    if not p_lbl:
+        return g_lbl
+
+    for noun in ("Module", "String", "Curve", "Schedule", "Point"):
+        if g_lbl.startswith(f"{noun} ") or g_lbl == noun:
+            if p_lbl.lower().startswith(f"{noun.lower()} "):
+                remainder = p_lbl[len(noun) + 1:].strip()
+                if remainder:
+                    return f"{g_lbl} {remainder}"
+            break
+
+    return f"{g_lbl} {p_lbl}"
+
+
 # Canonical SunSpec unimplemented / null sentinel register values keyed by point type
 SUNSPEC_SENTINELS_BY_TYPE: Dict[str, set[int]] = {
     "int16": {-0x8000, 0x8000},
@@ -268,6 +381,9 @@ class SunspecPointDef:
     symbols: List[SunspecSymbol] = field(default_factory=list)
     symbols_by_value: Dict[int, SunspecSymbol] = field(default_factory=dict)
     symbols_by_name: Dict[str, SunspecSymbol] = field(default_factory=dict)
+    group_name: Optional[str] = None
+    group_path: Optional[str] = None  # Catalog path without numeric indices
+    within_group_offset: Optional[int] = None
 
     @property
     def is_scale_factor(self) -> bool:
@@ -754,6 +870,19 @@ class SunspecPointDef:
 
 
 @dataclass
+class SunspecGroupDef:
+    """Metamodel definition of a nested SunSpec subgroup."""
+    name: str
+    path: str  # Index-stripped path, e.g. 'lithium_ion_string_module' or 'Crv.Pt'
+    label: str
+    desc: str = ""
+    is_repeating: bool = True
+    base_offset: int = 0
+    size: int = 0
+    points: Dict[str, SunspecPointDef] = field(default_factory=dict)
+
+
+@dataclass
 class SunspecModelDef:
     """Metamodel definition of a SunSpec model group."""
     model_id: int
@@ -761,88 +890,134 @@ class SunspecModelDef:
     label: str
     desc: str
     points: Dict[str, SunspecPointDef] = field(default_factory=dict)
+    groups: Dict[str, SunspecGroupDef] = field(default_factory=dict)
 
-    def get_associated_points(self, point_name: str) -> List[Dict[str, Any]]:
+    def get_group_point(self, group_path: Optional[str], point_name: str) -> Optional[SunspecPointDef]:
+        """Look up a point inside a SunSpec subgroup by instance or catalog path."""
+        if group_path:
+            cat_path = strip_group_indices(group_path)
+            if cat_path:
+                pt = self.points.get(f"{cat_path}.{point_name}")
+                if pt:
+                    return pt
+                grp = self.groups.get(cat_path)
+                if grp and point_name in grp.points:
+                    return grp.points[point_name]
+                # Fallback to terminal subgroup name if full nested path differed
+                leaf = cat_path.split(".")[-1]
+                pt = self.points.get(f"{leaf}.{point_name}")
+                if pt:
+                    return pt
+        return self.points.get(point_name)
+
+    def get_associated_points(self, point_name: str, group_path: Optional[str] = None) -> List[Dict[str, Any]]:
         """Identify associated registers (scale factors, shared SF siblings, phase siblings, counters)."""
-        target = self.points.get(point_name)
+        target = self.get_group_point(group_path, point_name) if group_path else self.points.get(point_name)
         if not target:
             return []
 
         results: List[Dict[str, Any]] = []
-        seen = {point_name}
+        seen_ids: set[int] = {id(target)}
+
+        def _unique_points() -> List[SunspecPointDef]:
+            uniq: List[SunspecPointDef] = []
+            seen_obj: set[int] = set()
+            for p_def in self.points.values():
+                pid = id(p_def)
+                if pid not in seen_obj:
+                    seen_obj.add(pid)
+                    uniq.append(p_def)
+            return uniq
+
+        # Restrict sibling lookups to same group (or same fixed block)
+        target_grp_path = target.group_path
 
         # 1. Scale factor register (if target is scaled by another point)
-        if target.sf and target.sf in self.points and target.sf not in seen:
-            sf_pt = self.points[target.sf]
-            results.append({
-                "name": sf_pt.name,
-                "label": sf_pt.label,
-                "relationship": "Scale Factor",
-                "point_def": sf_pt,
-            })
-            seen.add(target.sf)
+        if target.sf and target.sf in self.points:
+            sf_pt = self.get_group_point(group_path, target.sf) if group_path else self.points.get(target.sf)
+            if not sf_pt:
+                sf_pt = self.points.get(target.sf)
+            if sf_pt and id(sf_pt) not in seen_ids:
+                results.append({
+                    "name": sf_pt.name,
+                    "label": sf_pt.label,
+                    "relationship": "Scale Factor",
+                    "point_def": sf_pt,
+                })
+                seen_ids.add(id(sf_pt))
+
+        all_pts = _unique_points()
 
         # 2. If target IS a scale factor, include all points it scales
         if target.is_scale_factor:
-            for p_name, p_def in self.points.items():
-                if p_def.sf == target.name and p_name not in seen:
+            for p_def in all_pts:
+                if p_def.sf == target.name and id(p_def) not in seen_ids:
                     results.append({
                         "name": p_def.name,
                         "label": p_def.label,
                         "relationship": "Scaled by this register",
                         "point_def": p_def,
                     })
-                    seen.add(p_name)
+                    seen_ids.add(id(p_def))
 
         # 3. Sibling registers that share the exact same scale factor
         if target.sf:
-            for p_name, p_def in self.points.items():
-                if p_def.sf == target.sf and p_name not in seen:
+            for p_def in all_pts:
+                if (
+                    p_def.sf == target.sf
+                    and p_def.group_path == target_grp_path
+                    and id(p_def) not in seen_ids
+                ):
                     results.append({
                         "name": p_def.name,
                         "label": p_def.label,
                         "relationship": f"Shared Scale Factor ({target.sf})",
                         "point_def": p_def,
                     })
-                    seen.add(p_name)
+                    seen_ids.add(id(p_def))
 
         # 4. Phase / vector siblings (e.g. AphA -> AphB, AphC; PhVphA -> PhVphB, PhVphC)
         phase_stems = ["Aph", "PPVph", "PhV", "Px", "PFph", "VArph", "VAph", "Wph"]
         for stem in phase_stems:
             if stem in point_name:
-                for p_name, p_def in self.points.items():
-                    if p_name != point_name and stem in p_name and p_name not in seen:
+                for p_def in all_pts:
+                    if (
+                        p_def.name != point_name
+                        and p_def.group_path == target_grp_path
+                        and stem in p_def.name
+                        and id(p_def) not in seen_ids
+                    ):
                         results.append({
                             "name": p_def.name,
                             "label": p_def.label,
                             "relationship": "Phase Sibling",
                             "point_def": p_def,
                         })
-                        seen.add(p_name)
+                        seen_ids.add(id(p_def))
 
         # 5. Paired energy counters (WhIn <-> WhOut)
         if "WhIn" in point_name:
             out_name = point_name.replace("WhIn", "WhOut")
-            if out_name in self.points and out_name not in seen:
-                p_def = self.points[out_name]
+            p_def = self.get_group_point(group_path, out_name) if group_path else self.points.get(out_name)
+            if p_def and id(p_def) not in seen_ids:
                 results.append({
                     "name": p_def.name,
                     "label": p_def.label,
                     "relationship": "Paired Energy Counter",
                     "point_def": p_def,
                 })
-                seen.add(out_name)
+                seen_ids.add(id(p_def))
         elif "WhOut" in point_name:
             in_name = point_name.replace("WhOut", "WhIn")
-            if in_name in self.points and in_name not in seen:
-                p_def = self.points[in_name]
+            p_def = self.get_group_point(group_path, in_name) if group_path else self.points.get(in_name)
+            if p_def and id(p_def) not in seen_ids:
                 results.append({
                     "name": p_def.name,
                     "label": p_def.label,
                     "relationship": "Paired Energy Counter",
                     "point_def": p_def,
                 })
-                seen.add(in_name)
+                seen_ids.add(id(p_def))
 
         return results
 
@@ -964,26 +1139,29 @@ class ModelCatalog:
     def get_model_by_name(self, name: str) -> Optional[SunspecModelDef]:
         return self._models_by_name.get(name)
 
-    def get_point(self, model_id: int, point_name: str) -> Optional[SunspecPointDef]:
+    def get_point(self, model_id: int, point_name: str, group_path: Optional[str] = None) -> Optional[SunspecPointDef]:
         model = self.get_model(model_id)
         if model:
+            if group_path:
+                return model.get_group_point(group_path, point_name)
             return model.points.get(point_name)
         return None
 
     def get_point_for_field(self, field_key: str) -> Optional[SunspecPointDef]:
-        """Look up point definition by field key (e.g. 'rebus_beacon.REbus_dir.SysMd' or 'inverter.model_64208.SysMd')."""
+        """Look up point definition by field key (supports top-level and subgroup keys)."""
         parts = field_key.split(".")
         if len(parts) >= 3:
-            group_name = parts[1]
-            point_name = parts[2]
-            model = self.get_model_by_name(group_name)
-            if not model and group_name.startswith("model_"):
+            model_key = parts[1]
+            point_name = parts[-1]
+            group_path = ".".join(parts[2:-1]) if len(parts) >= 4 else ""
+            model = self.get_model_by_name(model_key)
+            if not model and model_key.startswith("model_"):
                 try:
-                    model = self.get_model(int(group_name[6:]))
+                    model = self.get_model(int(model_key[6:]))
                 except ValueError:
                     pass
             if model:
-                pt = model.points.get(point_name)
+                pt = model.get_group_point(group_path, point_name) if group_path else model.points.get(point_name)
                 if pt:
                     return pt
         elif len(parts) == 2:
@@ -1061,7 +1239,14 @@ class ModelCatalog:
 
         COMMON_ABBREVIATIONS = get_point_abbreviations()
 
-        def _parse_points_list(points_list: list, start_offset: int, group_prefix: str = "") -> int:
+        def _parse_points_list(
+            points_list: list,
+            start_offset: int,
+            group_name: str = "",
+            group_path: str = "",
+            group_start_offset: int = 0,
+            grp_def: Optional[SunspecGroupDef] = None,
+        ) -> int:
             running_offset = start_offset
             for p_raw in points_list:
                 pt_name = p_raw.get("name")
@@ -1070,7 +1255,7 @@ class ModelCatalog:
 
                 pt_size = p_raw.get("size", 1)
                 # Skip counting the 2-register SunSpec model header (ID and L) in fixed-block offsets
-                is_header_pt = not group_prefix and pt_name in ("ID", "L")
+                is_header_pt = not group_path and pt_name in ("ID", "L")
                 pt_offset = 0 if is_header_pt else running_offset
 
                 symbols: List[SunspecSymbol] = []
@@ -1091,11 +1276,22 @@ class ModelCatalog:
                 raw_label = p_raw.get("label")
                 desc = p_raw.get("desc", "").strip()
                 pt_type = p_raw.get("type", "uint16")
+                pt_units = p_raw.get("units")
+                pt_sf = p_raw.get("sf")
+
+                # Sanitize known upstream model definition quirks:
+                # 1. Model 804 ModCellVMinCell is a cell index, erroneously tagged with CellV_SF / V in SunSpec SMDX
+                if int(model_id) == MODEL_LITHIUM_ION_STRING and pt_name == "ModCellVMinCell":
+                    pt_units = None
+                    pt_sf = None
+                # 2. Vendor models (e.g. 64252 DCB105_module) omit '%' on scaled SoC/SoH points
+                if pt_units is None and pt_type != "sunssf" and pt_name.upper() in ("SOC", "SOH", "MODSOC", "MODSOH"):
+                    pt_units = "%"
 
                 # Infer human-friendly label if missing, raw unit, or unhelpful
                 RAW_UNIT_LABELS = {
                     "Watts": "Active Power",
-                    "Amps": "String Current" if (group_prefix == "string_combiner" or pt_name.startswith("DC")) else "AC Output Current",
+                    "Amps": "String Current" if (group_name == "string_combiner" or pt_name.startswith("DC")) else "AC Output Current",
                     "Volts": "AC Voltage",
                     "Amps PhaseA": "Phase A Current",
                     "Amps PhaseB": "Phase B Current",
@@ -1123,6 +1319,7 @@ class ModelCatalog:
                         label = pt_name
                 label = label.strip()
 
+                within_off = (pt_offset - group_start_offset) if group_path else None
                 pt_def = SunspecPointDef(
                     name=pt_name,
                     label=label,
@@ -1130,19 +1327,26 @@ class ModelCatalog:
                     type=pt_type,
                     size=pt_size,
                     offset=pt_offset,
-                    units=p_raw.get("units"),
-                    sf=p_raw.get("sf"),
+                    units=pt_units,
+                    sf=pt_sf,
                     access=p_raw.get("access", "R"),
                     mandatory=p_raw.get("mandatory") == "M",
                     static=p_raw.get("static") == "S",
                     symbols=symbols,
                     symbols_by_value=symbols_val,
                     symbols_by_name=symbols_name,
+                    group_name=group_name or None,
+                    group_path=group_path or None,
+                    within_group_offset=within_off,
                 )
-                if group_prefix:
-                    model_def.points[f"{group_prefix}.{pt_name}"] = pt_def
+                if group_path:
+                    model_def.points[f"{group_path}.{pt_name}"] = pt_def
+                    if group_name and group_name != group_path:
+                        model_def.points.setdefault(f"{group_name}.{pt_name}", pt_def)
                     if pt_name not in model_def.points:
                         model_def.points[pt_name] = pt_def
+                    if grp_def is not None:
+                        grp_def.points[pt_name] = pt_def
                 else:
                     model_def.points[pt_name] = pt_def
 
@@ -1150,16 +1354,55 @@ class ModelCatalog:
                     running_offset += pt_size
             return running_offset
 
+        def _parse_subgroups(groups_list: list, start_offset: int, parent_path: str = "") -> int:
+            cur = start_offset
+            for sub_grp in groups_list:
+                sub_name = sub_grp.get("name", "subgroup")
+                cat_path = f"{parent_path}.{sub_name}" if parent_path else sub_name
+                sub_label = (sub_grp.get("label") or sub_name).strip()
+                sub_desc = (sub_grp.get("desc") or "").strip()
+                grp_count = sub_grp.get("count")
+                is_rep = (grp_count is not None) or (sub_grp.get("type") == "sync")
+
+                grp_def = SunspecGroupDef(
+                    name=sub_name,
+                    path=cat_path,
+                    label=sub_label,
+                    desc=sub_desc,
+                    is_repeating=bool(is_rep),
+                    base_offset=cur,
+                )
+                grp_start = cur
+                cur = _parse_points_list(
+                    sub_grp.get("points", []),
+                    cur,
+                    group_name=sub_name,
+                    group_path=cat_path,
+                    group_start_offset=grp_start,
+                    grp_def=grp_def,
+                )
+                if sub_grp.get("groups"):
+                    cur = _parse_subgroups(sub_grp.get("groups", []), cur, parent_path=cat_path)
+                grp_def.size = max(0, cur - grp_start)
+                model_def.groups[cat_path] = grp_def
+            return cur
+
         cur_offset = _parse_points_list(group.get("points", []), 0)
-        for sub_grp in group.get("groups", []):
-            sub_name = sub_grp.get("name", "subgroup")
-            cur_offset = _parse_points_list(sub_grp.get("points", []), cur_offset, group_prefix=sub_name)
+        _parse_subgroups(group.get("groups", []), cur_offset)
 
         # Second pass: link scale factor points to the exact points they scale
-        for pt_name, pt_def in model_def.points.items():
+        seen_pts: List[SunspecPointDef] = []
+        seen_ids: set[int] = set()
+        for p in model_def.points.values():
+            if id(p) not in seen_ids:
+                seen_ids.add(id(p))
+                seen_pts.append(p)
+
+        for pt_def in seen_pts:
+            pt_name = pt_def.name
             if pt_def.is_scale_factor:
                 scaled_targets = [
-                    p.label for p in model_def.points.values()
+                    p.label for p in seen_pts
                     if p.sf == pt_name and p.label and not p.label.startswith("Scale Factor")
                 ]
                 if scaled_targets:
