@@ -1890,6 +1890,9 @@ class StateStore:
 
     def ensure_field_definition(self, device_sn: str, field_key: str) -> Optional[StateField]:
         """Ensure a StateField metadata definition exists for a device (resolving from catalog if not yet polled)."""
+        if not field_key or "*" in field_key:
+            return None
+
         dev = self.devices.get(device_sn)
         if not dev:
             return None

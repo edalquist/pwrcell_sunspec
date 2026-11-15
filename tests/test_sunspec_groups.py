@@ -1,28 +1,48 @@
 """Unit tests for generic SunSpec sub-group (groups) support."""
 
+import json
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 from unittest.mock import MagicMock
 
+from pwrcell import mapping as mapping_module
 from pwrcell.catalog import (
     format_group_field_label,
     format_group_label,
     get_catalog,
+    group_wildcard_matches_field_key,
+    is_group_wildcard_key,
     should_ingest_model_groups,
     strip_group_indices,
+    wildcard_group_path,
+    wildcardize_group_field_key,
 )
+from pwrcell.client import PwrcellClient
 from pwrcell.config import AppConfig
 from pwrcell.controls import ControlDispatcher
 from pwrcell.fixtures import MockFixtureLoader
+from pwrcell.grouping import clear_custom_groupings_cache
 from pwrcell.ha import (
     _resolve_standalone_or_orphan_slug,
+    clear_ha_config_cache,
+    ensure_selected_field_definitions,
     generate_discovery_payload,
     get_effective_ha_category,
+    is_field_selected,
+    load_ha_config,
+    qualify_legacy_ha_config,
+    save_ha_config,
 )
 from pwrcell.modbus import SerializedModbusClient
-from pwrcell.optimizer import group_device_fields
+from pwrcell.optimizer import group_device_fields, resolve_minimal_models_for_paths
 from pwrcell.poller import DEFAULT_SLOW_PATHS, extract_model_groups
 from pwrcell.state import FieldSource, StateStore
+from pwrcell.ui.server import create_app
 
 
 class TestCatalogSunspecGroups(unittest.TestCase):
@@ -405,6 +425,445 @@ class TestOptimizerAndHomeAssistantGroups(unittest.TestCase):
             ),
             m1_soc.key,
         )
+
+
+class TestCatalogWildcardHelpers(unittest.TestCase):
+    def test_wildcard_generation_and_matching(self):
+        # Single-level repeating groups (M804 & M64252)
+        self.assertEqual(
+            wildcard_group_path("lithium_ion_string_module.1"),
+            "lithium_ion_string_module.*",
+        )
+        self.assertEqual(wildcard_group_path("Crv.1.Pt.2"), "Crv.*.Pt.*")
+        self.assertEqual(wildcard_group_path("live"), "live")
+
+        wk_804 = wildcardize_group_field_key("battery.lithium_ion_string.lithium_ion_string_module.1.ModSoC")
+        self.assertEqual(wk_804, "battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC")
+        self.assertTrue(is_group_wildcard_key(wk_804))
+        self.assertTrue(is_group_wildcard_key(f"000100082128:{wk_804}"))
+
+        wk_dcb = wildcardize_group_field_key("000100082128:battery.DCB105_warranty.DCB105_module.6.SOC")
+        self.assertEqual(wk_dcb, "000100082128:battery.DCB105_warranty.DCB105_module.*.SOC")
+
+        # Nested group (M705 Crv.1.Pt.2) full and partial wildcards
+        self.assertEqual(
+            wildcardize_group_field_key("inverter.DERVoltVar.Crv.1.Pt.2.V"),
+            "inverter.DERVoltVar.Crv.*.Pt.*.V",
+        )
+        self.assertTrue(
+            group_wildcard_matches_field_key(
+                "inverter.DERVoltVar.Crv.*.Pt.*.V",
+                "inverter.DERVoltVar.Crv.3.Pt.12.V",
+            )
+        )
+        self.assertTrue(
+            group_wildcard_matches_field_key(
+                "inverter.DERVoltVar.Crv.1.Pt.*.V",
+                "inverter.DERVoltVar.Crv.1.Pt.4.V",
+            )
+        )
+        self.assertFalse(
+            group_wildcard_matches_field_key(
+                "inverter.DERVoltVar.Crv.1.Pt.*.V",
+                "inverter.DERVoltVar.Crv.2.Pt.4.V",
+            )
+        )
+
+        # Non-group subdomains never produce wildcards or match
+        for non_group in [
+            "inverter.live.load_power_w",
+            "inverter.compound.grid_power",
+            "inverter.concept.grid_power",
+            "inverter.unified.grid_power",
+            "battery.battery.SoCMin",
+            "battery.lithium_ion_string.SoC",
+        ]:
+            self.assertIsNone(wildcardize_group_field_key(non_group))
+            self.assertFalse(is_group_wildcard_key(non_group))
+
+        # Serial prefix mismatch must not match
+        self.assertTrue(
+            group_wildcard_matches_field_key(
+                "SN_A:battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC",
+                "SN_A:battery.lithium_ion_string.lithium_ion_string_module.3.ModSoC",
+            )
+        )
+        self.assertFalse(
+            group_wildcard_matches_field_key(
+                "SN_A:battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC",
+                "SN_B:battery.lithium_ion_string.lithium_ion_string_module.3.ModSoC",
+            )
+        )
+
+
+class TestHaWildcardAndExplicitRules(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmp_dir.name)
+        self.ha_config_path = tmp / "ha_config.yaml"
+        self.groupings_path = tmp / "groupings.yaml"
+        self.custom_groupings_path = tmp / "custom_groupings.yaml"
+        pkg_groupings = Path(mapping_module.__file__).resolve().parent / "data" / "groupings.yaml"
+        shutil.copy(pkg_groupings, self.groupings_path)
+
+        self._patches = [
+            mock.patch("pwrcell.ha.get_default_ha_config_path", return_value=self.ha_config_path),
+            mock.patch("pwrcell.bridge.get_default_ha_config_path", return_value=self.ha_config_path),
+            mock.patch("pwrcell.grouping.get_default_grouping_config_path", return_value=self.custom_groupings_path),
+            mock.patch("pwrcell.mapping._resolve_mappings_path", return_value=self.groupings_path),
+        ]
+        for p in self._patches:
+            p.start()
+
+        clear_ha_config_cache()
+        clear_custom_groupings_cache()
+        mapping_module.MappingRegistry._instance = None
+
+        self.client = PwrcellClient(is_mock=True)
+        self.client.start()
+        self.app = create_app(self.client)
+        self.test_client = self.app.test_client()
+        self.bat = self.client.state.get_battery()
+        self.bat_sn = self.bat.serial_number.strip().upper()
+
+    def tearDown(self):
+        self.client.stop()
+        for p in reversed(self._patches):
+            p.stop()
+        clear_ha_config_cache()
+        clear_custom_groupings_cache()
+        mapping_module.MappingRegistry._instance = None
+        self._tmp_dir.cleanup()
+
+    def test_wildcard_and_explicit_ha_config_save_and_preview_roundtrip(self):
+        wk_modsoc = f"{self.bat_sn}:battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC"
+
+        # 1. Save wildcard rule -> persists as 1 wildcard rule and previews 6 entities
+        save_resp = self.test_client.post(
+            "/api/ha/config",
+            json={"selected_fields": [wk_modsoc], "device_serial": self.bat_sn, "merge": False},
+        )
+        self.assertEqual(save_resp.status_code, 200)
+        cfg_data = self.test_client.get("/api/ha/config").get_json()
+        self.assertEqual(cfg_data["selected_fields"], [wk_modsoc])
+
+        dev_data = self.test_client.get(f"/api/devices/{self.bat_sn}").get_json()
+        mod_soc_raw = [f for f in dev_data["fields"].values() if f.get("group_name") == "lithium_ion_string_module" and f.get("name") == "ModSoC"]
+        self.assertEqual(len(mod_soc_raw), 6)
+        self.assertTrue(all(is_field_selected(f["key"], self.bat_sn, [wk_modsoc]) for f in mod_soc_raw))
+
+        unified_data = self.test_client.get(f"/api/devices/{self.bat_sn}/unified_fields").get_json()["unified_fields"]
+        mod_soc_uni = [f for f in unified_data if f.get("group_name") == "lithium_ion_string_module" and f.get("name") == "ModSoC"]
+        self.assertEqual(len(mod_soc_uni), 6)
+        self.assertTrue(all(f["is_selected"] for f in mod_soc_uni))
+
+        preview = self.test_client.get("/api/ha/preview").get_json()
+        mod_preview = [item for item in preview if item["device_serial"].upper() == self.bat_sn and ".ModSoC" in item["field_key"]]
+        self.assertEqual(len(mod_preview), 6)
+        self.assertEqual(len({item["payload"]["unique_id"] for item in mod_preview}), 6)
+
+        # 2. Explicit partial selection (modules 1, 3, 5) persists explicit keys and previews 3 entities
+        explicit_keys = [
+            f"{self.bat_sn}:battery.lithium_ion_string.lithium_ion_string_module.{idx}.ModSoC"
+            for idx in (1, 3, 5)
+        ]
+        self.test_client.post(
+            "/api/ha/config",
+            json={"selected_fields": explicit_keys, "device_serial": self.bat_sn, "merge": False},
+        )
+        cfg_explicit = self.test_client.get("/api/ha/config").get_json()
+        self.assertEqual(cfg_explicit["selected_fields"], explicit_keys)
+
+        preview_explicit = self.test_client.get("/api/ha/preview").get_json()
+        self.assertEqual(
+            [item["field_key"] for item in preview_explicit if ".ModSoC" in item["field_key"]],
+            [
+                "battery.lithium_ion_string.lithium_ion_string_module.1.ModSoC",
+                "battery.lithium_ion_string.lithium_ion_string_module.3.ModSoC",
+                "battery.lithium_ion_string.lithium_ion_string_module.5.ModSoC",
+            ],
+        )
+
+        # 3. qualify_legacy_ha_config collapses redundant concrete keys when wildcard is also present
+        collapsed = qualify_legacy_ha_config(
+            [wk_modsoc] + explicit_keys,
+            self.client.state,
+        )
+        self.assertEqual(collapsed, [wk_modsoc])
+
+    def test_cold_start_wildcard_safety_creates_no_literal_star_field(self):
+        cold_store = StateStore()
+        cold_store.register_device(self.bat_sn, slave_id=9, device_type="battery", model_name="PWRcell Battery")
+        bat_dev = cold_store.get_device(self.bat_sn)
+        wk = "battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC"
+        self.assertIsNone(cold_store.ensure_field_definition(self.bat_sn, wk))
+        ensure_selected_field_definitions(cold_store, bat_dev, [f"{self.bat_sn}:{wk}"])
+        self.assertFalse(any("*" in k for k in bat_dev.fields.keys()))
+
+        cold_client = PwrcellClient(is_mock=False)
+        cold_client.state = cold_store
+        cold_app = create_app(cold_client)
+        with self.assertLogs("pwrcell.ui.routes.ha", level="DEBUG") as cm:
+            resp = cold_app.test_client().post(
+                "/api/ha/preview",
+                json={"selected_fields": [f"{self.bat_sn}:{wk}"]},
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json(), [])
+        self.assertTrue(any("group_wildcard_awaiting_poll" in line for line in cm.output))
+
+    def test_wildcard_and_single_instance_category_overrides(self):
+        wk_raw = "battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC"
+        m2_raw = "battery.lithium_ion_string.lithium_ion_string_module.2.ModSoC"
+
+        # 1. Wildcard override sets all 6 modules to primary (entity_category=None)
+        res = self.test_client.post(
+            "/api/ha/category_override",
+            json={"device_serial": self.bat_sn, "field_key": wk_raw, "category": "primary"},
+        )
+        self.assertEqual(res.status_code, 200)
+        overrides = res.get_json()["category_overrides"]
+        for i in range(1, 7):
+            f = self.bat.fields[f"battery.lithium_ion_string.lithium_ion_string_module.{i}.ModSoC"]
+            self.assertIsNone(get_effective_ha_category(f, self.bat, overrides))
+
+        # 2. Exact instance override on module 2 overrides the wildcard without affecting 1,3,4,5,6
+        res2 = self.test_client.post(
+            "/api/ha/category_override",
+            json={"device_serial": self.bat_sn, "field_key": m2_raw, "category": "diagnostic"},
+        )
+        self.assertEqual(res2.status_code, 200)
+        overrides2 = res2.get_json()["category_overrides"]
+        self.assertEqual(
+            get_effective_ha_category(self.bat.fields[m2_raw], self.bat, overrides2),
+            "diagnostic",
+        )
+        for i in (1, 3, 4, 5, 6):
+            f = self.bat.fields[f"battery.lithium_ion_string.lithium_ion_string_module.{i}.ModSoC"]
+            self.assertIsNone(get_effective_ha_category(f, self.bat, overrides2))
+
+        # 3. Updating wildcard override clears stale concrete instance override
+        res3 = self.test_client.post(
+            "/api/ha/category_override",
+            json={"device_serial": self.bat_sn, "field_key": wk_raw, "category": "reset"},
+        )
+        self.assertEqual(res3.status_code, 200)
+        overrides3 = res3.get_json()["category_overrides"]
+        self.assertNotIn(f"{self.bat_sn}:{m2_raw}", overrides3)
+        self.assertNotIn(f"{self.bat_sn}:{wk_raw}", overrides3)
+        self.assertEqual(
+            get_effective_ha_category(self.bat.fields[m2_raw], self.bat, overrides3),
+            "diagnostic",
+        )
+
+
+class TestOptimizerWildcardResolution(unittest.TestCase):
+    def setUp(self):
+        loader = MockFixtureLoader(include_bulk_table_groups=False)
+        self.store = StateStore(catalog=loader.catalog)
+        bat_mock = loader.devices_by_slave_id[9]
+        self.store.register_device(
+            serial_number=bat_mock.serial_number,
+            slave_id=bat_mock.slave_id,
+            device_type=bat_mock.device_type,
+            model_name=bat_mock.model_name,
+            manufacturer=bat_mock.manufacturer,
+            version=bat_mock.version,
+            supported_models=bat_mock.supported_models,
+        )
+        for model_id, models_list in bat_mock.models.items():
+            for idx, model_inst in enumerate(models_list):
+                self.store.update_from_modbus_points(
+                    bat_mock.serial_number,
+                    model_id,
+                    raw_values={p.name: p.raw_value for p in model_inst.points.values()},
+                    computed_values={p.name: p.scaled_value for p in model_inst.points.values()},
+                    instance_index=idx,
+                    groups_data=model_inst.groups,
+                    include_bulk_tables=False,
+                )
+        self.bat = self.store.get_device(bat_mock.serial_number)
+        self.bat_sn = self.bat.serial_number.strip().upper()
+
+    def test_optimizer_wildcard_marks_only_matching_group_and_model(self):
+        wk_dcb_soc = f"{self.bat_sn}:battery.DCB105_warranty.DCB105_module.*.SOC"
+        groups = group_device_fields(
+            self.bat,
+            custom_groupings={},
+            ha_selected_keys={wk_dcb_soc},
+            category_overrides={},
+        )
+        dcb_socs = [g for g in groups if g.group_name == "DCB105_module" and g.name == "SOC"]
+        mod_socs = [g for g in groups if g.group_name == "lithium_ion_string_module" and g.name == "ModSoC"]
+        self.assertEqual(len(dcb_socs), 6)
+        self.assertTrue(all(g.is_selected for g in dcb_socs))
+        self.assertTrue(all(not g.is_selected for g in mod_socs))
+
+        resolved = resolve_minimal_models_for_paths([wk_dcb_soc], state_store=self.store)
+        self.assertEqual(resolved.get("battery"), [64252])
+
+
+class TestFrontendRollupAndWildcardSelection(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmp_dir.name)
+        self.ha_config_path = tmp / "ha_config.yaml"
+        self.groupings_path = tmp / "groupings.yaml"
+        self.custom_groupings_path = tmp / "custom_groupings.yaml"
+        pkg_groupings = Path(mapping_module.__file__).resolve().parent / "data" / "groupings.yaml"
+        shutil.copy(pkg_groupings, self.groupings_path)
+
+        self._patches = [
+            mock.patch("pwrcell.ha.get_default_ha_config_path", return_value=self.ha_config_path),
+            mock.patch("pwrcell.bridge.get_default_ha_config_path", return_value=self.ha_config_path),
+            mock.patch("pwrcell.grouping.get_default_grouping_config_path", return_value=self.custom_groupings_path),
+            mock.patch("pwrcell.mapping._resolve_mappings_path", return_value=self.groupings_path),
+        ]
+        for p in self._patches:
+            p.start()
+
+        clear_ha_config_cache()
+        clear_custom_groupings_cache()
+        mapping_module.MappingRegistry._instance = None
+
+        self.client = PwrcellClient(is_mock=True)
+        self.client.start()
+        self.app = create_app(self.client)
+        self.test_client = self.app.test_client()
+
+    def tearDown(self):
+        self.client.stop()
+        for p in reversed(self._patches):
+            p.stop()
+        clear_ha_config_cache()
+        clear_custom_groupings_cache()
+        mapping_module.MappingRegistry._instance = None
+        self._tmp_dir.cleanup()
+
+    def test_frontend_rollup_builder_and_wildcard_selection_via_node(self):
+        if shutil.which("node") is None:
+            self.skipTest("node runtime unavailable")
+
+        bat_sn = self.client.state.get_battery().serial_number.strip().upper()
+        bat_unified = self.test_client.get(f"/api/devices/{bat_sn}/unified_fields").get_json()["unified_fields"]
+        bat_raw = list(self.test_client.get(f"/api/devices/{bat_sn}").get_json()["fields"].values())
+
+        node_script = r"""
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
+
+const appJs = fs.readFileSync('pwrcell/ui/static/app.js', 'utf8');
+const startIdx = appJs.indexOf('function getFieldDeviceSn(f)');
+const endIdx = appJs.indexOf('// Value extraction helpers for multi-column sorting');
+assert(startIdx !== -1 && endIdx !== -1 && endIdx > startIdx, 'Could not locate helper slice in app.js');
+const helperCode = appJs.slice(startIdx, endIdx);
+
+const data = JSON.parse(fs.readFileSync(0, 'utf8'));
+
+const sandbox = {
+  state: {
+    activeDevice: { serial_number: data.batSn },
+    activeFields: data.batRaw,
+    unifiedFields: data.batUnified,
+    selectedHaKeys: new Set(),
+    modifiedDeviceSerials: new Set(),
+    haCategoryOverrides: {},
+    preferWildcardForGroups: true,
+    searchQuery: '',
+  },
+  updateHaCounter: () => {},
+  updateFilterCounts: () => {},
+  escapeHtml: (s) => String(s),
+  renderFieldTable: () => {},
+  apiPath: (p) => p,
+  showToast: () => {},
+  fetchHaConfig: async () => {},
+  fetch: async () => ({ ok: true, json: async () => ({}) }),
+  console: { debug: () => {}, error: () => {}, warn: () => {}, log: () => {} },
+};
+
+vm.createContext(sandbox);
+vm.runInContext(helperCode, sandbox);
+
+// 1. Subgroup items never return a compound key
+const m1SocUni = data.batUnified.find(f => f.group_name === 'lithium_ion_string_module' && f.name === 'ModSoC' && f.group_index === 1);
+assert(m1SocUni, 'Expected Module 1 ModSoC in battery unified_fields');
+assert.strictEqual(sandbox.getCompoundKeyForItem(m1SocUni), null);
+
+// 2. Rollup builder collapses 6-module points in unified and raw modes, leaving flat fields intact
+const uniDisplay = sandbox.buildSubgroupRollups(data.batUnified, data.batUnified, true);
+const modSocRollup = uniDisplay.find(x => x.isRollup && x.name === 'ModSoC' && x.group_name === 'lithium_ion_string_module');
+assert(modSocRollup, 'Expected rolled-up ModSoC row');
+assert.strictEqual(modSocRollup.instances.length, 6);
+assert.strictEqual(modSocRollup.wildcardKey, 'battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC');
+assert.strictEqual(uniDisplay.filter(x => x.isRollup && x.name === 'ModSoC').length, 1);
+
+const flatSocRow = uniDisplay.find(x => !x.isRollup && (x.id === 'battery.compound.battery_soc' || x.active_source_key === 'battery.live.state_of_charge'));
+assert(flatSocRow, 'Expected flat top-level SoC field to remain unrolled');
+
+// Searching for Module 3 unrolls matched subset to concrete rows
+sandbox.state.searchQuery = 'Module 3';
+const mod3Matches = data.batUnified.filter(f => (f.label || '').includes('Module 3'));
+const searchedDisplay = sandbox.buildSubgroupRollups(mod3Matches, data.batUnified, true);
+const concreteMod3Soc = searchedDisplay.find(x => !x.isRollup && x.group_index === 3 && x.name === 'ModSoC');
+assert(concreteMod3Soc, 'Expected Module 3 ModSoC to render as concrete row during targeted search');
+sandbox.state.searchQuery = '';
+
+// 3. Selecting rollup defaults to single wildcard key
+sandbox.toggleRollupSelection(modSocRollup, true);
+const expectedWk = `${data.batSn}:battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC`;
+assert.strictEqual(sandbox.state.selectedHaKeys.size, 1);
+assert(sandbox.state.selectedHaKeys.has(expectedWk), 'Rollup select-all must default to wildcard key');
+let sel = sandbox.getRollupSelectionState(modSocRollup);
+assert.strictEqual(sel.selectedCount, 6);
+assert.strictEqual(sel.isAllSelected, true);
+assert.strictEqual(sel.isIndeterminate, false);
+assert.strictEqual(sel.mode, 'wildcard');
+
+// 4. Switching rule mode toggles cleanly between Wildcard and 6 Explicit keys
+sandbox.setRollupRuleMode(modSocRollup, 'explicit');
+assert.strictEqual(sandbox.state.selectedHaKeys.size, 6);
+assert(!sandbox.state.selectedHaKeys.has(expectedWk));
+sel = sandbox.getRollupSelectionState(modSocRollup);
+assert.strictEqual(sel.mode, 'explicit');
+assert.strictEqual(sel.isAllSelected, true);
+
+sandbox.setRollupRuleMode(modSocRollup, 'wildcard');
+assert.strictEqual(sandbox.state.selectedHaKeys.size, 1);
+assert(sandbox.state.selectedHaKeys.has(expectedWk));
+
+// 5. Unchecking single instance (Module 2) splits wildcard -> 5 explicit keys
+sandbox.toggleHaSelection(modSocRollup.instances[1], false);
+sel = sandbox.getRollupSelectionState(modSocRollup);
+assert.strictEqual(sel.selectedCount, 5);
+assert.strictEqual(sel.isIndeterminate, true);
+assert.strictEqual(sel.mode, 'explicit');
+assert.strictEqual(sandbox.state.selectedHaKeys.size, 5);
+assert(!sandbox.state.selectedHaKeys.has(`${data.batSn}:battery.lithium_ion_string.lithium_ion_string_module.2.ModSoC`));
+
+// 6. Re-checking Module 2 auto-collapses 6 explicit keys back to single wildcard
+sandbox.toggleHaSelection(modSocRollup.instances[1], true);
+sel = sandbox.getRollupSelectionState(modSocRollup);
+assert.strictEqual(sel.selectedCount, 6);
+assert.strictEqual(sel.isAllSelected, true);
+assert.strictEqual(sel.mode, 'wildcard');
+assert.strictEqual(sandbox.state.selectedHaKeys.size, 1);
+assert(sandbox.state.selectedHaKeys.has(expectedWk));
+
+// 7. Raw mode rollup builds cleanly too
+const rawDisplay = sandbox.buildSubgroupRollups(data.batRaw, data.batRaw, false);
+const rawRollup = rawDisplay.find(x => x.isRollup && x.name === 'ModSoC' && x.group_name === 'lithium_ion_string_module');
+assert(rawRollup && rawRollup.instances.length === 6, 'Expected raw-mode rollup for ModSoC');
+"""
+        proc = subprocess.run(
+            ["node", "-e", node_script],
+            input=json.dumps({"batSn": bat_sn, "batUnified": bat_unified, "batRaw": bat_raw}),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, f"Node VM check failed:\nSTDOUT: {proc.stdout}\nSTDERR: {proc.stderr}")
 
 
 if __name__ == "__main__":

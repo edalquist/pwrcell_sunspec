@@ -39,6 +39,12 @@ const state = {
   groupingModalData: null,
   boundsModalField: null,
   expandedGroups: new Set(),
+  rollupSubgroups: true,
+  preferWildcardForGroups: true,
+  expandedRollups: new Set(),
+  activeRollupsById: new Map(),
+  rollupIdByMemberKey: new Map(),
+  deviceFieldKeysBySn: {},
 };
 
 // DOM Elements
@@ -71,6 +77,8 @@ const el = {
   thModelContent: document.getElementById('thModelContent'),
   filterPills: document.getElementById('filterPills'),
   hideScaleFactors: document.getElementById('hideScaleFactors'),
+  rollupSubgroups: document.getElementById('rollupSubgroups'),
+  optRollupSubgroups: document.getElementById('optRollupSubgroups'),
   hideCombinedRaw: document.getElementById('hideCombinedRaw'),
   multiSortToggle: document.getElementById('multiSortToggle'),
   sortBar: document.getElementById('sortBar'),
@@ -521,6 +529,10 @@ async function selectDevice(serialNumber) {
     // Compound fields first, then raw fields
     state.activeFields = [...compoundFields, ...rawFields];
     state.unifiedFields = data.unified_fields || [];
+    const cleanActiveSn = (dev.serial_number || '').trim().toUpperCase();
+    if (cleanActiveSn) {
+      state.deviceFieldKeysBySn[cleanActiveSn] = rawFields.map(f => f.key).filter(Boolean);
+    }
     // Populate state.preferredSources from backend if not already set locally
     state.unifiedFields.forEach(g => {
       if (g.preferred_source_key && !state.preferredSources[g.id]) {
@@ -598,8 +610,105 @@ function getFieldDeviceSn(f) {
   return (f?.device_sn || state.activeDevice?.serial_number || '').trim().toUpperCase();
 }
 
+const NON_GROUP_SUBDOMAINS = new Set(['live', 'compound', 'concept', 'standalone']);
+
+function stripGroupIndicesJs(groupPath) {
+  if (!groupPath) return '';
+  return String(groupPath)
+    .split('.')
+    .filter(s => s && !/^\d+$/.test(s))
+    .join('.');
+}
+
+function wildcardizeGroupFieldKey(fieldKey) {
+  if (!fieldKey || typeof fieldKey !== 'string') return null;
+  const raw = fieldKey.trim();
+  if (!raw) return null;
+
+  let snPrefix = '';
+  let fPart = raw;
+  const colonIdx = raw.indexOf(':');
+  if (colonIdx !== -1) {
+    snPrefix = `${raw.slice(0, colonIdx).trim()}:`;
+    fPart = raw.slice(colonIdx + 1).trim();
+  }
+
+  const parts = fPart.split('.');
+  if (parts.length < 4 || NON_GROUP_SUBDOMAINS.has(parts[1])) {
+    return null;
+  }
+
+  let hasInstance = false;
+  const newMid = parts.slice(2, -1).map(s => {
+    if (/^\d+$/.test(s) || s === '*') {
+      hasInstance = true;
+      return '*';
+    }
+    return s;
+  });
+
+  if (!hasInstance) return null;
+  return `${snPrefix}${parts[0]}.${parts[1]}.${newMid.join('.')}.${parts[parts.length - 1]}`;
+}
+
+function isGroupWildcardKey(fieldKey) {
+  if (!fieldKey || typeof fieldKey !== 'string') return false;
+  const raw = fieldKey.trim();
+  const colonIdx = raw.indexOf(':');
+  const fPart = colonIdx !== -1 ? raw.slice(colonIdx + 1).trim() : raw;
+  const parts = fPart.split('.');
+  if (parts.length < 4 || NON_GROUP_SUBDOMAINS.has(parts[1])) {
+    return false;
+  }
+  return parts.slice(2, -1).includes('*');
+}
+
+function groupWildcardMatchesFieldKey(patternKey, concreteKey) {
+  if (!patternKey || !concreteKey) return false;
+  const pRaw = String(patternKey).trim();
+  const cRaw = String(concreteKey).trim();
+
+  let pSn = null;
+  let pField = pRaw;
+  const pColon = pRaw.indexOf(':');
+  if (pColon !== -1) {
+    pSn = pRaw.slice(0, pColon).trim().toUpperCase();
+    pField = pRaw.slice(pColon + 1).trim();
+  }
+
+  let cSn = null;
+  let cField = cRaw;
+  const cColon = cRaw.indexOf(':');
+  if (cColon !== -1) {
+    cSn = cRaw.slice(0, cColon).trim().toUpperCase();
+    cField = cRaw.slice(cColon + 1).trim();
+  }
+
+  if (pSn && cSn && pSn !== cSn) return false;
+
+  const pParts = pField.split('.');
+  const cParts = cField.split('.');
+  if (pParts.length !== cParts.length || pParts.length < 4) return false;
+  if (pParts[0] !== cParts[0] || pParts[1] !== cParts[1] || pParts[pParts.length - 1] !== cParts[cParts.length - 1]) {
+    return false;
+  }
+  if (!pParts.slice(2, -1).includes('*')) return false;
+
+  for (let i = 2; i < pParts.length - 1; i++) {
+    const ps = pParts[i];
+    const cs = cParts[i];
+    if (ps === cs) continue;
+    if (ps === '*' && (/^\d+$/.test(cs) || cs === '*')) continue;
+    return false;
+  }
+  return true;
+}
+
 function getCompoundKeyForItem(f) {
   if (!f) return null;
+  if (f.group_path) {
+    return null;
+  }
   const fid = String(f.id || '');
   if (fid.includes('.standalone.')) {
     return null;
@@ -619,7 +728,34 @@ function getCompoundKeyForItem(f) {
   return null;
 }
 
-// Check if a field is selected for Home Assistant (supports device-scoped and legacy global keys)
+function getCanonicalItemFieldKey(f) {
+  if (!f) return '';
+  return getCompoundKeyForItem(f) || f.active_source_key || f.key || f.id || '';
+}
+
+function getSiblingGroupFieldKeys(f, sn) {
+  const primaryKey = getCanonicalItemFieldKey(f);
+  const wk = wildcardizeGroupFieldKey(primaryKey);
+  if (!wk) return [];
+
+  const targetSn = (sn || getFieldDeviceSn(f) || '').trim().toUpperCase();
+  const candidates = [...(state.activeFields || []), ...(state.unifiedFields || [])];
+  const siblingKeys = new Set();
+
+  for (const item of candidates) {
+    if (!item || !item.group_path) continue;
+    const itemSn = getFieldDeviceSn(item);
+    if (targetSn && itemSn && itemSn !== targetSn) continue;
+    const itemKey = getCanonicalItemFieldKey(item);
+    if (!itemKey || isGroupWildcardKey(itemKey)) continue;
+    if (groupWildcardMatchesFieldKey(wk, itemKey)) {
+      siblingKeys.add(itemKey);
+    }
+  }
+  return Array.from(siblingKeys).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+}
+
+// Check if a field is selected for Home Assistant (supports device-scoped, legacy global, and group '*' wildcards)
 function isFieldSelected(f) {
   if (!f) return false;
   const sn = getFieldDeviceSn(f);
@@ -628,7 +764,13 @@ function isFieldSelected(f) {
   const checkKey = (k) => {
     if (!k) return false;
     if (sn && state.selectedHaKeys.has(`${sn}:${k}`)) return true;
-    return state.selectedHaKeys.has(k);
+    if (state.selectedHaKeys.has(k)) return true;
+    const wk = wildcardizeGroupFieldKey(k);
+    if (wk) {
+      if (sn && state.selectedHaKeys.has(`${sn}:${wk}`)) return true;
+      if (state.selectedHaKeys.has(wk)) return true;
+    }
+    return false;
   };
 
   if (checkKey(f.key)) return true;
@@ -646,6 +788,17 @@ function isFieldSelected(f) {
       if (checkKey(mk)) return true;
     }
   }
+
+  // Fallback for partial nested wildcards (e.g. 'Crv.1.Pt.*.V')
+  if (f.group_path) {
+    const primaryKey = getCanonicalItemFieldKey(f);
+    const qualifiedPrimary = sn && primaryKey ? `${sn}:${primaryKey}` : primaryKey;
+    for (const sk of state.selectedHaKeys) {
+      if (typeof sk === 'string' && sk.includes('.*.') && groupWildcardMatchesFieldKey(sk, qualifiedPrimary)) {
+        return true;
+      }
+    }
+  }
   return false;
 }
 
@@ -655,20 +808,48 @@ function isFieldDiagnostic(f) {
   const sn = getFieldDeviceSn(f);
   const overrides = state.haCategoryOverrides || {};
 
-  const checkOverride = (k) => {
+  const checkExact = (k) => {
     if (!k) return null;
     if (sn && overrides[`${sn}:${k}`]) return String(overrides[`${sn}:${k}`]).toLowerCase();
     if (overrides[k]) return String(overrides[k]).toLowerCase();
     return null;
   };
 
-  const o = checkOverride(f.active_source_key) || checkOverride(f.key) || checkOverride(f.id) || checkOverride(f.concept_key) || checkOverride(f.mqtt_key);
-  if (o) {
-    return o === 'diagnostic';
+  const checkWildcard = (k) => {
+    if (!k) return null;
+    const wk = wildcardizeGroupFieldKey(k);
+    if (wk) {
+      if (sn && overrides[`${sn}:${wk}`]) return String(overrides[`${sn}:${wk}`]).toLowerCase();
+      if (overrides[wk]) return String(overrides[wk]).toLowerCase();
+    }
+    return null;
+  };
+
+  const rawKeys = [
+    f.active_source_key,
+    f.key,
+    f.id,
+    f.concept_key,
+    f.mqtt_key,
+    ...((f.sources || []).flatMap(s => [s.field_key, s.key])),
+  ].filter(Boolean);
+
+  for (const rk of rawKeys) {
+    const exact = checkExact(rk);
+    if (exact) return exact === 'diagnostic';
   }
-  for (const s of (f.sources || [])) {
-    const so = checkOverride(s.field_key) || checkOverride(s.key);
-    if (so) return so === 'diagnostic';
+  for (const rk of rawKeys) {
+    const wild = checkWildcard(rk);
+    if (wild) return wild === 'diagnostic';
+  }
+  if (f.group_path) {
+    const primaryKey = getCanonicalItemFieldKey(f);
+    const qualPrimary = sn && primaryKey ? `${sn}:${primaryKey}` : primaryKey;
+    for (const [ok, ovVal] of Object.entries(overrides)) {
+      if (ok.includes('.*.') && groupWildcardMatchesFieldKey(ok, qualPrimary)) {
+        return String(ovVal).toLowerCase() === 'diagnostic';
+      }
+    }
   }
   return f.ha_category === 'diagnostic' || f.is_diagnostic === true;
 }
@@ -682,7 +863,13 @@ function hasCategoryOverride(f) {
   const checkOverride = (k) => {
     if (!k) return false;
     if (sn && overrides[`${sn}:${k}`]) return true;
-    return !!overrides[k];
+    if (overrides[k]) return true;
+    const wk = wildcardizeGroupFieldKey(k);
+    if (wk) {
+      if (sn && overrides[`${sn}:${wk}`]) return true;
+      if (overrides[wk]) return true;
+    }
+    return false;
   };
 
   if (checkOverride(f.active_source_key) || checkOverride(f.key) || checkOverride(f.id) || checkOverride(f.concept_key) || checkOverride(f.mqtt_key)) {
@@ -690,6 +877,15 @@ function hasCategoryOverride(f) {
   }
   for (const s of (f.sources || [])) {
     if (checkOverride(s.field_key) || checkOverride(s.key)) return true;
+  }
+  if (f.group_path) {
+    const primaryKey = getCanonicalItemFieldKey(f);
+    const qualPrimary = sn && primaryKey ? `${sn}:${primaryKey}` : primaryKey;
+    for (const ok of Object.keys(overrides)) {
+      if (ok.includes('.*.') && groupWildcardMatchesFieldKey(ok, qualPrimary)) {
+        return true;
+      }
+    }
   }
   return false;
 }
@@ -727,14 +923,17 @@ async function toggleFieldCategoryAction(deviceSn, fieldKey, targetCategory, lab
     const associatedKeys = new Set();
     if (cleanKey) associatedKeys.add(cleanKey);
     if (f) {
+      const hasSubgroupPath = Boolean(f.group_path);
       if (f.active_source_key) associatedKeys.add(f.active_source_key);
       if (f.key) associatedKeys.add(f.key);
-      if (f.id) associatedKeys.add(f.id);
-      if (f.concept_key) associatedKeys.add(f.concept_key);
+      if (!hasSubgroupPath) {
+        if (f.id) associatedKeys.add(f.id);
+        if (f.concept_key) associatedKeys.add(f.concept_key);
+      }
       if (f.mqtt_key) associatedKeys.add(f.mqtt_key);
       for (const s of (f.sources || [])) {
         if (s.field_key) associatedKeys.add(s.field_key);
-        if (s.key) associatedKeys.add(s.key);
+        if (s.key && !hasSubgroupPath) associatedKeys.add(s.key);
       }
     }
 
@@ -786,7 +985,80 @@ async function toggleFieldCategoryAction(deviceSn, fieldKey, targetCategory, lab
   }
 }
 
-// Toggle Home Assistant Field Selection (scoped by device)
+// Action to toggle or reset entity category override across all instances in a Rollup
+async function toggleRollupCategoryAction(rollup, targetCategory) {
+  if (!rollup || !Array.isArray(rollup.instances) || rollup.instances.length === 0) return;
+  try {
+    const sn = (rollup.device_sn || state.activeDevice?.serial_number || '').trim().toUpperCase();
+    const first = rollup.firstInstance || rollup.instances[0];
+    const primarySample = getCanonicalItemFieldKey(first);
+    const wk = rollup.wildcardKey || wildcardizeGroupFieldKey(primarySample);
+
+    const concreteKeysToClear = new Set();
+    for (const inst of rollup.instances) {
+      [inst.active_source_key, inst.key, inst.id, inst.concept_key, inst.mqtt_key].forEach(k => {
+        if (k) concreteKeysToClear.add(k);
+      });
+      for (const s of (inst.sources || [])) {
+        if (s.field_key) concreteKeysToClear.add(s.field_key);
+        if (s.key) concreteKeysToClear.add(s.key);
+      }
+    }
+
+    if (!state.haCategoryOverrides) state.haCategoryOverrides = {};
+
+    for (const ck of concreteKeysToClear) {
+      delete state.haCategoryOverrides[ck];
+      if (sn) delete state.haCategoryOverrides[`${sn}:${ck}`];
+    }
+    if (wk) {
+      delete state.haCategoryOverrides[wk];
+      if (sn) delete state.haCategoryOverrides[`${sn}:${wk}`];
+    }
+
+    const keysToSend = wk ? [wk] : Array.from(concreteKeysToClear);
+    if (targetCategory !== 'reset' && targetCategory) {
+      for (const k of keysToSend) {
+        state.haCategoryOverrides[sn ? `${sn}:${k}` : k] = targetCategory;
+      }
+    }
+
+    renderFieldTable();
+    updateFilterCounts();
+
+    const targetKey = keysToSend[0];
+    const res = await fetch(apiPath('api/ha/category_override'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        device_serial: sn,
+        field_key: targetKey,
+        field_keys: keysToSend,
+        category: targetCategory === 'reset' ? 'reset' : targetCategory,
+      }),
+    });
+
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      throw new Error(data.error || 'Failed updating group category');
+    }
+
+    if (data.category_overrides) {
+      state.haCategoryOverrides = data.category_overrides;
+    }
+
+    const catName = targetCategory === 'diagnostic' ? 'Diagnostic' : (targetCategory === 'reset' ? 'Default' : 'Primary sensor');
+    showToast(`${rollup.label} (${rollup.instances.length} instances) set to ${catName} in Home Assistant`);
+    renderFieldTable();
+    updateFilterCounts();
+  } catch (err) {
+    console.error('Failed toggling HA rollup category:', err);
+    showToast(`Error: ${err.message}`, 'error');
+    await fetchHaConfig();
+  }
+}
+
+// Toggle Home Assistant Field Selection (scoped by device; supports '*' group wildcards)
 function toggleHaSelection(f, isSelected) {
   const sn = getFieldDeviceSn(f);
   if (sn) {
@@ -830,6 +1102,22 @@ function toggleHaSelection(f, isSelected) {
       state.selectedHaKeys.add(scopedCompKey);
     } else if (scopedPrimaryKey) {
       state.selectedHaKeys.add(scopedPrimaryKey);
+      // Auto-collapse explicit sibling selections to a canonical '*' wildcard rule when all instances are selected
+      if (f.group_path && state.preferWildcardForGroups !== false) {
+        const wk = wildcardizeGroupFieldKey(primaryKey);
+        const siblings = wk ? getSiblingGroupFieldKeys(f, sn) : [];
+        if (
+          wk &&
+          siblings.length >= 2 &&
+          siblings.every(sk => state.selectedHaKeys.has(sk) || (sn && state.selectedHaKeys.has(`${sn}:${sk}`)))
+        ) {
+          for (const sk of siblings) {
+            state.selectedHaKeys.delete(sk);
+            if (sn) state.selectedHaKeys.delete(`${sn}:${sk}`);
+          }
+          state.selectedHaKeys.add(sn ? `${sn}:${wk}` : wk);
+        }
+      }
     }
   } else {
     const keysToRemove = new Set([
@@ -846,6 +1134,25 @@ function toggleHaSelection(f, isSelected) {
       state.selectedHaKeys.delete(rk);
       if (sn) state.selectedHaKeys.delete(`${sn}:${rk}`);
     }
+
+    // If covered by a group wildcard rule, split the wildcard into the remaining explicit sibling keys
+    if (f.group_path && primaryKey) {
+      const qualPrimary = sn ? `${sn}:${primaryKey}` : primaryKey;
+      const matchingWildcards = Array.from(state.selectedHaKeys).filter(
+        sk => typeof sk === 'string' && isGroupWildcardKey(sk) && groupWildcardMatchesFieldKey(sk, qualPrimary)
+      );
+      if (matchingWildcards.length > 0) {
+        for (const mwk of matchingWildcards) {
+          state.selectedHaKeys.delete(mwk);
+        }
+        const siblings = getSiblingGroupFieldKeys(f, sn);
+        for (const sibKey of siblings) {
+          if (sibKey === primaryKey) continue;
+          const qualSib = sn ? `${sn}:${sibKey}` : sibKey;
+          state.selectedHaKeys.add(qualSib);
+        }
+      }
+    }
   }
   console.debug('[HA Selection]', {
     action: isSelected ? 'select' : 'deselect',
@@ -861,15 +1168,246 @@ function toggleHaSelection(f, isSelected) {
   updateFilterCounts();
 }
 
+function deriveRollupBaseLabel(firstItem) {
+  if (!firstItem) return '';
+  const rawLabel = String(firstItem.label || firstItem.name || '').trim();
+  const gLabel = String(firstItem.group_label || '').trim();
+  if (!gLabel || !rawLabel.startsWith(`${gLabel} `)) {
+    return rawLabel;
+  }
+  const remainder = rawLabel.slice(gLabel.length + 1).trim();
+  const baseGroup = gLabel
+    .split('/')
+    .map(part => part.trim().replace(/\s+\d+$/, ''))
+    .filter(Boolean)
+    .join(' / ');
+  if (!baseGroup) return remainder || rawLabel;
+  if (!remainder) return baseGroup;
+  return `${baseGroup} ${remainder}`;
+}
+
+function deriveRollupGroupBadgeText(instances) {
+  const count = Array.isArray(instances) ? instances.length : 0;
+  const gLabel = String(instances?.[0]?.group_label || '').trim();
+  let noun = 'Instances';
+  if (gLabel) {
+    const lastSeg = gLabel.split('/').pop().trim().replace(/\s+\d+$/, '');
+    if (lastSeg) {
+      if (lastSeg === 'Entry') noun = 'Entries';
+      else if (lastSeg.endsWith('s')) noun = lastSeg;
+      else noun = `${lastSeg}s`;
+    }
+  }
+  return `${count}\u00d7 ${noun}`;
+}
+
+function getRollupSelectionState(rollup) {
+  const instances = rollup?.instances || [];
+  const totalCount = instances.length;
+  const sn = (rollup?.device_sn || state.activeDevice?.serial_number || '').trim().toUpperCase();
+  const wk = rollup?.wildcardKey;
+  const hasWildcard = Boolean(
+    wk && (
+      state.selectedHaKeys.has(wk) ||
+      (sn && state.selectedHaKeys.has(`${sn}:${wk}`))
+    )
+  );
+
+  let selectedCount = 0;
+  for (const inst of instances) {
+    if (isFieldSelected(inst)) {
+      selectedCount += 1;
+    }
+  }
+
+  let mode = 'none';
+  if (hasWildcard) {
+    mode = 'wildcard';
+  } else if (selectedCount > 0) {
+    mode = 'explicit';
+  }
+
+  return {
+    selectedCount,
+    totalCount,
+    isAllSelected: totalCount > 0 && selectedCount === totalCount,
+    isIndeterminate: selectedCount > 0 && selectedCount < totalCount,
+    mode,
+  };
+}
+
+function toggleRollupSelection(rollup, isSelected, forceMode = null) {
+  if (!rollup || !Array.isArray(rollup.instances)) return;
+  const sn = (rollup.device_sn || state.activeDevice?.serial_number || '').trim().toUpperCase();
+  if (sn) {
+    state.modifiedDeviceSerials.add(sn);
+  }
+
+  const wk = rollup.wildcardKey;
+  if (wk) {
+    state.selectedHaKeys.delete(wk);
+    if (sn) state.selectedHaKeys.delete(`${sn}:${wk}`);
+  }
+  for (const inst of rollup.instances) {
+    const instKey = getCanonicalItemFieldKey(inst);
+    const keysToClear = [
+      instKey,
+      inst.key,
+      inst.id,
+      inst.active_source_key,
+      ...(Array.isArray(inst.sources) ? inst.sources.map(s => s.field_key) : []),
+    ].filter(Boolean);
+    for (const k of keysToClear) {
+      state.selectedHaKeys.delete(k);
+      if (sn) state.selectedHaKeys.delete(`${sn}:${k}`);
+    }
+  }
+
+  if (isSelected) {
+    const useWildcard = Boolean(
+      wk && (forceMode === 'wildcard' || (forceMode !== 'explicit' && state.preferWildcardForGroups !== false))
+    );
+    if (useWildcard) {
+      state.selectedHaKeys.add(sn ? `${sn}:${wk}` : wk);
+    } else {
+      for (const inst of rollup.instances) {
+        const instKey = getCanonicalItemFieldKey(inst);
+        if (instKey) {
+          state.selectedHaKeys.add(sn ? `${sn}:${instKey}` : instKey);
+        }
+      }
+    }
+  }
+
+  updateHaCounter();
+  updateFilterCounts();
+}
+
+function setRollupRuleMode(rollup, targetMode) {
+  if (!rollup || !Array.isArray(rollup.instances)) return;
+  const sel = getRollupSelectionState(rollup);
+  if (!sel.isAllSelected) return;
+  toggleRollupSelection(rollup, true, targetMode === 'explicit' ? 'explicit' : 'wildcard');
+}
+
+function buildSubgroupRollups(filteredItems, allSourceItems, isUnified) {
+  const buckets = new Map();
+  for (const item of (allSourceItems || [])) {
+    if (!item || !item.group_path || item.group_index === null || item.group_index === undefined) continue;
+    const sn = getFieldDeviceSn(item);
+    const firstSrcModel = Array.isArray(item.sources) && item.sources[0] ? item.sources[0].model_id : null;
+    const modelId = item.model_id ?? firstSrcModel ?? '';
+    const gpTemplate = stripGroupIndicesJs(item.group_path);
+    const ptName = item.name || item.key || item.id || '';
+    const rollupKey = `${sn}|${modelId}|${gpTemplate}|${ptName}`;
+    if (!buckets.has(rollupKey)) {
+      buckets.set(rollupKey, []);
+    }
+    buckets.get(rollupKey).push(item);
+  }
+
+  // Sort each bucket naturally by group_path (handles Module 1..10 and Crv.1.Pt.2)
+  for (const instList of buckets.values()) {
+    instList.sort((a, b) => (a.group_path || '').localeCompare(b.group_path || '', undefined, { numeric: true, sensitivity: 'base' }));
+  }
+
+  // Track which items survived the current filter per rollup bucket
+  const filteredMatchesByBucket = new Map();
+  for (const item of (filteredItems || [])) {
+    if (!item || !item.group_path || item.group_index === null || item.group_index === undefined) continue;
+    const sn = getFieldDeviceSn(item);
+    const firstSrcModel = Array.isArray(item.sources) && item.sources[0] ? item.sources[0].model_id : null;
+    const modelId = item.model_id ?? firstSrcModel ?? '';
+    const gpTemplate = stripGroupIndicesJs(item.group_path);
+    const ptName = item.name || item.key || item.id || '';
+    const rollupKey = `${sn}|${modelId}|${gpTemplate}|${ptName}`;
+    if (!filteredMatchesByBucket.has(rollupKey)) {
+      filteredMatchesByBucket.set(rollupKey, []);
+    }
+    filteredMatchesByBucket.get(rollupKey).push(item);
+  }
+
+  const hasSearch = Boolean(String(state.searchQuery || '').trim());
+  const emittedRollups = new Set();
+  const out = [];
+
+  for (const item of (filteredItems || [])) {
+    if (!item || !item.group_path || item.group_index === null || item.group_index === undefined) {
+      out.push(item);
+      continue;
+    }
+
+    const sn = getFieldDeviceSn(item);
+    const firstSrcModel = Array.isArray(item.sources) && item.sources[0] ? item.sources[0].model_id : null;
+    const modelId = item.model_id ?? firstSrcModel ?? '';
+    const gpTemplate = stripGroupIndicesJs(item.group_path);
+    const ptName = item.name || item.key || item.id || '';
+    const rollupKey = `${sn}|${modelId}|${gpTemplate}|${ptName}`;
+
+    const allInstances = buckets.get(rollupKey) || [item];
+    const matchedInFiltered = filteredMatchesByBucket.get(rollupKey) || [item];
+
+    // If single instance OR user searched for a subset (e.g. 'Module 3'), render concrete rows directly
+    if (allInstances.length < 2 || (hasSearch && matchedInFiltered.length < allInstances.length)) {
+      out.push(item);
+      continue;
+    }
+
+    if (emittedRollups.has(rollupKey)) {
+      continue;
+    }
+    emittedRollups.add(rollupKey);
+
+    const firstInst = allInstances[0];
+    const wildcardKey = wildcardizeGroupFieldKey(getCanonicalItemFieldKey(firstInst));
+    const rollupId = `rollup:${isUnified ? 'u' : 'r'}:${rollupKey}`;
+
+    out.push({
+      isRollup: true,
+      id: rollupId,
+      rollupKey,
+      wildcardKey,
+      device_sn: sn,
+      model_id: modelId === '' ? null : modelId,
+      model_name: firstInst.model_name || null,
+      model_label: firstInst.model_label || null,
+      group_name: firstInst.group_name || null,
+      group_path_template: gpTemplate,
+      name: firstInst.name || ptName,
+      label: deriveRollupBaseLabel(firstInst),
+      description: firstInst.description || '',
+      units: firstInst.units || null,
+      ha_platform: firstInst.ha_platform || 'sensor',
+      ha_device_class: firstInst.ha_device_class || null,
+      is_writable: Boolean(firstInst.is_writable),
+      is_mutation_blocked: Boolean(firstInst.is_mutation_blocked),
+      is_scale_factor: Boolean(firstInst.is_scale_factor),
+      point_type: firstInst.point_type || null,
+      offset: firstInst.offset ?? null,
+      sources: firstInst.sources || null,
+      source: firstInst.source || null,
+      is_compound: false,
+      instances: allInstances,
+      firstInstance: firstInst,
+    });
+  }
+
+  return out;
+}
+
 // Value extraction helpers for multi-column sorting
 function getHaSortValue(f) {
-  return isFieldSelected(f) ? 1 : 0;
+  if (f && f.isRollup) {
+    const sel = getRollupSelectionState(f);
+    return sel.isAllSelected ? 2 : (sel.isIndeterminate ? 1 : 0);
+  }
+  return isFieldSelected(f) ? 2 : 0;
 }
 
 function getModelSortValue(f) {
   if (f.sources && Array.isArray(f.sources)) {
     const firstModel = f.sources.find(s => s.model_id !== null && s.model_id !== undefined);
-    return firstModel ? Number(firstModel.model_id) : -1;
+    if (firstModel) return Number(firstModel.model_id);
   }
   if (f.is_compound) return -1;
   if (f.model_id !== undefined && f.model_id !== null) {
@@ -881,11 +1419,20 @@ function getModelSortValue(f) {
 }
 
 function getNameSortValue(f) {
-  return (f.label || f.name || f.concept_key || f.key || '').toLowerCase();
+  return (f.label || f.name || f.concept_key || f.wildcardKey || f.key || '').toLowerCase();
 }
 
 function getValueSortValue(f) {
-  const val = (f.latest_value !== undefined) ? f.latest_value : f.value;
+  let val = (f.latest_value !== undefined) ? f.latest_value : f.value;
+  if (f && f.isRollup && Array.isArray(f.instances)) {
+    for (const inst of f.instances) {
+      const cand = (inst.latest_value !== undefined) ? inst.latest_value : inst.value;
+      if (cand !== null && cand !== undefined && cand !== '') {
+        val = cand;
+        break;
+      }
+    }
+  }
   if (val === null || val === undefined || val === '') {
     return { isNull: true, num: null, str: '' };
   }
@@ -919,7 +1466,7 @@ function getSourceSortValue(f) {
 }
 
 function getTypeSortValue(f) {
-  const isDiag = isFieldDiagnostic(f);
+  const isDiag = f && f.isRollup ? getRollupCategoryInfo(f).isDiag : isFieldDiagnostic(f);
   return `${f.ha_platform || ''} ${isDiag ? 'diagnostic' : 'primary'} ${f.ha_device_class || ''}`.trim().toLowerCase();
 }
 
@@ -941,7 +1488,7 @@ function compareFields(a, b, sortCriteria) {
       case 'name': {
         cmp = getNameSortValue(a).localeCompare(getNameSortValue(b), undefined, { numeric: true, sensitivity: 'base' });
         if (cmp === 0) {
-          cmp = (a.key || '').localeCompare(b.key || '', undefined, { numeric: true, sensitivity: 'base' });
+          cmp = (a.key || a.wildcardKey || a.id || '').localeCompare(b.key || b.wildcardKey || b.id || '', undefined, { numeric: true, sensitivity: 'base' });
         }
         break;
       }
@@ -1517,7 +2064,7 @@ function renderPlanBreakdown(data) {
     const tsStr = formatTimestamp(item.lastUpdated);
     const tsHtml = tsStr ? `<span class="opt-field-time" title="Read at ${tsStr}">🕒 ${tsStr}</span>` : '';
     return `
-      <div class="opt-field-item" data-row-id="${escapeHtml(item.rowId)}" title="Click to jump to this field in the table">
+      <div class="opt-field-item" data-row-id="${escapeHtml(item.rowId)}" data-field-key="${escapeHtml(item.fieldKey)}" title="Click to jump to this field in the table">
         <div class="opt-field-info">
           <span class="opt-field-name">${escapeHtml(item.label)}</span>
           <span class="opt-field-path">${escapeHtml(item.fieldKey)}</span>
@@ -1629,8 +2176,15 @@ function renderPlanBreakdown(data) {
   el.optPlanBreakdown.querySelectorAll('.opt-field-item').forEach(itemEl => {
     itemEl.addEventListener('click', () => {
       const rowId = itemEl.dataset.rowId;
-      if (!rowId) return;
-      const targetRow = document.getElementById(rowId);
+      const fieldKey = itemEl.dataset.fieldKey || '';
+      if (!rowId && !fieldKey) return;
+      let targetRow = rowId ? document.getElementById(rowId) : null;
+      if (!targetRow && fieldKey && state.rollupIdByMemberKey && state.rollupIdByMemberKey.has(fieldKey)) {
+        const rollupId = state.rollupIdByMemberKey.get(fieldKey);
+        state.expandedRollups.add(rollupId);
+        renderFieldTable();
+        targetRow = document.getElementById(`child-row-${sanitizeId(fieldKey)}`) || document.getElementById(`row-${sanitizeId(rollupId)}`);
+      }
       if (targetRow) {
         targetRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
         targetRow.classList.remove('highlight-row-flash');
@@ -1656,6 +2210,508 @@ function isScaleFactorField(f) {
   if (f.label && f.label.toLowerCase().includes('scale factor')) return true;
   if (f.sources && f.sources.some(s => isScaleFactorField(s))) return true;
   return false;
+}
+
+// Construct a comprehensive field reference object for Details / Set / Bounds modals
+function buildTargetFieldRef(f, activeSrc = null) {
+  if (!f) return null;
+  if (activeSrc) {
+    return {
+      ...activeSrc,
+      key: activeSrc.field_key,
+      id: f.id,
+      device_sn: f.device_sn,
+      point_type: activeSrc.point_type || f.point_type,
+      is_bitfield: f.is_bitfield,
+      is_enum: f.is_enum,
+      symbols: activeSrc.symbols || f.symbols,
+      bounds: activeSrc.bounds || f.bounds,
+    };
+  }
+  const srcList = Array.isArray(f.sources) ? f.sources : [];
+  if (srcList.length > 0) {
+    const pinnedKey = state.preferredSources ? state.preferredSources[f.id] : null;
+    const chosen = srcList.find(s => s.field_key === (pinnedKey || f.active_source_key)) || srcList[0];
+    return buildTargetFieldRef(f, chosen);
+  }
+  return {
+    ...f,
+    key: f.active_source_key || f.key || f.id,
+    field_key: f.active_source_key || f.key || f.id,
+    device_sn: f.device_sn,
+  };
+}
+
+function deriveRollupGroupTitle(rollup) {
+  const gLabel = String(rollup?.firstInstance?.group_label || '').trim();
+  if (!gLabel) return rollup?.group_path_template || rollup?.group_name || 'Sub-group';
+  return gLabel
+    .split('/')
+    .map(part => part.trim().replace(/\s+\d+$/, ''))
+    .filter(Boolean)
+    .join(' / ');
+}
+
+function extractInstanceDisplayName(inst) {
+  if (!inst) return 'Instance';
+  if (inst.group_label) return inst.group_label;
+  if (inst.group_path) {
+    const parts = String(inst.group_path).split('.');
+    return parts.slice(-2).join(' ');
+  }
+  return `Instance ${inst.group_index ?? ''}`;
+}
+
+function getRollupCategoryInfo(rollup) {
+  const instances = rollup?.instances || [];
+  let diagCount = 0;
+  let primCount = 0;
+  let hasOverride = false;
+  for (const inst of instances) {
+    if (isFieldDiagnostic(inst)) diagCount += 1;
+    else primCount += 1;
+    if (hasCategoryOverride(inst)) hasOverride = true;
+  }
+  const isMixed = diagCount > 0 && primCount > 0;
+  const isDiag = isMixed ? (diagCount >= primCount) : (diagCount > 0);
+  const label = isMixed ? 'Mixed' : (isDiag ? 'Diagnostic' : 'Primary');
+  const catClass = isMixed ? 'is-mixed' : (isDiag ? 'is-diagnostic' : 'is-primary');
+  const targetCategory = isDiag ? 'primary' : 'diagnostic';
+  return { label, catClass, isDiag, isMixed, hasOverride, targetCategory };
+}
+
+function formatRollupValueSummary(rollup, isUnified) {
+  const instances = rollup?.instances || [];
+  const firstInst = rollup?.firstInstance || instances[0] || rollup;
+  const nonNullEntries = [];
+  let maxTs = 0;
+
+  for (const inst of instances) {
+    const val = isUnified ? (inst.latest_value !== undefined ? inst.latest_value : inst.value) : inst.value;
+    const ts = Number(isUnified ? (inst.latest_updated || inst.last_updated || 0) : (inst.last_updated || inst.timestamp || 0));
+    if (!isNaN(ts) && ts > maxTs) maxTs = ts;
+    if (val !== null && val !== undefined && val !== '') {
+      nonNullEntries.push({ inst, val });
+    }
+  }
+
+  if (nonNullEntries.length === 0) {
+    return { html: '<span class="rollup-val-empty">--</span>', latestTs: maxTs };
+  }
+
+  const firstVal = nonNullEntries[0].val;
+  const allEqual = nonNullEntries.every(e => String(e.val) === String(firstVal));
+  const hasEnumOrBf = isBitfield(firstInst, firstVal) || Boolean(lookupEnumSymbol(firstInst, firstVal));
+
+  if (allEqual) {
+    const singleHtml = formatFieldValue(firstVal, firstInst);
+    const note = nonNullEntries.length > 1
+      ? ` <span class="rollup-val-note">(all ${nonNullEntries.length})</span>`
+      : '';
+    return { html: `${singleHtml}${note}`, latestTs: maxTs };
+  }
+
+  if (!hasEnumOrBf && nonNullEntries.every(e => typeof e.val === 'number' && !isNaN(e.val))) {
+    const nums = nonNullEntries.map(e => e.val);
+    const minVal = Math.min(...nums);
+    const maxVal = Math.max(...nums);
+    const minStr = formatFieldValuePlain(minVal, firstInst);
+    const maxStr = formatFieldValuePlain(maxVal, firstInst);
+    return {
+      html: `<span class="rollup-val-range" title="Range across ${nonNullEntries.length} instances">${escapeHtml(minStr)} &ndash; ${escapeHtml(maxStr)}</span>`,
+      latestTs: maxTs,
+    };
+  }
+
+  const distinct = [];
+  const seen = new Set();
+  for (const entry of nonNullEntries) {
+    const plain = formatFieldValuePlain(entry.val, entry.inst);
+    if (!seen.has(plain)) {
+      seen.add(plain);
+      distinct.push(plain);
+    }
+  }
+  const shown = distinct.slice(0, 2).map(v => escapeHtml(v)).join(', ');
+  const extra = distinct.length > 2 ? ` <span class="rollup-val-note">+${distinct.length - 2} more</span>` : '';
+  const tooltip = nonNullEntries
+    .map(e => `${extractInstanceDisplayName(e.inst)}: ${formatFieldValuePlain(e.val, e.inst)}`)
+    .join('\n');
+  return {
+    html: `<span class="rollup-val-distinct" title="${escapeHtml(tooltip)}">${shown}${extra}</span>`,
+    latestTs: maxTs,
+  };
+}
+
+function renderRollupRow(rollup, isUnified) {
+  const tr = document.createElement('tr');
+  tr.id = `row-${sanitizeId(rollup.id)}`;
+  tr.className = 'rollup-row';
+
+  const sel = getRollupSelectionState(rollup);
+  const isExpanded = Boolean(state.expandedRollups && state.expandedRollups.has(rollup.id));
+  const catInfo = getRollupCategoryInfo(rollup);
+  const valSummary = formatRollupValueSummary(rollup, isUnified);
+  const targetRef = buildTargetFieldRef(rollup.firstInstance || rollup);
+  const groupBadgeText = deriveRollupGroupBadgeText(rollup.instances);
+  const sn = (rollup.device_sn || state.activeDevice?.serial_number || '').trim().toUpperCase();
+
+  const minModelsSet = new Set((state.optimizationPlan && state.optimizationPlan.minimal_models) || []);
+  const modelNum = rollup.model_id !== null && rollup.model_id !== undefined ? Number(rollup.model_id) : null;
+  const isPolled = modelNum !== null && minModelsSet.has(modelNum);
+
+  let modelCellHtml = '';
+  if (rollup.model_id !== null && rollup.model_id !== undefined) {
+    const mTitle = `Model ${rollup.model_id}: ${rollup.model_label || rollup.model_name || ''}`;
+    modelCellHtml += `<span class="model-badge" title="${escapeHtml(mTitle)}">M${escapeHtml(String(rollup.model_id))}</span> `;
+  }
+  modelCellHtml += `<span class="badge-rollup-instances" title="Sub-group template: ${escapeHtml(rollup.group_path_template || '')}">${escapeHtml(groupBadgeText)}</span>`;
+
+  let sourceBadgeHtml = '<span class="source-tag modbus">Modbus</span>';
+  if (isUnified) {
+    sourceBadgeHtml = isPolled
+      ? `<span class="badge-optimal" title="Model ${escapeHtml(String(rollup.model_id || ''))} selected in minimal polling plan">★ M${escapeHtml(String(rollup.model_id || ''))} (Polled)</span>`
+      : (rollup.model_id
+          ? `<span class="badge-optimal" title="SunSpec Model ${escapeHtml(String(rollup.model_id))}">★ M${escapeHtml(String(rollup.model_id))}</span>`
+          : '<span class="source-tag modbus">Modbus</span>');
+  }
+
+  const haCountBadgeClass = sel.isAllSelected ? 'is-full' : (sel.isIndeterminate ? 'is-partial' : '');
+  const haCountTitle = sel.mode === 'wildcard'
+    ? `Saved as Wildcard rule (${rollup.wildcardKey})`
+    : (sel.isAllSelected
+        ? `All ${sel.totalCount} instances selected explicitly`
+        : `${sel.selectedCount} of ${sel.totalCount} instances selected for Home Assistant`);
+
+  const catIcon = catInfo.isMixed ? '◐' : (catInfo.isDiag ? '🏷️' : '⚡');
+  const overrideMarker = catInfo.hasOverride ? ' <span class="cat-override-indicator" title="Custom user override">*</span>' : '';
+  const targetCatTitle = catInfo.targetCategory === 'diagnostic' ? 'Diagnostic' : 'Primary';
+
+  const chkTitle = sel.isAllSelected
+    ? (sel.mode === 'wildcard' ? `Wildcard active (${rollup.wildcardKey}). Click to deselect all.` : 'All instances selected. Click to deselect all.')
+    : (sel.isIndeterminate ? `${sel.selectedCount}/${sel.totalCount} selected. Click to select all instances.` : `Click to select all ${sel.totalCount} instances as wildcard (*).`);
+
+  tr.innerHTML = `
+    <td class="text-center">
+      <input type="checkbox" class="ha-checkbox ha-rollup-checkbox" data-rollup-id="${escapeHtml(rollup.id)}" title="${escapeHtml(chkTitle)}" ${sel.isAllSelected ? 'checked' : ''} />
+    </td>
+    <td class="field-model-cell">
+      <div class="source-pill-group">
+        ${modelCellHtml}
+      </div>
+    </td>
+    <td>
+      <div class="field-cell-main">
+        <div class="field-label-line">
+          <button type="button" class="btn-group-expand btn-rollup-expand ${isExpanded ? 'is-expanded' : ''}" data-rollup-id="${escapeHtml(rollup.id)}" title="${isExpanded ? 'Collapse sub-group instances' : 'Expand all sub-group instances'}">${isExpanded ? '▼' : '▶'}</button>
+          <span class="field-label rollup-label" title="${escapeHtml((rollup.description ? rollup.description + '\n' : '') + 'Click to expand sub-group instances')}">${escapeHtml(rollup.label)}</span>
+          ${rollup.is_mutation_blocked ? '<span class="badge-protected" title="Modbus RW but mutation blocked by safety policy (edit config/blocked_fields.yaml to unblock)">🔒 Protected</span>' : (rollup.is_writable ? '<span class="badge-writable" title="Settable SunSpec register (Read/Write)">RW</span>' : '')}
+          <span class="badge-rollup-ha-count ${haCountBadgeClass}" title="${escapeHtml(haCountTitle)}">${sel.selectedCount}/${sel.totalCount}${sel.mode === 'wildcard' ? ' ★' : ''}</span>
+        </div>
+        <span class="field-key">${escapeHtml(rollup.wildcardKey || rollup.group_path_template || '')}</span>
+      </div>
+    </td>
+    <td>
+      <div class="value-cell-wrap">
+        <span class="field-value-badge rollup-val-badge" id="val-${sanitizeId(rollup.id)}">${valSummary.html}</span>
+        ${formatTimestampBadge(valSummary.latestTs, `ts-${sanitizeId(rollup.id)}`)}
+      </div>
+    </td>
+    <td>${rollup.units ? escapeHtml(rollup.units) : '&mdash;'}</td>
+    <td>${sourceBadgeHtml}</td>
+    <td>
+      <div class="type-cell-wrap">
+        <span class="type-tag">${escapeHtml(rollup.ha_platform || 'sensor')}${rollup.ha_device_class ? ': ' + escapeHtml(rollup.ha_device_class) : ''}</span>
+        <button type="button" class="badge-cat-toggle rollup-cat-toggle ${catInfo.catClass} ${catInfo.hasOverride ? 'has-override' : ''} ${sel.selectedCount === 0 ? 'is-dimmed' : ''}" title="Home Assistant Category: ${catInfo.label}${catInfo.hasOverride ? ' (User Override)' : ''}\nClick to set all ${sel.totalCount} instances to ${targetCatTitle}">
+          <span class="cat-icon">${catIcon}</span>
+          <span class="cat-text">${catInfo.label}</span>${overrideMarker}
+        </button>
+      </div>
+    </td>
+    <td class="text-right">
+      <div class="action-cell-container">
+        <button type="button" class="btn btn-secondary btn-sm btn-details" title="Explore Modbus register definition &amp; associated registers">Details</button>
+        <div class="action-menu-wrapper">
+          <button type="button" class="btn btn-secondary btn-sm btn-icon-more" title="More Actions">⋮</button>
+          <div class="action-dropdown-menu">
+            <button type="button" class="action-menu-item item-rollup-expand">${isExpanded ? '▾ Collapse Instances' : '▸ Expand Instances (' + sel.totalCount + ')'}</button>
+            <button type="button" class="action-menu-item item-details">📋 Modbus Details</button>
+            <button type="button" class="action-menu-item item-rollup-select-all">${sel.isAllSelected ? '✕ Deselect All (' + sel.totalCount + ')' : '✓ Select All (' + sel.totalCount + ')'}</button>
+            ${(sel.isAllSelected && rollup.wildcardKey) ? `<button type="button" class="action-menu-item item-rollup-toggle-mode">${sel.mode === 'wildcard' ? '📝 Switch to Explicit Keys (' + sel.totalCount + ')' : '★ Switch to Wildcard Rule (*)'}</button>` : ''}
+            <button type="button" class="action-menu-item item-rollup-toggle-cat">${catInfo.isDiag ? '⚡ Set All to Primary Sensor' : '🏷️ Set All to Diagnostic'}</button>
+            ${catInfo.hasOverride ? '<button type="button" class="action-menu-item item-rollup-reset-cat">↺ Reset Group Category</button>' : ''}
+            ${rollup.wildcardKey ? `<button type="button" class="action-menu-item item-copy">📄 Copy Wildcard Key</button>` : ''}
+          </div>
+        </div>
+      </div>
+    </td>
+  `;
+
+  const chk = tr.querySelector('.ha-rollup-checkbox');
+  if (chk) {
+    chk.indeterminate = sel.isIndeterminate;
+    chk.addEventListener('change', (e) => {
+      const wantAll = sel.isIndeterminate ? true : e.target.checked;
+      toggleRollupSelection(rollup, wantAll);
+      renderFieldTable();
+    });
+  }
+
+  const toggleExpand = () => {
+    if (state.expandedRollups.has(rollup.id)) {
+      state.expandedRollups.delete(rollup.id);
+    } else {
+      state.expandedRollups.add(rollup.id);
+    }
+    renderFieldTable();
+  };
+
+  const expandBtn = tr.querySelector('.btn-rollup-expand');
+  if (expandBtn) {
+    expandBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleExpand();
+    });
+  }
+
+  const labelEl = tr.querySelector('.rollup-label');
+  if (labelEl) {
+    labelEl.style.cursor = 'pointer';
+    labelEl.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleExpand();
+    });
+  }
+
+  const detailsBtn = tr.querySelector('.btn-details');
+  if (detailsBtn && targetRef) {
+    detailsBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openFieldDetails(targetRef);
+    });
+  }
+
+  const catBtn = tr.querySelector('.rollup-cat-toggle');
+  if (catBtn) {
+    catBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await toggleRollupCategoryAction(rollup, catInfo.targetCategory);
+    });
+  }
+
+  const moreBtn = tr.querySelector('.btn-icon-more');
+  const dropdownMenu = tr.querySelector('.action-dropdown-menu');
+  if (moreBtn && dropdownMenu) {
+    moreBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      document.querySelectorAll('.action-dropdown-menu.show').forEach(m => {
+        if (m !== dropdownMenu) m.classList.remove('show');
+      });
+      dropdownMenu.classList.toggle('show');
+    });
+
+    dropdownMenu.querySelector('.item-rollup-expand')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dropdownMenu.classList.remove('show');
+      toggleExpand();
+    });
+    dropdownMenu.querySelector('.item-details')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dropdownMenu.classList.remove('show');
+      if (targetRef) openFieldDetails(targetRef);
+    });
+    dropdownMenu.querySelector('.item-rollup-select-all')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dropdownMenu.classList.remove('show');
+      toggleRollupSelection(rollup, !sel.isAllSelected);
+      renderFieldTable();
+    });
+    dropdownMenu.querySelector('.item-rollup-toggle-mode')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dropdownMenu.classList.remove('show');
+      setRollupRuleMode(rollup, sel.mode === 'wildcard' ? 'explicit' : 'wildcard');
+      renderFieldTable();
+    });
+    dropdownMenu.querySelector('.item-rollup-toggle-cat')?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      dropdownMenu.classList.remove('show');
+      await toggleRollupCategoryAction(rollup, catInfo.targetCategory);
+    });
+    dropdownMenu.querySelector('.item-rollup-reset-cat')?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      dropdownMenu.classList.remove('show');
+      await toggleRollupCategoryAction(rollup, 'reset');
+    });
+    dropdownMenu.querySelector('.item-copy')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dropdownMenu.classList.remove('show');
+      if (rollup.wildcardKey) {
+        copyToClipboard(rollup.wildcardKey);
+        showToast(`Copied ${rollup.wildcardKey} to clipboard`);
+      }
+    });
+  }
+
+  let subTr = null;
+  if (isExpanded) {
+    subTr = document.createElement('tr');
+    subTr.className = 'group-children-row rollup-children-row';
+    subTr.id = `children-${sanitizeId(rollup.id)}`;
+
+    let ruleModeControlHtml = '';
+    if (sel.isAllSelected && rollup.wildcardKey) {
+      if (sel.mode === 'wildcard') {
+        ruleModeControlHtml = `<button type="button" class="btn-rollup-rule-mode is-wildcard" title="Click to store ${sel.totalCount} individual explicit keys instead of a single wildcard rule">★ Saved as Wildcard (*)</button>`;
+      } else {
+        ruleModeControlHtml = `<button type="button" class="btn-rollup-rule-mode is-explicit" title="Click to collapse into a single wildcard rule (*)">📝 Saved as ${sel.totalCount} Explicit Keys</button>`;
+      }
+    } else if (sel.isIndeterminate) {
+      ruleModeControlHtml = `
+        <span class="rollup-mode-note">Partial selection (${sel.selectedCount}/${sel.totalCount} explicit keys)</span>
+        <button type="button" class="btn btn-xs btn-rollup-select-all">Select All (${sel.totalCount})</button>
+      `;
+    } else {
+      ruleModeControlHtml = `<span class="rollup-mode-note">Not selected &bull; Checking parent exports all ${sel.totalCount} as wildcard (*)</span>`;
+    }
+
+    const childRowsHtml = (rollup.instances || []).map((inst, idx) => {
+      const instKey = getCanonicalItemFieldKey(inst) || inst.key || inst.id || '';
+      const instChecked = isFieldSelected(inst);
+      const instVal = isUnified ? (inst.latest_value !== undefined ? inst.latest_value : inst.value) : inst.value;
+      const instTs = isUnified ? (inst.latest_updated || inst.last_updated) : (inst.last_updated || inst.timestamp);
+      const instFormattedVal = formatFieldValue(instVal, inst);
+      const instIsBf = isBitfield(inst, instVal);
+      const instIsDiag = isFieldDiagnostic(inst);
+      const instHasOverride = hasCategoryOverride(inst);
+      const instName = extractInstanceDisplayName(inst);
+
+      return `
+        <tr class="child-source-item rollup-child-item" id="child-row-${sanitizeId(instKey)}" data-idx="${idx}" data-key="${escapeHtml(instKey)}">
+          <td class="text-center">
+            <input type="checkbox" class="ha-checkbox rollup-child-checkbox" data-idx="${idx}" ${instChecked ? 'checked' : ''} />
+          </td>
+          <td class="child-protocol-cell">
+            <span class="rollup-inst-name">${escapeHtml(instName)}</span>
+            ${inst.group_path ? `<div class="rollup-inst-path">${escapeHtml(inst.group_path)}</div>` : ''}
+          </td>
+          <td class="child-key-cell"><code class="code-path">${escapeHtml(instKey)}</code></td>
+          <td class="child-val-cell">
+            <div class="child-val-wrap">
+              <span class="field-value-badge${instIsBf ? ' is-bitfield' : ''}" id="val-${sanitizeId(instKey)}">${instFormattedVal}</span>
+              ${formatTimestampBadge(instTs, `ts-${sanitizeId(instKey)}`)}
+            </div>
+          </td>
+          <td>
+            <button type="button" class="badge-cat-toggle rollup-child-cat-toggle ${instIsDiag ? 'is-diagnostic' : 'is-primary'} ${instHasOverride ? 'has-override' : ''} ${!instChecked ? 'is-dimmed' : ''}" data-idx="${idx}" title="Click to toggle category for ${escapeHtml(instName)} only">
+              <span class="cat-icon">${instIsDiag ? '🏷️' : '⚡'}</span>
+              <span class="cat-text">${instIsDiag ? 'Diagnostic' : 'Primary'}</span>${instHasOverride ? ' <span class="cat-override-indicator">*</span>' : ''}
+            </button>
+          </td>
+          <td class="child-actions-cell text-right">
+            ${inst.is_writable ? `<button type="button" class="btn btn-secondary btn-xs btn-child-edit" data-idx="${idx}">Set</button>` : ''}
+            <button type="button" class="btn btn-secondary btn-xs btn-child-details" data-idx="${idx}">Details</button>
+            <button type="button" class="btn btn-secondary btn-xs btn-child-copy" data-idx="${idx}" title="Copy field key">Copy</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    subTr.innerHTML = `
+      <td colspan="8" class="group-children-container-cell">
+        <div class="group-children-panel rollup-children-panel">
+          <div class="group-children-header">
+            <div class="group-children-header-left">
+              <span class="group-children-title">${escapeHtml(rollup.label)} &bull; ${sel.totalCount} Instances (${sel.selectedCount} Selected)</span>
+              ${ruleModeControlHtml}
+            </div>
+            ${rollup.wildcardKey ? `<div class="ha-preview-tag" title="Wildcard config key matching all instances"><span class="ha-preview-label">Wildcard Key:</span> <code>${escapeHtml(rollup.wildcardKey)}</code></div>` : ''}
+          </div>
+          <table class="group-children-table rollup-children-table">
+            <thead>
+              <tr>
+                <th width="42" class="text-center">HA</th>
+                <th width="190">Instance</th>
+                <th>Field Key</th>
+                <th width="200">Live Value</th>
+                <th width="130">Category</th>
+                <th width="160" class="text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${childRowsHtml}
+            </tbody>
+          </table>
+        </div>
+      </td>
+    `;
+
+    subTr.querySelector('.btn-rollup-rule-mode')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setRollupRuleMode(rollup, sel.mode === 'wildcard' ? 'explicit' : 'wildcard');
+      renderFieldTable();
+    });
+
+    subTr.querySelector('.btn-rollup-select-all')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleRollupSelection(rollup, true);
+      renderFieldTable();
+    });
+
+    subTr.querySelectorAll('.rollup-child-checkbox').forEach(childChk => {
+      childChk.addEventListener('change', (e) => {
+        e.stopPropagation();
+        const idx = Number(childChk.dataset.idx);
+        const inst = rollup.instances[idx];
+        if (!inst) return;
+        toggleHaSelection(inst, e.target.checked);
+        renderFieldTable();
+      });
+    });
+
+    subTr.querySelectorAll('.rollup-child-cat-toggle').forEach(childCatBtn => {
+      childCatBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const idx = Number(childCatBtn.dataset.idx);
+        const inst = rollup.instances[idx];
+        if (!inst) return;
+        const instIsDiag = isFieldDiagnostic(inst);
+        const targetCat = instIsDiag ? 'primary' : 'diagnostic';
+        const instSn = getFieldDeviceSn(inst) || sn;
+        const instKey = getCanonicalItemFieldKey(inst) || inst.key || inst.id;
+        await toggleFieldCategoryAction(instSn, instKey, targetCat, `${extractInstanceDisplayName(inst)} ${rollup.name || ''}`.trim(), inst);
+      });
+    });
+
+    subTr.querySelectorAll('.btn-child-edit').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const inst = rollup.instances[Number(btn.dataset.idx)];
+        if (inst) openWriteModal(buildTargetFieldRef(inst));
+      });
+    });
+
+    subTr.querySelectorAll('.btn-child-details').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const inst = rollup.instances[Number(btn.dataset.idx)];
+        if (inst) openFieldDetails(buildTargetFieldRef(inst));
+      });
+    });
+
+    subTr.querySelectorAll('.btn-child-copy').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const inst = rollup.instances[Number(btn.dataset.idx)];
+        const instKey = inst ? (getCanonicalItemFieldKey(inst) || inst.key || inst.id) : '';
+        if (instKey) {
+          copyToClipboard(instKey);
+          showToast(`Copied ${instKey} to clipboard`);
+        }
+      });
+    });
+  }
+
+  return subTr ? [tr, subTr] : tr;
 }
 
 // Render Field Table with Search, Filter & Multi-Column Sorting
@@ -1774,14 +2830,36 @@ function renderFieldTable() {
     }
   });
 
-  if (filtered.length === 0) {
+  state.activeRollupsById.clear();
+  state.rollupIdByMemberKey.clear();
+
+  const displayItems = state.rollupSubgroups
+    ? buildSubgroupRollups(filtered, sourceItems, isUnified)
+    : filtered;
+
+  displayItems.forEach(item => {
+    if (item && item.isRollup) {
+      state.activeRollupsById.set(item.id, item);
+      for (const inst of (item.instances || [])) {
+        const candKeys = [inst.key, inst.id, inst.active_source_key].filter(Boolean);
+        for (const ck of candKeys) {
+          state.rollupIdByMemberKey.set(ck, item.id);
+        }
+        for (const s of (inst.sources || [])) {
+          if (s.field_key) state.rollupIdByMemberKey.set(s.field_key, item.id);
+        }
+      }
+    }
+  });
+
+  if (displayItems.length === 0) {
     el.fieldTableBody.innerHTML = `<tr><td colspan="8" class="empty-state">No fields match the current filters</td></tr>`;
     return;
   }
 
   // Apply multi-column sort if criteria are defined
   if (state.sortCriteria.length > 0) {
-    filtered.sort((a, b) => compareFields(a, b, state.sortCriteria));
+    displayItems.sort((a, b) => compareFields(a, b, state.sortCriteria));
   }
 
   el.fieldTableBody.innerHTML = '';
@@ -1845,24 +2923,7 @@ function renderFieldTable() {
       : '&mdash;';
 
     // Construct a comprehensive targetFieldRef for actions (details, write, copy)
-    const targetFieldRef = activeSrc
-      ? {
-          ...activeSrc,
-          key: activeSrc.field_key,
-          id: f.id,
-          device_sn: f.device_sn,
-          point_type: activeSrc.point_type || f.point_type,
-          is_bitfield: f.is_bitfield,
-          is_enum: f.is_enum,
-          symbols: activeSrc.symbols || f.symbols,
-          bounds: activeSrc.bounds || f.bounds,
-        }
-      : {
-          ...f,
-          key: f.active_source_key || f.id,
-          field_key: f.active_source_key || f.id,
-          device_sn: f.device_sn,
-        };
+    const targetFieldRef = buildTargetFieldRef(f, activeSrc);
 
     tr.innerHTML = `
       <td class="text-center">
@@ -2609,8 +3670,8 @@ function renderFieldTable() {
   const fragment = document.createDocumentFragment();
 
   if (isUnified) {
-    filtered.forEach(f => {
-      const rowResult = renderUnifiedRow(f);
+    displayItems.forEach(f => {
+      const rowResult = f.isRollup ? renderRollupRow(f, true) : renderUnifiedRow(f);
       if (Array.isArray(rowResult)) {
         rowResult.forEach(r => fragment.appendChild(r));
       } else {
@@ -2620,7 +3681,7 @@ function renderFieldTable() {
   } else if (state.groupByModel) {
     // Group fields by model
     const groups = new Map();
-    filtered.forEach(f => {
+    displayItems.forEach(f => {
       let gKey;
       let gTitle;
       let gDesc = '';
@@ -2665,6 +3726,11 @@ function renderFieldTable() {
 
     const isDefaultOrModelSort = !state.sortCriteria.length || state.sortCriteria.every(c => c.column === 'model');
     groupArray.forEach(grp => {
+      const totalRawPoints = grp.fields.reduce((acc, item) => acc + (item.isRollup ? (item.instances?.length || 1) : 1), 0);
+      const countText = totalRawPoints !== grp.fields.length
+        ? `${grp.fields.length} rows (${totalRawPoints} points)`
+        : `${grp.fields.length} points`;
+
       const headerTr = document.createElement('tr');
       headerTr.className = 'model-group-row';
       headerTr.innerHTML = `
@@ -2672,22 +3738,29 @@ function renderFieldTable() {
           <div class="model-group-header">
             <span class="model-badge-lg">${grp.title}</span>
             ${grp.desc ? `<span class="model-group-desc">${grp.desc}</span>` : ''}
-            <span class="model-group-count">${grp.fields.length} points</span>
+            <span class="model-group-count">${countText}</span>
           </div>
         </td>
       `;
       fragment.appendChild(headerTr);
       const orderedFields = isDefaultOrModelSort
         ? [...grp.fields].sort((a, b) => {
-            const ag = a.group_path ? 1 : 0;
-            const bg = b.group_path ? 1 : 0;
+            const ag = (a.group_path || a.group_path_template) ? 1 : 0;
+            const bg = (b.group_path || b.group_path_template) ? 1 : 0;
             if (ag !== bg) return ag - bg;
             if (ag && bg) {
               const gNameCmp = (a.group_name || '').localeCompare(b.group_name || '');
               if (gNameCmp !== 0) return gNameCmp;
-              const aIdx = a.group_index ?? 0;
-              const bIdx = b.group_index ?? 0;
-              if (aIdx !== bIdx) return aIdx - bIdx;
+              if (a.isRollup || b.isRollup) {
+                const aGp = a.group_path_template || a.group_path || '';
+                const bGp = b.group_path_template || b.group_path || '';
+                const gpCmp = aGp.localeCompare(bGp, undefined, { numeric: true, sensitivity: 'base' });
+                if (gpCmp !== 0) return gpCmp;
+              } else {
+                const aIdx = a.group_index ?? 0;
+                const bIdx = b.group_index ?? 0;
+                if (aIdx !== bIdx) return aIdx - bIdx;
+              }
             }
             const aOff = a.offset ?? 999999;
             const bOff = b.offset ?? 999999;
@@ -2695,30 +3768,67 @@ function renderFieldTable() {
             return (a.label || a.name || '').localeCompare(b.label || b.name || '', undefined, { numeric: true, sensitivity: 'base' });
           })
         : grp.fields;
-      let lastGroupPath = null;
+      let lastGroupKey = null;
       orderedFields.forEach(f => {
-        if (f.group_path && f.group_path !== lastGroupPath) {
-          lastGroupPath = f.group_path;
-          const subTr = document.createElement('tr');
-          subTr.className = 'subgroup-divider-row';
-          subTr.innerHTML = `
-            <td colspan="8">
-              <div class="subgroup-divider-header">
-                <span class="subgroup-divider-title">${escapeHtml(f.group_label || f.group_path)}</span>
-                <span class="subgroup-divider-path">${escapeHtml(f.group_path)}</span>
-              </div>
-            </td>
-          `;
-          fragment.appendChild(subTr);
-        } else if (!f.group_path) {
-          lastGroupPath = null;
+        if (f.isRollup) {
+          const gpKey = f.group_path_template || f.group_name || '';
+          if (gpKey && gpKey !== lastGroupKey) {
+            lastGroupKey = gpKey;
+            const subTr = document.createElement('tr');
+            subTr.className = 'subgroup-divider-row';
+            const instBadge = deriveRollupGroupBadgeText(f.instances);
+            const titleText = `${deriveRollupGroupTitle(f)} (${instBadge})`;
+            subTr.innerHTML = `
+              <td colspan="8">
+                <div class="subgroup-divider-header">
+                  <span class="subgroup-divider-title">${escapeHtml(titleText)}</span>
+                  <span class="subgroup-divider-path">${escapeHtml(gpKey)}</span>
+                </div>
+              </td>
+            `;
+            fragment.appendChild(subTr);
+          } else if (!gpKey) {
+            lastGroupKey = null;
+          }
+          const rowResult = renderRollupRow(f, false);
+          if (Array.isArray(rowResult)) {
+            rowResult.forEach(r => fragment.appendChild(r));
+          } else {
+            fragment.appendChild(rowResult);
+          }
+        } else {
+          if (f.group_path && f.group_path !== lastGroupKey) {
+            lastGroupKey = f.group_path;
+            const subTr = document.createElement('tr');
+            subTr.className = 'subgroup-divider-row';
+            subTr.innerHTML = `
+              <td colspan="8">
+                <div class="subgroup-divider-header">
+                  <span class="subgroup-divider-title">${escapeHtml(f.group_label || f.group_path)}</span>
+                  <span class="subgroup-divider-path">${escapeHtml(f.group_path)}</span>
+                </div>
+              </td>
+            `;
+            fragment.appendChild(subTr);
+          } else if (!f.group_path) {
+            lastGroupKey = null;
+          }
+          fragment.appendChild(renderSingleRow(f));
         }
-        fragment.appendChild(renderSingleRow(f));
       });
     });
   } else {
-    filtered.forEach(f => {
-      fragment.appendChild(renderSingleRow(f));
+    displayItems.forEach(f => {
+      if (f.isRollup) {
+        const rowResult = renderRollupRow(f, false);
+        if (Array.isArray(rowResult)) {
+          rowResult.forEach(r => fragment.appendChild(r));
+        } else {
+          fragment.appendChild(rowResult);
+        }
+      } else {
+        fragment.appendChild(renderSingleRow(f));
+      }
     });
   }
 
@@ -2893,7 +4003,10 @@ function formatFieldValue(val, field = null) {
   }
 
   if (typeof val === 'number') {
-    return Number.isInteger(val) ? val.toString() : val.toFixed(2);
+    if (Number.isInteger(val)) return val.toString();
+    return Math.abs(val * 100 - Math.round(val * 100)) > 1e-4
+      ? Number(val.toFixed(3)).toString()
+      : val.toFixed(2);
   }
   return String(val);
 }
@@ -2916,7 +4029,10 @@ function formatFieldValuePlain(val, field = null) {
   }
 
   if (typeof val === 'number') {
-    return Number.isInteger(val) ? val.toString() : val.toFixed(2);
+    if (Number.isInteger(val)) return val.toString();
+    return Math.abs(val * 100 - Math.round(val * 100)) > 1e-4
+      ? Number(val.toFixed(3)).toString()
+      : val.toFixed(2);
   }
   return String(val);
 }
@@ -3004,12 +4120,46 @@ function updateFilterCounts() {
   }
   const optScale = document.getElementById('optHideScaleFactors');
   const optRaw = document.getElementById('optHideCombinedRaw');
+  const optRollup = document.getElementById('optRollupSubgroups') || el.optRollupSubgroups;
+  const hasSubgroups = currentFields.some(f => f.group_index !== null && f.group_index !== undefined && Boolean(f.group_path));
   if (optScale) optScale.style.display = hasSf ? 'inline-flex' : 'none';
   if (optRaw) optRaw.style.display = isUnified ? 'none' : 'inline-flex';
+  if (optRollup) optRollup.style.display = hasSubgroups ? 'inline-flex' : 'none';
 }
 
 function updateHaCounter() {
-  el.haSelectedCount.textContent = state.selectedHaKeys.size;
+  const activeSn = state.activeDevice ? (state.activeDevice.serial_number || '').trim().toUpperCase() : '';
+  const resolvedEntities = new Set();
+
+  for (const k of state.selectedHaKeys) {
+    if (!k || !k.includes('.*.')) {
+      resolvedEntities.add(k);
+      continue;
+    }
+    const colonIdx = k.indexOf(':');
+    const sn = colonIdx !== -1 ? k.slice(0, colonIdx).trim().toUpperCase() : activeSn;
+    const rawWk = colonIdx !== -1 ? k.slice(colonIdx + 1) : k;
+    const candidates = (sn && state.deviceFieldKeysBySn?.[sn])
+      || (sn === activeSn ? (state.activeFields || []).map(f => f.key).filter(Boolean) : []);
+
+    let matchedAny = false;
+    for (const cand of candidates) {
+      if (groupWildcardMatchesFieldKey(rawWk, cand)) {
+        resolvedEntities.add(sn ? `${sn}:${cand}` : cand);
+        matchedAny = true;
+      }
+    }
+    if (!matchedAny) {
+      resolvedEntities.add(k);
+    }
+  }
+
+  el.haSelectedCount.textContent = resolvedEntities.size;
+  if (resolvedEntities.size !== state.selectedHaKeys.size) {
+    el.haSelectedCount.title = `${resolvedEntities.size} concrete entities (${state.selectedHaKeys.size} rules saved)`;
+  } else {
+    el.haSelectedCount.title = '';
+  }
 }
 
 // Server-Sent Events (SSE) Live Feed
@@ -3180,6 +4330,41 @@ function handleLiveFieldUpdate(field) {
       const ageStr = formatDataAge(field.last_updated);
       childTsBadge.innerHTML = `<span class="ts-icon">🕒</span> ${escapeHtml(tsStr)}`;
       childTsBadge.title = `Read at ${tsStr}${ageStr ? ` (${ageStr})` : ''}`;
+    }
+
+    // Refresh & flash rolled-up subgroup summary value & timestamp if this member belongs to an active rollup
+    if (state.rollupIdByMemberKey && state.rollupIdByMemberKey.has(field.key)) {
+      const rollupId = state.rollupIdByMemberKey.get(field.key);
+      const rollup = state.activeRollupsById?.get(rollupId);
+      if (rollup) {
+        for (const inst of (rollup.instances || [])) {
+          const isMatch = inst.key === field.key
+            || inst.active_source_key === field.key
+            || (Array.isArray(inst.sources) && inst.sources.some(s => s.field_key === field.key));
+          if (isMatch) {
+            inst.value = field.value;
+            inst.latest_value = field.value;
+            if (field.last_updated) {
+              inst.last_updated = field.last_updated;
+              inst.latest_updated = field.last_updated;
+            }
+          }
+        }
+        const valSummary = formatRollupValueSummary(rollup, state.viewMode === 'unified');
+        const rollupValBadge = document.getElementById(`val-${sanitizeId(rollup.id)}`);
+        if (rollupValBadge) {
+          rollupValBadge.innerHTML = valSummary.html;
+          rollupValBadge.classList.add('value-flash');
+          setTimeout(() => rollupValBadge.classList.remove('value-flash'), 600);
+        }
+        const rollupTsBadge = document.getElementById(`ts-${sanitizeId(rollup.id)}`);
+        if (rollupTsBadge && valSummary.latestTs) {
+          const tsStr = formatTimestamp(valSummary.latestTs);
+          const ageStr = formatDataAge(valSummary.latestTs);
+          rollupTsBadge.innerHTML = `<span class="ts-icon">🕒</span> ${escapeHtml(tsStr)}`;
+          rollupTsBadge.title = `Read at ${tsStr}${ageStr ? ` (${ageStr})` : ''}`;
+        }
+      }
     }
   }
 }
@@ -4285,6 +5470,14 @@ function setupEventListeners() {
     });
   }
 
+  // Rollup Repeating Sub-Groups Checkbox
+  if (el.rollupSubgroups) {
+    el.rollupSubgroups.addEventListener('change', (e) => {
+      state.rollupSubgroups = e.target.checked;
+      renderFieldTable();
+    });
+  }
+
   // Hide Combined Raw Checkbox
   if (el.hideCombinedRaw) {
     el.hideCombinedRaw.addEventListener('change', (e) => {
@@ -4486,12 +5679,15 @@ function setupEventListeners() {
     }
     [...(state.activeFields || []), ...(state.unifiedFields || [])].forEach(f => {
       const compKey = getCompoundKeyForItem(f);
+      const canonicalKey = getCanonicalItemFieldKey(f);
       const keysToClear = [
         f.key,
         f.id,
         compKey,
         f.mqtt_key,
         f.active_source_key,
+        wildcardizeGroupFieldKey(canonicalKey),
+        wildcardizeGroupFieldKey(f.key),
         ...(Array.isArray(f.sources) ? f.sources.map(s => s.field_key) : []),
         ...(Array.isArray(f.member_keys) ? f.member_keys : []),
         ...(Array.isArray(f.modbus_candidates) ? f.modbus_candidates : []),
@@ -4521,8 +5717,31 @@ function setupEventListeners() {
         return;
       }
 
+      // Collect active wildcard rules for active device
+      const activeWildcards = new Set();
+      for (const rawKey of state.selectedHaKeys) {
+        if (isGroupWildcardKey(rawKey)) {
+          if (!rawKey.includes(':') && activeSn) {
+            activeWildcards.add(rawKey);
+          } else if (activeSn && rawKey.startsWith(`${activeSn}:`)) {
+            activeWildcards.add(rawKey.slice(activeSn.length + 1));
+          } else if (!rawKey.includes(':')) {
+            activeWildcards.add(rawKey);
+          }
+        }
+      }
+
       // Collect all selected fields for the active device
       const selectedFields = state.activeFields.filter(f => isFieldSelected(f));
+      const nonWildcardSelected = selectedFields.filter(f => {
+        const fKey = getCanonicalItemFieldKey(f) || f.key || '';
+        for (const wk of activeWildcards) {
+          if (groupWildcardMatchesFieldKey(wk, fKey)) {
+            return false;
+          }
+        }
+        return true;
+      });
       const typeLabel = formatDeviceTypePlural(devType);
 
       // Collect all category overrides for active device
@@ -4534,11 +5753,20 @@ function setupEventListeners() {
           activeOverrides[subKey] = v;
         }
       }
-      // Also ensure any field on activeDevice with category override is included
+      // Also ensure any field on activeDevice with category override is included (preserving wildcard granularity)
       state.activeFields.forEach(f => {
         if (hasCategoryOverride(f)) {
           const catVal = isFieldDiagnostic(f) ? 'diagnostic' : 'primary';
-          const keys = [f.active_source_key, f.key, f.id, f.concept_key].filter(Boolean);
+          const hasSubgroupPath = Boolean(f.group_path);
+          if (hasSubgroupPath) {
+            const wk = wildcardizeGroupFieldKey(getCanonicalItemFieldKey(f) || f.key);
+            if (wk && activeOverrides[wk]) {
+              return;
+            }
+          }
+          const keys = hasSubgroupPath
+            ? [f.active_source_key, f.key].filter(Boolean)
+            : [f.active_source_key, f.key, f.id, f.concept_key].filter(Boolean);
           keys.forEach(k => {
             activeOverrides[k] = catVal;
           });
@@ -4566,8 +5794,11 @@ function setupEventListeners() {
           }
         }
 
-        // 3. Apply selected fields to this peer device
-        selectedFields.forEach(f => {
+        // 3. Apply wildcard and concrete selected fields to this peer device
+        for (const wk of activeWildcards) {
+          state.selectedHaKeys.add(`${peerSn}:${wk}`);
+        }
+        nonWildcardSelected.forEach(f => {
           const cKey = getCompoundKeyForItem(f);
           const isComp = Boolean(cKey);
           if (isComp && cKey) {
@@ -4589,6 +5820,9 @@ function setupEventListeners() {
         state.selectedHaKeys.delete(f.key);
         if (f.mqtt_key) state.selectedHaKeys.delete(f.mqtt_key);
       });
+      for (const wk of activeWildcards) {
+        state.selectedHaKeys.delete(wk);
+      }
 
       updateHaCounter();
       updateFilterCounts();

@@ -87,6 +87,112 @@ def strip_group_indices(group_path: str) -> str:
     return ".".join(segs)
 
 
+_NON_GROUP_SUBDOMAINS: frozenset[str] = frozenset({"live", "compound", "concept", "standalone"})
+
+
+def wildcard_group_path(group_path: str) -> str:
+    """Replace 1-based numeric instance indices in a SunSpec group_path with '*'.
+
+    Examples:
+        'lithium_ion_string_module.1' -> 'lithium_ion_string_module.*'
+        'Crv.1.Pt.2' -> 'Crv.*.Pt.*'
+    """
+    if not group_path:
+        return ""
+    return ".".join("*" if s.isdigit() else s for s in group_path.split(".") if s)
+
+
+def wildcardize_group_field_key(field_key: str) -> Optional[str]:
+    """Convert a concrete (or partially wildcarded) sub-group field key into a canonical '*' wildcard rule.
+
+    Preserves an optional '<SN>:' prefix. Returns None for non-subgroup keys or keys
+    without numeric/'*' instance segments.
+    """
+    if not field_key or not isinstance(field_key, str):
+        return None
+    raw = field_key.strip()
+    if not raw:
+        return None
+
+    sn_prefix = ""
+    f_part = raw
+    if ":" in raw:
+        sn_part, f_part = raw.split(":", 1)
+        sn_prefix = f"{sn_part.strip()}:"
+        f_part = f_part.strip()
+
+    parts = f_part.split(".")
+    if len(parts) < 4 or parts[1] in _NON_GROUP_SUBDOMAINS:
+        return None
+
+    mid_segs = parts[2:-1]
+    has_instance = False
+    new_mid: List[str] = []
+    for s in mid_segs:
+        if s.isdigit() or s == "*":
+            new_mid.append("*")
+            has_instance = True
+        else:
+            new_mid.append(s)
+
+    if not has_instance:
+        return None
+    return f"{sn_prefix}{parts[0]}.{parts[1]}.{'.'.join(new_mid)}.{parts[-1]}"
+
+
+def is_group_wildcard_key(field_key: str) -> bool:
+    """Return True if field_key contains at least one '*' sub-group instance wildcard segment."""
+    if not field_key or not isinstance(field_key, str):
+        return False
+    raw = field_key.strip()
+    f_part = raw.split(":", 1)[1].strip() if ":" in raw else raw
+    parts = f_part.split(".")
+    if len(parts) < 4 or parts[1] in _NON_GROUP_SUBDOMAINS:
+        return False
+    return "*" in parts[2:-1]
+
+
+def group_wildcard_matches_field_key(pattern_key: str, concrete_key: str) -> bool:
+    """Return True if a sub-group wildcard pattern (with '*') matches concrete_key."""
+    if not pattern_key or not concrete_key:
+        return False
+    p_raw = str(pattern_key).strip()
+    c_raw = str(concrete_key).strip()
+
+    p_sn: Optional[str] = None
+    c_sn: Optional[str] = None
+    if ":" in p_raw:
+        p_sn, p_field = p_raw.split(":", 1)
+        p_sn = p_sn.strip().upper()
+    else:
+        p_field = p_raw
+    if ":" in c_raw:
+        c_sn, c_field = c_raw.split(":", 1)
+        c_sn = c_sn.strip().upper()
+    else:
+        c_field = c_raw
+
+    if p_sn and c_sn and p_sn != c_sn:
+        return False
+
+    p_parts = p_field.strip().split(".")
+    c_parts = c_field.strip().split(".")
+    if len(p_parts) != len(c_parts) or len(p_parts) < 4:
+        return False
+    if p_parts[0] != c_parts[0] or p_parts[1] != c_parts[1] or p_parts[-1] != c_parts[-1]:
+        return False
+    if "*" not in p_parts[2:-1]:
+        return False
+
+    for ps, cs in zip(p_parts[2:-1], c_parts[2:-1]):
+        if ps == cs:
+            continue
+        if ps == "*" and (cs.isdigit() or cs == "*"):
+            continue
+        return False
+    return True
+
+
 _GROUP_SEGMENT_LABELS: Dict[str, str] = {
     "lithium_ion_string_module": "Module",
     "dcb105_module": "Module",

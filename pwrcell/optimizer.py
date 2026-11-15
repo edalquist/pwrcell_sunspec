@@ -14,7 +14,8 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from .catalog import infer_ha_classes, is_scale_factor_point
+from .catalog import group_wildcard_matches_field_key, infer_ha_classes, is_scale_factor_point
+from .ha import is_field_selected
 
 logger = logging.getLogger(__name__)
 
@@ -812,9 +813,9 @@ def group_device_fields(
             if bounds and not grp_bounds:
                 grp_bounds = bounds
 
-            # Check if this field or qualified field is selected in HA config
+            # Check if this field or qualified field (including '*' group wildcard) is selected in HA config
             qual_key = f"{dev_sn}:{f_key}" if dev_sn else f_key
-            if f_key in selected_keys or qual_key in selected_keys:
+            if f_key in selected_keys or qual_key in selected_keys or is_field_selected(f_key, dev_sn, selected_keys):
                 grp_selected = True
 
             pin_match = (user_pins.get(c_id) == f_key)
@@ -1219,20 +1220,26 @@ def resolve_minimal_models_for_paths(
                     solver_items[p] = cand_set
                 continue
 
-            # Specific point (e.g. 'inverter.inverter.Hz' or 'inverter.live.grid_power_w')
+            # Specific point (e.g. 'inverter.inverter.Hz', 'inverter.live.grid_power_w', or sub-group path)
             found_field_models: Set[int] = set()
             pt_name = parts[-1].lower()
+            is_subgroup_path = len(parts) >= 4 and sub not in ("live", "compound", "concept", "unified")
 
             if state_store and hasattr(state_store, "devices"):
                 for dev in state_store.devices.values():
                     if dev.device_type == d_type:
-                        # Check canonical synonyms for pt_name
-                        matched_c = find_canonical_concept(d_type, pt_name, None)
-                        syn_names = CANONICAL_SYNONYMS[d_type][matched_c]["names"] if matched_c else {pt_name}
+                        if is_subgroup_path:
+                            for f_key, f in dev.fields.items():
+                                if (f_key == p or group_wildcard_matches_field_key(p, f_key)) and f.model_id:
+                                    found_field_models.add(f.model_id)
+                        else:
+                            # Check canonical synonyms for pt_name
+                            matched_c = find_canonical_concept(d_type, pt_name, None)
+                            syn_names = CANONICAL_SYNONYMS[d_type][matched_c]["names"] if matched_c else {pt_name}
 
-                        for f_key, f in dev.fields.items():
-                            if (f.name.lower() in syn_names or f.key == p) and f.model_id:
-                                found_field_models.add(f.model_id)
+                            for f_key, f in dev.fields.items():
+                                if (f.name.lower() in syn_names or f.key == p) and f.model_id:
+                                    found_field_models.add(f.model_id)
 
             if found_field_models:
                 solver_items[p] = found_field_models
@@ -1243,7 +1250,7 @@ def resolve_minimal_models_for_paths(
                     sub,
                     catalog=catalog,
                     state_store=state_store,
-                    exact_path=p,
+                    exact_path=None if "*" in p else p,
                 )
                 if mid is not None:
                     fixed_models.add(mid)
