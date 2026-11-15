@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.16] - 2026-11-15
+
+### Fixed
+- **Battery SoC/SoH Retained Discovery Topic Collision & Model Alias Grouping (Issue #17)**:
+  - Disambiguated raw Modbus discovery `object_id`/`sub_key` (`generate_discovery_payload` in `pwrcell/ha.py`) when a raw point's trailing path collides with a compound concept ID on the same device type (e.g., Model 802 `battery.battery.SoC` -> `m802_soc` and `battery.battery.SoH` -> `m802_soh`), preventing suppressed Model 802 member clears from wiping retained `battery_soc/config` and `battery_soh/config` discovery payloads on the MQTT broker.
+  - Hardened `HomeAssistantBridge.publish_discovery()` and `_on_compound_update()` (`pwrcell/bridge.py`) to defer all suppressed-member and legacy retained `""` clears until after active discovery and state topics are registered, never clearing any topic claimed by an active entity.
+  - Updated `ensure_selected_field_definitions()` (`pwrcell/ha.py`) to pre-populate only a single primary non-excluded candidate on cold start when a selected compound has zero polled members yet, avoiding unnecessary synthetic placeholder raw fields.
+  - Expanded `model_<id>` aliases to canonical SunSpec catalog model names at `MappingRegistry.reload()` (`pwrcell/mapping.py`), added explicit canonical SunSpec model keys (including `inverter.REbus_status.St`, `inverter.inverter.St`, `inverter.DERMeasureAC.InvSt`, and `invst` synonym in `inverter_state`) to `pwrcell/data/groupings.yaml`, and preserved `unit` when serializing `battery_soc` in `save_mappings()`.
+
+### Added
+- **Collision-Avoidance & Alias-Expansion Diagnostics and Regression Tests**:
+  - Added `DEBUG` logging in `pwrcell/ha.py`, `pwrcell/bridge.py`, and `pwrcell/mapping.py`, plus 4 regression tests in `tests/test_issue_17_ha_config.py`.
+
 ## [3.1.15] - 2026-11-15
 
 ### Fixed

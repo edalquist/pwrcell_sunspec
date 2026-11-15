@@ -613,7 +613,7 @@ def save_mappings(
             g_entry["fields"] = f_list
             if m.synonyms:
                 g_entry["synonyms"] = list(m.synonyms)
-            if m.unit and "soc" not in (m.id or "").lower():
+            if m.unit:
                 g_entry["unit"] = m.unit
             groups_list.append(g_entry)
 
@@ -639,6 +639,23 @@ class MappingRegistry:
     """Thread-safe singleton/registry of active telemetry mappings."""
 
     _instance: Optional[MappingRegistry] = None
+    _catalog_model_names: Optional[Dict[int, str]] = None
+
+    @classmethod
+    def _get_catalog_model_names(cls) -> Dict[int, str]:
+        if cls._catalog_model_names is None:
+            names: Dict[int, str] = {}
+            try:
+                from .catalog import ModelCatalog
+
+                cat = ModelCatalog()
+                for mid, mdef in cat.models.items():
+                    if getattr(mdef, "name", None):
+                        names[int(mid)] = str(mdef.name)
+            except Exception as e:
+                logger.debug("MappingRegistry: skipped catalog model name index (%s)", e)
+            cls._catalog_model_names = names
+        return cls._catalog_model_names
 
     def __init__(self, config_path: Optional[str] = None):
         self.config_path = config_path
@@ -667,6 +684,30 @@ class MappingRegistry:
         self.ungrouped_fields = {str(x).strip() for x in raw_ungrouped if str(x).strip()}
 
         self._mappings = load_mappings(self.config_path)
+
+        # Expand legacy/user-saved model_<id> Modbus entries (e.g. inverter.model_64207.St)
+        # to also include their canonical catalog model-name counterparts (inverter.REbus_status.St)
+        # so persisted groupings.yaml files map live polled registers accurately.
+        cat_names = self._get_catalog_model_names()
+        if cat_names:
+            for m in self._mappings:
+                for mbf in list(m.modbus_fields):
+                    parts = mbf.split(".")
+                    if len(parts) >= 3 and parts[1].startswith("model_") and parts[1][6:].isdigit():
+                        mid = int(parts[1][6:])
+                        m_name = cat_names.get(mid)
+                        if m_name:
+                            canonical_key = f"{parts[0]}.{m_name}.{'.'.join(parts[2:])}"
+                            if canonical_key not in m.modbus_fields and canonical_key not in self.ungrouped_fields:
+                                m.modbus_fields.append(canonical_key)
+                                if mbf in m.member_transforms and canonical_key not in m.member_transforms:
+                                    m.member_transforms[canonical_key] = m.member_transforms[mbf]
+                                logger.debug(
+                                    "Expanded model alias '%s' -> canonical '%s' in mapping '%s'",
+                                    mbf,
+                                    canonical_key,
+                                    m.id,
+                                )
 
         self._by_id = {m.id: m for m in self._mappings}
         self._by_mqtt: Dict[str, TelemetryMappingDef] = {}

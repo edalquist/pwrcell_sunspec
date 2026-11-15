@@ -328,6 +328,9 @@ class HomeAssistantBridge:
         new_active_member_keys: set[str] = set()
         new_payload_cache: dict[str, Dict[str, Any]] = {}
         current_discovery_topics: set[str] = set()
+        current_state_topics: set[str] = set()
+        pending_legacy_clears: set[str] = set()
+        suppressed_payloads: list[tuple[str, Dict[str, Any]]] = []
         persisted_topics = self._load_persisted_published_topics()
         with self._lock:
             previously_published = set(self._published_discovery_topics) | persisted_topics
@@ -380,15 +383,17 @@ class HomeAssistantBridge:
                     config_payload = json.dumps(payload_info["payload"])
                     self._mqttc.publish(config_topic, config_payload, retain=True)
                     current_discovery_topics.add(config_topic)
+                    if payload_info.get("state_topic"):
+                        current_state_topics.add(payload_info["state_topic"])
                     published_count += 1
                     dev_compounds += 1
 
                     old_s_topic = payload_info.get("old_sensor_topic")
                     if old_s_topic:
-                        self._mqttc.publish(old_s_topic, "", retain=True)
+                        pending_legacy_clears.add(old_s_topic)
 
                     for leg_t in payload_info.get("legacy_config_topics", []):
-                        self._mqttc.publish(leg_t, "", retain=True)
+                        pending_legacy_clears.add(leg_t)
 
                     cmd_topic = payload_info.get("command_topic")
                     if cmd_topic:
@@ -411,8 +416,8 @@ class HomeAssistantBridge:
                     reg=reg,
                     custom_data=custom_data,
                 ):
-                    # Suppress duplicate raw field because its compound view is active.
-                    # Clear any previously retained discovery and state topics for this suppressed field.
+                    # Defer clearing discovery and state topics until after all active entities
+                    # are collected so colliding topics are never wiped.
                     dev_suppressed += 1
                     payload_info = generate_discovery_payload(
                         field,
@@ -422,9 +427,7 @@ class HomeAssistantBridge:
                         ha_prefix=self.discovery_prefix,
                         category_overrides=cat_overrides,
                     )
-                    self._mqttc.publish(payload_info["config_topic"], "", retain=True)
-                    if payload_info.get("state_topic"):
-                        self._mqttc.publish(payload_info["state_topic"], "", retain=True)
+                    suppressed_payloads.append((f"{sn_clean}:{f_key}", payload_info))
                     continue
 
                 if is_field_selected(f_key, dev.serial_number, selected_set):
@@ -448,15 +451,17 @@ class HomeAssistantBridge:
                     # Publish discovery configuration (retained)
                     self._mqttc.publish(config_topic, config_payload, retain=True)
                     current_discovery_topics.add(config_topic)
+                    if payload_info.get("state_topic"):
+                        current_state_topics.add(payload_info["state_topic"])
                     published_count += 1
                     dev_raw += 1
 
                     old_s_topic = payload_info.get("old_sensor_topic")
                     if old_s_topic:
-                        self._mqttc.publish(old_s_topic, "", retain=True)
+                        pending_legacy_clears.add(old_s_topic)
 
                     for leg_t in payload_info.get("legacy_config_topics", []):
-                        self._mqttc.publish(leg_t, "", retain=True)
+                        pending_legacy_clears.add(leg_t)
 
                     # If field is writable, subscribe to its command topic
                     cmd_topic = payload_info.get("command_topic")
@@ -492,7 +497,29 @@ class HomeAssistantBridge:
             self._mqttc.publish(gw_config_topic, json.dumps(gw_payload_info["payload"]), retain=True)
             self._mqttc.publish(gw_payload_info["state_topic"], "online", retain=True)
             current_discovery_topics.add(gw_config_topic)
+            if gw_payload_info.get("state_topic"):
+                current_state_topics.add(gw_payload_info["state_topic"])
             published_count += 1
+
+        # 4. Safely clear suppressed raw member and legacy discovery topics not claimed in this pass
+        for sup_key, s_info in suppressed_payloads:
+            s_cfg_topic = s_info["config_topic"]
+            s_st_topic = s_info.get("state_topic")
+            if s_cfg_topic not in current_discovery_topics:
+                self._mqttc.publish(s_cfg_topic, "", retain=True)
+            else:
+                logger.debug("Skipping suppression config clear on active topic %s (suppressed=%s)", s_cfg_topic, sup_key)
+            if s_st_topic:
+                if s_st_topic not in current_state_topics:
+                    self._mqttc.publish(s_st_topic, "", retain=True)
+                else:
+                    logger.debug("Skipping suppression state clear on active topic %s (suppressed=%s)", s_st_topic, sup_key)
+
+        for leg_t in sorted(pending_legacy_clears):
+            if leg_t not in current_discovery_topics:
+                self._mqttc.publish(leg_t, "", retain=True)
+            else:
+                logger.debug("Skipping legacy config clear on active topic %s", leg_t)
 
         with self._lock:
             self._command_topic_to_field = new_command_map
@@ -669,15 +696,10 @@ class HomeAssistantBridge:
             return
         clean_sn = c_view.device_sn.strip().upper()
         cache_key = f"{clean_sn}:{c_view.key}"
+        c_members = collect_compound_member_keys(clean_sn, c_view)
         with self._lock:
             self._active_compound_keys.add(cache_key)
-            if getattr(c_view, "mqtt_key", None):
-                self._active_member_keys.add(f"{clean_sn}:{c_view.mqtt_key}")
-            for cand in getattr(c_view, "modbus_candidates", []):
-                self._active_member_keys.add(f"{clean_sn}:{cand}")
-            for s in getattr(c_view, "sources", []):
-                if getattr(s, "field_key", None):
-                    self._active_member_keys.add(f"{clean_sn}:{s.field_key}")
+            self._active_member_keys.update(c_members)
             payload_info = self._payload_info_cache.get(cache_key)
         dev = self.client.state.get_device(c_view.device_sn)
         if not dev:
@@ -703,27 +725,41 @@ class HomeAssistantBridge:
                 self._published_discovery_topics.add(config_topic)
         if needs_discovery:
             # Unpublish raw member sensors so HA doesn't keep stale duplicate entities
-            for cand in getattr(c_view, "modbus_candidates", []):
-                if cand in dev.fields:
-                    m_field = dev.fields[cand]
+            cleared_member_topics: list[str] = []
+            for mk in sorted(c_members):
+                f_key = mk.split(":", 1)[1] if ":" in mk else mk
+                if f_key in dev.fields:
+                    m_field = dev.fields[f_key]
                     m_payload = generate_discovery_payload(
-                        m_field, dev, gateway_device=gateway, base_topic=self.base_topic, ha_prefix=self.discovery_prefix
+                        m_field,
+                        dev,
+                        gateway_device=gateway,
+                        base_topic=self.base_topic,
+                        ha_prefix=self.discovery_prefix,
+                        category_overrides=self.category_overrides,
                     )
-                    self._mqttc.publish(m_payload["config_topic"], "", retain=True)
-            if getattr(c_view, "mqtt_key", None) and c_view.mqtt_key in dev.fields:
-                m_field = dev.fields[c_view.mqtt_key]
-                m_payload = generate_discovery_payload(
-                    m_field, dev, gateway_device=gateway, base_topic=self.base_topic, ha_prefix=self.discovery_prefix
-                )
-                self._mqttc.publish(m_payload["config_topic"], "", retain=True)
+                    m_cfg = m_payload["config_topic"]
+                    if m_cfg == config_topic:
+                        logger.debug(
+                            "Skipping raw member discovery clear on colliding compound topic %s (member=%s)",
+                            m_cfg,
+                            f_key,
+                        )
+                        continue
+                    self._mqttc.publish(m_cfg, "", retain=True)
+                    cleared_member_topics.append(m_cfg)
+            if cleared_member_topics:
+                with self._lock:
+                    self._published_discovery_topics.difference_update(cleared_member_topics)
 
             config_payload = json.dumps(payload_info["payload"])
             self._mqttc.publish(config_topic, config_payload, retain=True)
             old_s_topic = payload_info.get("old_sensor_topic")
-            if old_s_topic:
+            if old_s_topic and old_s_topic != config_topic:
                 self._mqttc.publish(old_s_topic, "", retain=True)
             for leg_t in payload_info.get("legacy_config_topics", []):
-                self._mqttc.publish(leg_t, "", retain=True)
+                if leg_t != config_topic:
+                    self._mqttc.publish(leg_t, "", retain=True)
             cmd_topic = payload_info.get("command_topic")
             if cmd_topic:
                 with self._lock:

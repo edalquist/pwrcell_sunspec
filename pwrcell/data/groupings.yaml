@@ -98,6 +98,8 @@ groups:
   - inverter.live.grid_power_w
   - path: inverter.inverter_status.CTPow
     transform: negate
+  - path: inverter.REbus_arb.CTPow
+    transform: negate
   - path: inverter.model_64208.CTPow
     transform: negate
   - path: inverter.model_64202.CTPow
@@ -113,6 +115,7 @@ groups:
   fields:
   - inverter.live.system_mode
   - inverter.inverter_status.SysMd
+  - inverter.REbus_arb.SysMd
   - inverter.model_64208.SysMd
   - inverter.model_64202.SysMd
   synonyms:
@@ -148,14 +151,19 @@ groups:
   device_type: inverter
   fields:
   - inverter.live.inverter_state_name
+  - inverter.REbus_status.St
+  - inverter.inverter.St
+  - inverter.DERMeasureAC.InvSt
   - inverter.model_64207.St
   - inverter.model_102.St
+  - inverter.model_701.InvSt
   - inverter.inverter.StVnd
   - inverter.model_102.StVnd
   - inverter.live.inverter_state
   synonyms:
   - st
   - stvnd
+  - invst
   - inverter_state
   - state
 - id: grid_imported_energy
@@ -164,6 +172,7 @@ groups:
   fields:
   - inverter.live.grid_imported_energy_wh
   - inverter.inverter_status.WhIn
+  - inverter.REbus_exp.WhIn
   - inverter.REbus_exp.Whin
   - inverter.model_64208.WhIn
   - inverter.model_64204.Whin
@@ -241,6 +250,7 @@ groups:
   fields:
   - inverter.live.ac_frequency_hz
   - inverter.inverter.Hz
+  - inverter.inverter_status.Hz
   - inverter.model_102.Hz
   - inverter.model_101.Hz
   - inverter.model_103.Hz
@@ -256,6 +266,7 @@ groups:
   fields:
   - inverter.live.ac_voltage_v
   - inverter.inverter.PhVphA
+  - inverter.inverter.PhV
   - inverter.model_102.PhVphA
   - inverter.model_101.PhV
   synonyms:
@@ -294,6 +305,8 @@ groups:
   fields:
   - battery.live.battery_power_w
   - path: battery.battery.W
+    transform: negate
+  - path: battery.DCB105_warranty.W
     transform: negate
   - path: battery.model_802.W
     transform: negate
@@ -337,6 +350,7 @@ groups:
   - battery.REbus_status.E
   - battery.model_64207.E
   - battery.DCB105_warranty.WhIn
+  - battery.battery_status.WhIn
   - battery.model_64209.WhIn
   - battery.model_64252.WhIn
   synonyms:
@@ -348,6 +362,8 @@ groups:
   device_type: battery
   fields:
   - battery.live.battery_exported_energy_wh
+  - battery.battery_status.WhOut
+  - battery.DCB105_warranty.WhOut
   - battery.model_64209.WhOut
   - battery.model_64252.WhOut
   synonyms:
@@ -359,6 +375,7 @@ groups:
   fields:
   - battery.live.storage_ac_charged_energy_wh
   - battery.DCB105_warranty.WhIn
+  - battery.battery_status.WhIn
   - battery.model_64252.WhIn
   - battery.model_64209.WhIn
   synonyms:
@@ -369,6 +386,7 @@ groups:
   fields:
   - battery.live.storage_ac_discharged_energy_wh
   - battery.DCB105_warranty.WhOut
+  - battery.battery_status.WhOut
   - battery.model_64252.WhOut
   - battery.model_64209.WhOut
   synonyms:
@@ -379,6 +397,7 @@ groups:
   fields:
   - battery.battery.V
   - battery.DCB105_warranty.V
+  - battery.lithium_ion_string.V
   - battery.model_802.V
   - battery.model_64252.V
   - battery.model_804.V

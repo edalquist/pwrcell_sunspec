@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any, Dict, Iterable, List, Optional, Set
 import yaml
 
@@ -963,6 +964,44 @@ def generate_discovery_payload(
     else:
         # Build unique object_id from sub-key path (e.g. 'live_solar_power_w' or 'compound_grid_power')
         sub_key = field.key.split(".", 1)[-1].replace(".", "_").lower()
+        # Prevent raw fields whose trailing path matches a compound concept ID
+        # (e.g., Model 802 battery.battery.SoC -> battery_soc) from colliding on
+        # config_topic / state_topic / unique_id with the compound entity.
+        from .mapping import MappingRegistry
+        from .grouping import load_custom_groupings
+
+        reg = MappingRegistry.get_instance()
+        m_col = reg.get_by_id(sub_key) or next(
+            (m for m in reg.get_all() if m.id.lower() == sub_key),
+            None,
+        )
+        custom_concepts = load_custom_groupings().get("custom_concepts") or {}
+        c_col = custom_concepts.get(sub_key) or next(
+            (v for k, v in custom_concepts.items() if str(k).lower() == sub_key),
+            None,
+        )
+        collides_compound = bool(
+            (m_col and (not m_col.device_type or m_col.device_type == device.device_type))
+            or (isinstance(c_col, dict) and (not c_col.get("device_type") or c_col.get("device_type") == device.device_type))
+        )
+        if collides_compound:
+            orig_sub_key = sub_key
+            model_id = getattr(field, "model_id", None)
+            if model_id is not None:
+                pt_tail = (
+                    field.key.split(".", 2)[-1].replace(".", "_").lower()
+                    if field.key.count(".") >= 2
+                    else orig_sub_key
+                )
+                sub_key = f"m{model_id}_{pt_tail}"
+            else:
+                sub_key = f"raw_{orig_sub_key}"
+            logger.debug(
+                "Disambiguated raw field '%s' discovery sub_key '%s' -> '%s' to avoid compound collision",
+                field.key,
+                orig_sub_key,
+                sub_key,
+            )
     
     node_id = f"pwrcell_{clean_sn}"
     object_id = sub_key
@@ -1282,12 +1321,24 @@ def ensure_selected_field_definitions(
         if f_path.startswith(f"{dev.device_type}.compound.") or f_path.startswith(f"{dev.device_type}.concept."):
             cid = f_path.split(".")[-1]
             m = reg.get_by_id(cid)
+            mqtt_candidates: List[str] = []
+            mb_canonical: List[str] = []
+            mb_alias: List[str] = []
             if m and m.device_type == dev.device_type:
-                for cand in (list(m.mqtt_fields) + list(m.modbus_fields)):
+                for cand in m.mqtt_fields:
                     if reg.is_field_ungrouped(cand) or is_field_excluded_from_mapping(sn_clean, cand, cid, custom_data):
                         continue
-                    if cand not in dev.fields:
-                        state_store.ensure_field_definition(dev.serial_number, cand)
+                    mqtt_candidates.append(cand)
+                for cand in m.modbus_fields:
+                    if reg.is_field_ungrouped(cand) or is_field_excluded_from_mapping(sn_clean, cand, cid, custom_data):
+                        continue
+                    parts = cand.split(".")
+                    if len(parts) >= 2 and re.match(r"^model_\d+$", parts[1]):
+                        mb_alias.append(cand)
+                    else:
+                        mb_canonical.append(cand)
+
+            override_members: List[str] = []
             for ov_k, ov_tgt in field_overrides.items():
                 if ov_tgt != cid:
                     continue
@@ -1298,8 +1349,13 @@ def ensure_selected_field_definitions(
                 else:
                     ov_fk = ov_k
                 ov_fk = ov_fk.strip()
-                if ov_fk.startswith(f"{dev.device_type}.") and ov_fk not in dev.fields:
-                    state_store.ensure_field_definition(dev.serial_number, ov_fk)
+                if ov_fk.startswith(f"{dev.device_type}.") and ov_fk not in override_members:
+                    override_members.append(ov_fk)
+
+            all_non_excluded = mqtt_candidates + mb_canonical + mb_alias + override_members
+            if not any(cand in dev.fields for cand in all_non_excluded) and all_non_excluded:
+                primary_cand = (mqtt_candidates or mb_canonical or mb_alias or override_members)[0]
+                state_store.ensure_field_definition(dev.serial_number, primary_cand)
         elif f_path not in dev.fields:
             state_store.ensure_field_definition(dev.serial_number, f_path)
 

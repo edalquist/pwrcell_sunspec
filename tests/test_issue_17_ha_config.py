@@ -21,8 +21,9 @@ from pwrcell.ha import (
     qualify_legacy_ha_config,
     save_ha_config,
 )
+from pwrcell.catalog import ModelCatalog
 from pwrcell.optimizer import group_device_fields, resolve_minimal_models_for_paths
-from pwrcell.state import StateStore
+from pwrcell.state import FieldSource, StateStore
 from pwrcell.ui.server import create_app
 
 
@@ -525,6 +526,201 @@ console.log('NODE_JS_TESTS_OK');
                 json={"selected_fields": ["UNKNOWNSN999:inverter.live.load_power_w"]},
             )
         self.assertTrue(any("unmatched" in line and "device_not_registered" in line for line in cm_preview.output))
+
+    @staticmethod
+    def _make_stateful_broker():
+        retained = {}
+
+        def _publish(topic, payload="", qos=0, retain=False):
+            if retain:
+                if payload == "":
+                    retained.pop(topic, None)
+                else:
+                    retained[topic] = payload
+            return MagicMock()
+
+        return retained, _publish
+
+    def test_default_discovery_retains_battery_soc_and_soh_on_broker(self):
+        """Suppression clears must never wipe battery_soc / battery_soh on cold or warm discovery."""
+        import yaml
+
+        cat = ModelCatalog()
+        default_cfg = yaml.safe_load(Path("config/ha_default_config.yaml").read_text(encoding="utf-8"))
+        save_ha_config(default_cfg["selected_fields"], config_path=self.ha_config_path)
+
+        for warm in (False, True):
+            store = StateStore(catalog=cat)
+            store.register_device("000100010001", slave_id=1, device_type="rebus_beacon", model_name="REbus Beacon")
+            bat = store.register_device("00010008B447", slave_id=2, device_type="battery", model_name="PWRcell Battery")
+            store.register_device("000100090001", slave_id=3, device_type="pv_link", model_name="PV Link")
+            store.register_device("0001000714E9", slave_id=8, device_type="inverter", model_name="XVT076A03")
+
+            if warm:
+                store.set_field("00010008B447", "SoC", "State of Charge", "", 85.0, 85.0, "%", FieldSource.MODBUS_POLL, sub_group="battery", model_id=802, model_name="battery")
+                store.set_field("00010008B447", "SoH", "State of Health", "", 99.0, 99.0, "%", FieldSource.MODBUS_POLL, sub_group="battery", model_id=802, model_name="battery")
+                store.set_field("00010008B447", "state_of_charge", "State of Charge", "", 85.0, 85.0, "%", FieldSource.MQTT_PUSH, sub_group="live")
+                store.set_field("00010008B447", "state_of_health", "State of Health", "", 99.0, 99.0, "%", FieldSource.MQTT_PUSH, sub_group="live")
+
+            mock_client = MagicMock()
+            mock_client.state = store
+            mock_client.poller = None
+
+            retained, fake_publish = self._make_stateful_broker()
+            bridge = HomeAssistantBridge(
+                client=mock_client,
+                ha_config_path=self.ha_config_path,
+                published_topics_path=Path(self._tmp_dir.name) / f"topics_{warm}.json",
+            )
+            bridge._mqttc = MagicMock()
+            bridge._mqttc.publish.side_effect = fake_publish
+
+            bridge.reload_config_and_republish()
+
+            self.assertEqual(bridge._published_discovery_topics - set(retained.keys()), set())
+            soc_cfg_topic = "homeassistant/sensor/pwrcell_00010008b447/battery_soc/config"
+            soh_cfg_topic = "homeassistant/sensor/pwrcell_00010008b447/battery_soh/config"
+            self.assertIn(soc_cfg_topic, retained)
+            self.assertIn(soh_cfg_topic, retained)
+            self.assertEqual(json.loads(retained[soc_cfg_topic]).get("unit_of_measurement"), "%")
+            self.assertEqual(json.loads(retained[soc_cfg_topic]).get("device_class"), "battery")
+            if warm:
+                self.assertIn("pwrcell/00010008b447/battery_soc/state", retained)
+                self.assertIn("pwrcell/00010008b447/battery_soh/state", retained)
+                # Force _on_compound_update rediscovery path and verify colliding member clear doesn't wipe it
+                bridge._published_discovery_topics.discard(soc_cfg_topic)
+                bridge._on_compound_update(store.get_compound_view("battery_soc", bat.serial_number))
+                self.assertIn(soc_cfg_topic, retained)
+
+    def test_suppression_clear_never_wipes_colliding_active_topic(self):
+        """Even if a suppressed raw field shares an active config/state topic, publish_discovery skips clearing it."""
+        store = StateStore(catalog=ModelCatalog())
+        bat = store.register_device("00010008B447", slave_id=2, device_type="battery", model_name="PWRcell Battery")
+        store.set_field("00010008B447", "state_of_charge", "State of Charge", "", 80.0, 80.0, "%", FieldSource.MQTT_PUSH, sub_group="live")
+        store.set_field("00010008B447", "SoC", "State of Charge", "", 80.0, 80.0, "%", FieldSource.MODBUS_POLL, sub_group="battery", model_id=802, model_name="battery")
+        save_ha_config(["00010008B447:battery.compound.battery_soc"], config_path=self.ha_config_path)
+
+        mock_client = MagicMock()
+        mock_client.state = store
+        mock_client.poller = None
+        retained, fake_publish = self._make_stateful_broker()
+        bridge = HomeAssistantBridge(client=mock_client, ha_config_path=self.ha_config_path, published_topics_path=self.topics_path)
+        bridge._mqttc = MagicMock()
+        bridge._mqttc.publish.side_effect = fake_publish
+
+        real_gen = generate_discovery_payload
+
+        def _colliding_gen(field, dev, **kwargs):
+            info = real_gen(field, dev, **kwargs)
+            if getattr(field, "key", None) == "battery.battery.SoC":
+                info = dict(info)
+                info["config_topic"] = "homeassistant/sensor/pwrcell_00010008b447/battery_soc/config"
+                info["state_topic"] = "pwrcell/00010008b447/battery_soc/state"
+            return info
+
+        with mock.patch("pwrcell.bridge.generate_discovery_payload", side_effect=_colliding_gen), self.assertLogs(
+            "pwrcell.bridge", level="DEBUG"
+        ) as cm:
+            bridge.reload_config_and_republish()
+
+        self.assertIn("homeassistant/sensor/pwrcell_00010008b447/battery_soc/config", retained)
+        self.assertIn("pwrcell/00010008b447/battery_soc/state", retained)
+        self.assertTrue(any("Skipping suppression config clear on active topic" in line for line in cm.output))
+        self.assertTrue(any("Skipping suppression state clear on active topic" in line for line in cm.output))
+
+    def test_ungrouped_model_802_soc_and_soh_coexist_with_compounds(self):
+        """Ungrouped battery.battery.SoC and SoH disambiguate discovery topics/IDs cleanly alongside compounds."""
+        bat_sn = "00010008B447"
+        store = StateStore(catalog=ModelCatalog())
+        store.register_device(bat_sn, slave_id=2, device_type="battery", model_name="PWRcell Battery")
+        store.set_field(bat_sn, "state_of_charge", "State of Charge", "", 84.0, 84.0, "%", FieldSource.MQTT_PUSH, sub_group="live")
+        store.set_field(bat_sn, "SoC", "State of Charge", "", 84.0, 84.0, "%", FieldSource.MODBUS_POLL, sub_group="battery", model_id=802, model_name="battery")
+        store.set_field(bat_sn, "state_of_health", "State of Health", "", 98.0, 98.0, "%", FieldSource.MQTT_PUSH, sub_group="live")
+        store.set_field(bat_sn, "SoH", "State of Health", "", 98.0, 98.0, "%", FieldSource.MODBUS_POLL, sub_group="battery", model_id=802, model_name="battery")
+
+        set_field_grouping_override(bat_sn, "battery.battery.SoC", None)
+        set_field_grouping_override(bat_sn, "battery.battery.SoH", None)
+        store.refresh_compound_links(bat_sn)
+
+        save_ha_config(
+            [
+                f"{bat_sn}:battery.compound.battery_soc",
+                f"{bat_sn}:battery.battery.SoC",
+                f"{bat_sn}:battery.compound.battery_soh",
+                f"{bat_sn}:battery.battery.SoH",
+            ],
+            config_path=self.ha_config_path,
+        )
+
+        mock_client = MagicMock()
+        mock_client.state = store
+        mock_client.poller = None
+        retained, fake_publish = self._make_stateful_broker()
+        bridge = HomeAssistantBridge(client=mock_client, ha_config_path=self.ha_config_path, published_topics_path=self.topics_path)
+        bridge._mqttc = MagicMock()
+        bridge._mqttc.publish.side_effect = fake_publish
+        bridge.reload_config_and_republish()
+
+        expected_topics = [
+            "homeassistant/sensor/pwrcell_00010008b447/battery_soc/config",
+            "homeassistant/sensor/pwrcell_00010008b447/m802_soc/config",
+            "homeassistant/sensor/pwrcell_00010008b447/battery_soh/config",
+            "homeassistant/sensor/pwrcell_00010008b447/m802_soh/config",
+        ]
+        for t in expected_topics:
+            self.assertIn(t, retained)
+        unique_ids = [json.loads(retained[t])["unique_id"] for t in expected_topics]
+        state_topics = [json.loads(retained[t])["state_topic"] for t in expected_topics]
+        self.assertEqual(len(set(unique_ids)), 4)
+        self.assertEqual(len(set(state_topics)), 4)
+
+    def test_legacy_groupings_yaml_expands_model_aliases_and_groups_inverter_st_variants(self):
+        """Canonical model names (REbus_status.St, inverter.St, DERMeasureAC.InvSt) map to inverter_state even on legacy groupings.yaml."""
+        import yaml
+
+        store = StateStore(catalog=ModelCatalog())
+        inv = store.register_device("0001000714E9", slave_id=8, device_type="inverter", model_name="XVT076A03")
+        store.set_field("0001000714E9", "St", "State (M64207)", "", "GRID_CONNECTED", 2080, None, FieldSource.MODBUS_POLL, sub_group="REbus_status", model_id=64207, model_name="REbus_status")
+        store.set_field("0001000714E9", "St", "Operating State (M102)", "", "MPPT", 4, None, FieldSource.MODBUS_POLL, sub_group="inverter", model_id=102, model_name="inverter")
+        store.set_field("0001000714E9", "InvSt", "Inverter State (M701)", "", "RUNNING", 3, None, FieldSource.MODBUS_POLL, sub_group="DERMeasureAC", model_id=701, model_name="DERMeasureAC")
+
+        # 1. Packaged groupings.yaml resolves all 3 variants into inverter.compound.inverter_state
+        raw_map = mapping_module.MappingRegistry.get_instance().get_raw_to_compound_map()
+        for fk in ("inverter.REbus_status.St", "inverter.inverter.St", "inverter.DERMeasureAC.InvSt"):
+            self.assertEqual(raw_map.get(fk), "inverter.compound.inverter_state")
+
+        groups = group_device_fields(inv)
+        self.assertFalse(any(".standalone." in g.id for g in groups))
+        inv_state_grp = next((g for g in groups if g.id == "inverter.concept.inverter_state"), None)
+        self.assertIsNotNone(inv_state_grp)
+        src_keys = {s.field_key for s in inv_state_grp.sources}
+        self.assertEqual(src_keys, {"inverter.REbus_status.St", "inverter.inverter.St", "inverter.DERMeasureAC.InvSt"})
+
+        # 2. Legacy 3.1.15-style groupings.yaml with only model_<id> keys expands canonical catalog keys on reload()
+        legacy_doc = {
+            "version": "2.0",
+            "auto_group_heuristics": False,
+            "groups": [
+                {
+                    "id": "inverter_state",
+                    "name": "Inverter Operational State",
+                    "device_type": "inverter",
+                    "fields": [
+                        "inverter.live.inverter_state_name",
+                        "inverter.model_64207.St",
+                        "inverter.model_102.St",
+                        "inverter.model_701.InvSt",
+                    ],
+                }
+            ],
+        }
+        self.groupings_path.write_text(yaml.safe_dump(legacy_doc, sort_keys=False), encoding="utf-8")
+        mapping_module.MappingRegistry.get_instance().reload()
+        reloaded_map = mapping_module.MappingRegistry.get_instance().get_raw_to_compound_map()
+        for fk in ("inverter.REbus_status.St", "inverter.inverter.St", "inverter.DERMeasureAC.InvSt"):
+            self.assertEqual(reloaded_map.get(fk), "inverter.compound.inverter_state")
+        groups_reloaded = group_device_fields(inv)
+        self.assertFalse(any(".standalone." in g.id for g in groups_reloaded))
 
 
 if __name__ == "__main__":
