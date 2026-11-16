@@ -1360,6 +1360,8 @@ class StateStore:
                     if view:
                         views.append(view)
             for cid, cdef in custom_concepts.items():
+                if "*" in str(cid):
+                    continue
                 c_dev_type = cdef.get("device_type", dev.device_type)
                 if c_dev_type == dev.device_type and not reg.get_by_id(cid):
                     view = self.get_compound_view(cid, device_sn=dev.serial_number)
@@ -1383,6 +1385,11 @@ class StateStore:
                     continue
                 sn_clean = dev.serial_number.strip().upper()
                 for f_key, f_obj in dev.fields.items():
+                    if getattr(f_obj, "group_path", None):
+                        f_obj.mqtt_equivalent = None
+                        f_obj.compound_key = None
+                        f_obj.is_compound_raw = False
+                        continue
                     mqtt_eq = mb_to_mqtt.get(f_key)
                     c_key = raw_to_comp.get(f_key) or (raw_to_comp.get(mqtt_eq) if mqtt_eq else None)
                     qual_key = f"{sn_clean}:{f_key}"

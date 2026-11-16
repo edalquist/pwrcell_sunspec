@@ -6158,7 +6158,7 @@ function setupEventListeners() {
           const customLabel = customizeBtn.dataset.label;
           const isInverted = customizeBtn.dataset.inverted === 'true' || customizeBtn.dataset.suggestedTransform === 'negate';
           if (fieldKeys.length > 0) {
-            openGroupingModal(deviceSn, fieldKeys[0], targetConcept);
+            await openGroupingModal(deviceSn, fieldKeys[0], targetConcept, customLabel, fieldKeys);
             if (el.radioGroupNew) {
               el.radioGroupNew.checked = true;
               if (el.groupingNewConceptKey) el.groupingNewConceptKey.value = targetConcept;
@@ -6932,7 +6932,7 @@ async function resetBoundsAction() {
 // Field Grouping & Ungrouping Modal Logic
 const GENERIC_CONCEPTS = new Set(['energy', 'power', 'voltage', 'current', 'frequency', 'temperature', 'status', 'state', 'standalone', 'null', 'none', '']);
 
-async function openGroupingModal(deviceSn, fieldKey, currentConceptKey, currentConceptLabel) {
+async function openGroupingModal(deviceSn, fieldKey, currentConceptKey, currentConceptLabel, extraMemberKeys = []) {
   if (!el.groupingModal) return;
   const sn = deviceSn || (state.activeDevice ? state.activeDevice.serial_number : '') || compareState.selectedDevice || '';
   const cleanConceptKey = (currentConceptKey || '').trim();
@@ -6943,6 +6943,7 @@ async function openGroupingModal(deviceSn, fieldKey, currentConceptKey, currentC
     fieldKey,
     currentConceptKey: cleanConceptKey,
     currentConceptLabel: currentConceptLabel || cleanConceptKey || '(Standalone)',
+    memberFieldKeys: Array.isArray(extraMemberKeys) ? extraMemberKeys : [],
   };
 
   el.groupingFieldKeyBadge.textContent = fieldKey;
@@ -6958,10 +6959,10 @@ async function openGroupingModal(deviceSn, fieldKey, currentConceptKey, currentC
 
   if (currentConceptLabel && !GENERIC_CONCEPTS.has(currentConceptLabel.toLowerCase()) && currentConceptLabel !== '(Standalone)') {
     suggestedNewLabel = currentConceptLabel.replace(/\(.*?\)/g, '').trim();
-    suggestedNewKey = suggestedNewLabel.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    suggestedNewKey = suggestedNewLabel.toLowerCase().replace(/[^a-z0-9*]+/g, '_').replace(/^_+|_+$/g, '');
   } else {
     suggestedNewLabel = pointName;
-    suggestedNewKey = pointName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    suggestedNewKey = pointName.toLowerCase().replace(/[^a-z0-9*]+/g, '_').replace(/^_+|_+$/g, '');
   }
 
   el.groupingNewConceptKey.value = suggestedNewKey;
@@ -7013,14 +7014,14 @@ function closeGroupingModal() {
 
 async function saveGroupingAction() {
   if (!state.groupingModalData) return;
-  let { deviceSn, fieldKey } = state.groupingModalData;
+  let { deviceSn, fieldKey, memberFieldKeys: initialMembers } = state.groupingModalData;
   if (!deviceSn) {
     deviceSn = (state.activeDevice ? state.activeDevice.serial_number : '') || compareState.selectedDevice || '';
   }
 
   let targetConcept = null;
   let customLabel = null;
-  let memberFieldKeys = [fieldKey];
+  let memberFieldKeys = Array.from(new Set([fieldKey, ...((Array.isArray(initialMembers) ? initialMembers : []))].filter(Boolean)));
 
   if (el.radioGroupExisting.checked) {
     targetConcept = el.groupingTargetConceptSelect.value;
@@ -7812,11 +7813,14 @@ function renderCompareSuggestions(suggestions) {
         if (src.source_type === 'MQTT') srcClass = 'src-mqtt';
         else if (src.model_id && src.model_id >= 64200) srcClass = 'src-vendor';
 
-        const valDisplay = src.value !== null && src.value !== undefined
-          ? `${formatFieldValue(src.value)} ${escapeHtml(src.units || s.units || '')}`
-          : '<span class="text-muted">--</span>';
+        const unitSuffix = src.units || s.units || '';
+        const valDisplay = src.value_summary
+          ? `${escapeHtml(src.value_summary)}${unitSuffix ? ' ' + escapeHtml(unitSuffix) : ''}`
+          : (src.value !== null && src.value !== undefined
+              ? `${formatFieldValue(src.value)} ${escapeHtml(unitSuffix)}`
+              : '<span class="text-muted">--</span>');
 
-        const rawDisplay = (src.raw_value !== null && src.raw_value !== undefined && src.raw_value !== src.value)
+        const rawDisplay = (!src.value_summary && src.raw_value !== null && src.raw_value !== undefined && src.raw_value !== src.value)
           ? `<span class="compare-source-raw" title="Raw unscaled value">raw: ${formatFieldValue(src.raw_value)}</span>`
           : '';
 
@@ -7874,6 +7878,44 @@ function renderCompareSuggestions(suggestions) {
         `;
       }).join('');
 
+      let instanceBreakdownHtml = '';
+      if (isExpanded && Array.isArray(s.instances) && s.instances.length > 0) {
+        const hdrSrcs = (s.sources || []).map(src => `<th>${escapeHtml(src.source_id || src.source_type)}</th>`).join('');
+        const instRowsHtml = s.instances.map(inst => {
+          const instSrcCells = (inst.sources || []).map(isrc => {
+            const vStr = isrc.value !== null && isrc.value !== undefined
+              ? `${formatFieldValue(isrc.value)} ${escapeHtml(isrc.units || s.units || '')}`
+              : '--';
+            return `<td title="${escapeHtml(isrc.field_key || '')}">${vStr}</td>`;
+          }).join('');
+          const dStr = (inst.delta !== null && inst.delta !== undefined)
+            ? `${formatFieldValue(inst.delta)} ${escapeHtml(s.units || '')}`
+            : '--';
+          return `
+            <tr>
+              <td><strong>${escapeHtml(inst.instance_label || inst.group_path || '')}</strong></td>
+              ${instSrcCells}
+              <td>${dStr}</td>
+            </tr>
+          `;
+        }).join('');
+        instanceBreakdownHtml = `
+          <div class="compare-instances-breakdown">
+            <div class="compare-instances-title">Per-Instance Alignment (${s.instances.length} Instances)</div>
+            <table class="compare-instances-table">
+              <thead>
+                <tr>
+                  <th>Instance</th>
+                  ${hdrSrcs}
+                  <th>Δ</th>
+                </tr>
+              </thead>
+              <tbody>${instRowsHtml}</tbody>
+            </table>
+          </div>
+        `;
+      }
+
       const reasonsHtml = (s.reasons || []).map(r => `
         <div class="suggestion-reason-item">
           <span>✔</span>
@@ -7882,23 +7924,28 @@ function renderCompareSuggestions(suggestions) {
       `).join('');
 
       const fieldKeysJson = escapeHtml(JSON.stringify((s.sources || []).map(src => src.field_key)));
+      const syncKeysJson = escapeHtml(JSON.stringify((s.sample_field_keys && s.sample_field_keys.length) ? s.sample_field_keys : (s.sources || []).map(src => src.field_key)));
       const isInverted = s.inverted_pair || s.suggested_transform === 'negate';
       const polarityBadge = isInverted ? `
         <span class="suggestion-polarity-badge" title="Registers report opposite signs. Polarity negation is recommended.">
           ⚡ Opposite Polarity (Needs Negation)
         </span>
       ` : '';
+      const rollupInstBadge = s.is_group_rollup
+        ? `<span class="badge-rollup-instances" title="Applies wildcard grouping across all ${s.instance_count} aligned sub-group instances">${s.instance_count}× instances</span>`
+        : '';
 
       return `
         <div class="suggestion-card ${isExpanded ? 'is-expanded' : ''}" data-suggestion-id="${escapeHtml(s.id)}">
           <div class="suggestion-card-header">
             <div class="suggestion-title-group">
               <span class="suggestion-concept-badge">💡 ${escapeHtml(s.suggested_label)} (${escapeHtml(s.suggested_concept_key)})</span>
+              ${rollupInstBadge}
               <span class="suggestion-confidence-badge ${confClass}">${confPct}% ${escapeHtml(s.confidence_label)} Confidence</span>
               ${polarityBadge}
               <button class="btn-toggle-suggestion-expand" data-id="${escapeHtml(s.id)}" title="Click to ${isExpanded ? 'collapse' : 'expand'} full field details">
                 <span>${isExpanded ? '▲' : '▼'}</span>
-                <span>${isExpanded ? 'Collapse' : 'Details'}</span>
+                <span>${isExpanded ? 'Collapse' : (s.is_group_rollup ? `Instances (${s.instance_count})` : 'Details')}</span>
               </button>
             </div>
             <div class="suggestion-actions">
@@ -7906,8 +7953,8 @@ function renderCompareSuggestions(suggestions) {
                       data-action="sync-sample-suggestion"
                       data-id="${escapeHtml(s.id)}"
                       data-sn="${escapeHtml(s.device_sn)}"
-                      data-field-keys="${fieldKeysJson}"
-                      title="Read both candidate fields together right now to compare their values at a closer point in time">
+                      data-field-keys="${syncKeysJson}"
+                      title="Read candidate fields together right now to compare their values at a closer point in time">
                 ⚡ Sync Sample
               </button>
               <button class="btn-approve-suggestion"
@@ -7948,6 +7995,8 @@ function renderCompareSuggestions(suggestions) {
           <div class="compare-sources-list">
             ${sourcesHtml}
           </div>
+
+          ${instanceBreakdownHtml}
 
           <div class="suggestion-reasons-list">
             ${reasonsHtml}
@@ -8101,7 +8150,8 @@ function renderCompareTableRows(rows) {
 
     // Device & Concept column content
     const sources = r.sources || [];
-    const fieldKeysJson = escapeHtml(JSON.stringify(sources.map(s => s.field_key)));
+    const syncFieldKeys = (r.sample_field_keys && r.sample_field_keys.length) ? r.sample_field_keys : sources.map(s => s.field_key);
+    const fieldKeysJson = escapeHtml(JSON.stringify(syncFieldKeys));
     const syncPairBtn = sources.length > 1
       ? `<div class="compare-sync-wrap"><button class="btn-sync-sample-pair" data-action="sync-sample-pair" data-sn="${escapeHtml(r.device_sn || '')}" data-concept-key="${escapeHtml(r.concept_key || '')}" data-field-keys="${fieldKeysJson}" title="Sample all sources in this comparison together at the exact same moment to eliminate polling skew"><span class="sync-icon">⚡</span> <span>Sync Sample</span></button></div>`
       : '';
@@ -8109,18 +8159,22 @@ function renderCompareTableRows(rows) {
       agreementHtml += syncPairBtn;
     }
     const devBadge = r.device_name ? `<span class="compare-device-pill">${escapeHtml(r.device_name)}</span>` : '';
+    const rollupInstBadge = r.is_group_rollup
+      ? `<span class="badge-rollup-instances" style="width: fit-content; margin-top: 3px;" title="Rolled up across ${r.instance_count} repeating sub-group instances">${r.instance_count}× instances</span>`
+      : '';
     const ungroupAllBtn = (sources.length > 1)
       ? `<button class="btn-group-action btn-ungroup-action" data-action="ungroup-all" data-sn="${escapeHtml(r.device_sn || '')}" data-concept-key="${escapeHtml(r.concept_key)}" style="margin-top: 5px; width: fit-content;" title="Ungroup all sources in this concept into standalone fields">✂️ Ungroup All</button>`
       : '';
     const expandToggleBtn = `<button class="btn-expand-compare" data-action="toggle-expand" data-row-id="${escapeHtml(rowId)}" title="Click to ${isExpanded ? 'collapse' : 'expand'} full details">
       <span>${isExpanded ? '▼' : '▶'}</span>
-      <span>${isExpanded ? 'Collapse' : 'Details'}</span>
+      <span>${isExpanded ? 'Collapse' : (r.is_group_rollup ? `Instances (${r.instance_count})` : 'Details')}</span>
     </button>`;
 
     const conceptCol = `
       <div class="field-cell-main">
         ${devBadge}
         <strong>${escapeHtml(r.label || r.concept_key)}</strong>
+        ${rollupInstBadge}
         <span class="field-key">${escapeHtml(r.concept_key || r.mapping_id || '')}</span>
         ${ungroupAllBtn}
         ${expandToggleBtn}
@@ -8133,11 +8187,14 @@ function renderCompareTableRows(rows) {
       const cardsHtml = sources.map(s => {
         const isDivergent = s.is_divergent || false;
         const srcChipClass = s.source_type === 'MQTT' ? 'src-mqtt' : 'src-sunspec';
-        const valDisplay = s.value !== null && s.value !== undefined
-          ? `${formatFieldValue(s.value)} ${escapeHtml(s.units || r.unit || '')}`
-          : '<span class="text-muted">--</span>';
+        const unitSuffix = s.units || r.unit || '';
+        const valDisplay = s.value_summary
+          ? `${escapeHtml(s.value_summary)}${unitSuffix ? ' ' + escapeHtml(unitSuffix) : ''}`
+          : (s.value !== null && s.value !== undefined
+              ? `${formatFieldValue(s.value)} ${escapeHtml(unitSuffix)}`
+              : '<span class="text-muted">--</span>');
 
-        const rawDisplay = (s.raw_value !== null && s.raw_value !== undefined && s.raw_value !== s.value)
+        const rawDisplay = (!s.value_summary && s.raw_value !== null && s.raw_value !== undefined && s.raw_value !== s.value)
           ? `<span class="compare-source-raw" title="Raw unscaled value">raw: ${formatFieldValue(s.raw_value)}</span>`
           : '';
 
@@ -8254,7 +8311,48 @@ function renderCompareTableRows(rows) {
         `;
       }
 
-      sourcesCol = `<div class="compare-sources-list">${discrepancyCard}${cardsHtml}</div>`;
+      let instBreakdownHtml = '';
+      if (isExpanded && Array.isArray(r.instances) && r.instances.length > 0) {
+        const srcHeaders = sources.map(s => `<th>${escapeHtml(s.source_id || 'SRC')}</th>`).join('');
+        const instBodyHtml = r.instances.map(inst => {
+          const instSrcCells = (inst.sources || []).map(isrc => {
+            const vStr = isrc.value !== null && isrc.value !== undefined
+              ? `${formatFieldValue(isrc.value)} ${escapeHtml(isrc.units || r.unit || '')}`
+              : '--';
+            return `<td class="${isrc.is_divergent ? 'val-divergent' : ''}" title="${escapeHtml(isrc.field_key || '')}">${vStr}</td>`;
+          }).join('');
+          const dStr = (inst.delta !== null && inst.delta !== undefined)
+            ? `${formatFieldValue(inst.delta)} ${escapeHtml(r.unit || '')}`
+            : '--';
+          const instLabel = inst.group_label || inst.group_path || inst.label || `Instance ${inst.group_index ?? ''}`;
+          return `
+            <tr class="${inst.is_discrepant ? 'is-divergent-inst' : ''}">
+              <td><strong>${escapeHtml(instLabel)}</strong></td>
+              <td>${escapeHtml(inst.status_label || inst.status || '')}</td>
+              ${instSrcCells}
+              <td>${dStr}</td>
+            </tr>
+          `;
+        }).join('');
+        instBreakdownHtml = `
+          <div class="compare-instances-breakdown">
+            <div class="compare-instances-title">Per-Instance Breakdown (${r.instances.length} Instances)</div>
+            <table class="compare-instances-table">
+              <thead>
+                <tr>
+                  <th>Instance</th>
+                  <th>Status</th>
+                  ${srcHeaders}
+                  <th>Δ</th>
+                </tr>
+              </thead>
+              <tbody>${instBodyHtml}</tbody>
+            </table>
+          </div>
+        `;
+      }
+
+      sourcesCol = `<div class="compare-sources-list">${discrepancyCard}${cardsHtml}${instBreakdownHtml}</div>`;
     } else {
       // Legacy fallback row
       const mqttDisplay = r.mqtt_value !== null && r.mqtt_value !== undefined

@@ -14,7 +14,12 @@ import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from .catalog import group_wildcard_matches_field_key, infer_ha_classes, is_scale_factor_point
+from .catalog import (
+    group_wildcard_matches_field_key,
+    infer_ha_classes,
+    is_scale_factor_point,
+    wildcardize_group_field_key,
+)
 from .ha import is_field_selected
 
 logger = logging.getLogger(__name__)
@@ -357,6 +362,25 @@ def _field_matches_modbus_target(f: Any, target_str: str) -> bool:
     return True
 
 
+def expand_group_concept_template(template_str: str, group_path: Optional[str], join_sep: str = "_") -> str:
+    """Substitute '*' placeholders in a wildcard concept key/label with concrete indices from group_path."""
+    if not template_str or "*" not in template_str or not group_path:
+        return template_str
+    indices = [seg for seg in str(group_path).split(".") if seg.isdigit()]
+    if not indices:
+        return template_str
+    star_count = template_str.count("*")
+    result = template_str
+    if star_count >= len(indices):
+        for idx in indices:
+            result = result.replace("*", idx, 1)
+    else:
+        for i in range(star_count - 1):
+            result = result.replace("*", indices[i], 1)
+        result = result.replace("*", join_sep.join(indices[star_count - 1:]), 1)
+    return result
+
+
 def group_device_fields(
     dev: Any,
     mapping_registry: Optional[Any] = None,
@@ -421,43 +445,64 @@ def group_device_fields(
     # Map each field into a concept
     assigned_field_keys: Set[str] = set()
 
-    def _field_priority(item):
-        k, _ = item
-        qk = f"{dev_sn}:{k}" if dev_sn else k
-        if qk in overrides or k in overrides:
-            return 0
-        return 1
-
-    sorted_fields = sorted(all_fields.items(), key=_field_priority)
-    for f_key, f in sorted_fields:
-        # Check user custom grouping overrides first
-        qual_key = f"{dev_sn}:{f_key}" if dev_sn else f_key
-        has_override = qual_key in overrides or f_key in overrides
-        target_concept = overrides.get(qual_key, overrides.get(f_key)) if has_override else None
-
-        if not has_override and overrides and not getattr(f, "group_path", None):
-            fk_parts = f_key.split(".")
-            fk_dev = fk_parts[0] if fk_parts else ""
-            fk_point = fk_parts[-1] if fk_parts else ""
+    def _resolve_field_override(f_key: str, f_obj: Any) -> Tuple[bool, Optional[str], Optional[str]]:
+        qual_k = f"{dev_sn}:{f_key}" if dev_sn else f_key
+        if qual_k in overrides:
+            return True, overrides[qual_k], None
+        if f_key in overrides:
+            return True, overrides[f_key], None
+        f_grp = getattr(f_obj, "group_path", None)
+        if f_grp:
+            wk = wildcardize_group_field_key(f_key)
+            if wk:
+                qual_wk = f"{dev_sn}:{wk}" if dev_sn else wk
+                if qual_wk in overrides:
+                    return True, overrides[qual_wk], wk
+                if wk in overrides:
+                    return True, overrides[wk], wk
             for k, v in overrides.items():
                 k_sn = k.split(":", 1)[0] if ":" in k else ""
                 k_part = k.split(":", 1)[1] if ":" in k else k
                 if k_sn and dev_sn and k_sn.strip().upper() != dev_sn.strip().upper():
                     continue
-                kp_parts = k_part.split(".")
-                kp_dev = kp_parts[0] if kp_parts else ""
-                kp_point = kp_parts[-1] if kp_parts else ""
-                if (
-                    fk_dev
-                    and kp_dev
-                    and fk_dev.lower() == kp_dev.lower()
-                    and fk_point
-                    and kp_point
-                    and fk_point.lower() == kp_point.lower()
-                ):
-                    has_override = True
-                    target_concept = v
-                    break
+                if "*" in k_part and group_wildcard_matches_field_key(k_part, f_key):
+                    return True, v, k_part
+        elif overrides:
+            fk_parts = f_key.split(".")
+            fk_dev = fk_parts[0] if fk_parts else ""
+            fk_point = fk_parts[-1] if fk_parts else ""
+            if len(fk_parts) == 3:
+                for k, v in overrides.items():
+                    k_sn = k.split(":", 1)[0] if ":" in k else ""
+                    k_part = k.split(":", 1)[1] if ":" in k else k
+                    if k_sn and dev_sn and k_sn.strip().upper() != dev_sn.strip().upper():
+                        continue
+                    kp_parts = k_part.split(".")
+                    kp_dev = kp_parts[0] if kp_parts else ""
+                    kp_point = kp_parts[-1] if kp_parts else ""
+                    if (
+                        len(kp_parts) == 3
+                        and "*" not in k_part
+                        and fk_dev
+                        and kp_dev
+                        and fk_dev.lower() == kp_dev.lower()
+                        and fk_point
+                        and kp_point
+                        and fk_point.lower() == kp_point.lower()
+                    ):
+                        return True, v, None
+        return False, None, None
+
+    def _field_priority(item):
+        k, f_obj = item
+        has_ov, _, _ = _resolve_field_override(k, f_obj)
+        return 0 if has_ov else 1
+
+    sorted_fields = sorted(all_fields.items(), key=_field_priority)
+    for f_key, f in sorted_fields:
+        # Check user custom grouping overrides first (including '*' sub-group wildcards)
+        qual_key = f"{dev_sn}:{f_key}" if dev_sn else f_key
+        has_override, target_concept, matched_wk = _resolve_field_override(f_key, f)
 
         if has_override:
             if target_concept is None or str(target_concept).strip().lower() in ("", "null", "none", "standalone", "ungrouped"):
@@ -491,25 +536,44 @@ def group_device_fields(
                 assigned_field_keys.add(f_key)
                 continue
             else:
-                target_key = str(target_concept).strip()
-                if target_key.startswith(f"{dev_type}.concept."):
-                    target_key = target_key[len(f"{dev_type}.concept."):]
-                elif target_key.startswith(f"{dev_type}."):
-                    target_key = target_key[len(f"{dev_type}."):]
+                f_grp_path = getattr(f, "group_path", None)
+                raw_target = str(target_concept).strip()
+                if raw_target.startswith(f"{dev_type}.concept."):
+                    raw_target = raw_target[len(f"{dev_type}.concept."):]
+                elif raw_target.startswith(f"{dev_type}."):
+                    raw_target = raw_target[len(f"{dev_type}."):]
+
+                template_concept_key = raw_target if "*" in raw_target else None
+                target_key = (
+                    expand_group_concept_template(raw_target, f_grp_path, "_")
+                    if (f_grp_path and template_concept_key)
+                    else raw_target
+                )
                 c_id = f"{dev_type}.concept.{target_key}"
-                c_meta = custom_concepts.get(target_key, {})
+                c_meta = custom_concepts.get(target_key) or (custom_concepts.get(template_concept_key, {}) if template_concept_key else {})
                 c_units = c_meta.get("units", f.units)
                 c_d_class = c_meta.get("ha_device_class")
                 c_s_class = c_meta.get("ha_state_class")
                 if not c_d_class and not c_s_class:
                     c_d_class, c_s_class = infer_ha_classes(units=c_units, name=target_key)
                 if c_id not in concept_metadata:
-                    matching_f = next((df for df in dev.fields.values() if df.name.lower() == target_key.lower()), None)
-                    resolved_label = c_meta.get("label") or (matching_f.label if matching_f else target_key.replace("_", " ").title())
+                    raw_label = c_meta.get("label")
+                    if raw_label and f_grp_path and "*" in raw_label:
+                        resolved_label = expand_group_concept_template(raw_label, f_grp_path, " / ")
+                    elif raw_label:
+                        resolved_label = raw_label
+                    else:
+                        matching_f = next((df for df in dev.fields.values() if df.name.lower() == target_key.lower()), None)
+                        resolved_label = matching_f.label if matching_f else (f.label or target_key.replace("_", " ").title())
+                    base_name = (
+                        re.sub(r"_+", "_", template_concept_key.replace("*", "")).strip("_")
+                        if (f_grp_path and template_concept_key)
+                        else target_key
+                    ) or target_key
                     concept_metadata[c_id] = {
                         "id": c_id,
                         "concept_key": target_key,
-                        "name": target_key,
+                        "name": base_name,
                         "label": resolved_label,
                         "description": c_meta.get("description", f.description),
                         "units": c_units,
@@ -517,16 +581,25 @@ def group_device_fields(
                         "ha_device_class": c_d_class,
                         "ha_state_class": c_s_class,
                         "is_custom_override": True,
+                        "concept_template": template_concept_key,
+                        "group_name": getattr(f, "group_name", None),
+                        "group_index": getattr(f, "group_index", None),
+                        "group_path": f_grp_path,
+                        "group_label": getattr(f, "group_label", None),
                     }
                 is_mqtt = getattr(f.source, "value", str(f.source)) == "MQTT_PUSH" or "live." in f_key
                 c_trans = c_meta.get("transform")
-                
-                # Check explicit field transform first
+                f_wk = matched_wk or (wildcardize_group_field_key(f_key) if f_grp_path else None)
+                qual_wk = f"{dev_sn}:{f_wk}" if (dev_sn and f_wk) else f_wk
+
+                # Check explicit field transform first (concrete or wildcard)
                 if qual_key in field_transforms or f_key in field_transforms:
                     raw_tf = field_transforms.get(qual_key, field_transforms.get(f_key))
                     f_trans = None if raw_tf in (None, "none", "") else raw_tf
+                elif qual_wk and (qual_wk in field_transforms or f_wk in field_transforms):
+                    raw_tf = field_transforms.get(qual_wk, field_transforms.get(f_wk))
+                    f_trans = None if raw_tf in (None, "none", "") else raw_tf
                 elif c_trans and c_trans != "none":
-                    # Concept negation applies to Modbus/candidate fields, never to MQTT reference stream
                     if is_mqtt and c_trans == "negate":
                         f_trans = None
                     else:
@@ -793,6 +866,8 @@ def group_device_fields(
 
     for c_id, f_list in concept_buckets.items():
         meta = concept_metadata.get(c_id, {})
+        if meta.get("group_path"):
+            f_list = sorted(f_list, key=lambda item: (getattr(item[1], "model_id", 0) or 0, item[0]))
         sources: List[UnifiedSource] = []
         is_grp_writable = False
         grp_bounds = None
@@ -817,6 +892,14 @@ def group_device_fields(
             qual_key = f"{dev_sn}:{f_key}" if dev_sn else f_key
             if f_key in selected_keys or qual_key in selected_keys or is_field_selected(f_key, dev_sn, selected_keys):
                 grp_selected = True
+            f_wk = wildcardize_group_field_key(f_key) if getattr(f, "group_path", None) else None
+            qual_wk = f"{dev_sn}:{f_wk}" if (dev_sn and f_wk) else f_wk
+            has_src_override = (
+                qual_key in overrides
+                or f_key in overrides
+                or bool(qual_wk and qual_wk in overrides)
+                or bool(f_wk and f_wk in overrides)
+            )
 
             pin_match = (user_pins.get(c_id) == f_key)
 
@@ -864,7 +947,7 @@ def group_device_fields(
                     symbols=syms,
                     bitmask_flags=bm_flags,
                     is_scale_factor=is_sf,
-                    is_custom_override=(qual_key in overrides or f_key in overrides),
+                    is_custom_override=has_src_override,
                     device_sn=dev_sn,
                     last_updated=getattr(f, "last_updated", None) or getattr(f, "timestamp", None),
                     group_name=getattr(f, "group_name", None),
@@ -965,6 +1048,7 @@ def group_device_fields(
             group_index=meta.get("group_index") if meta.get("group_index") is not None else next((s.group_index for s in sources if s.group_index is not None), None),
             group_path=meta.get("group_path") or next((s.group_path for s in sources if s.group_path), None),
             group_label=meta.get("group_label") or next((s.group_label for s in sources if s.group_label), None),
+            concept_template=meta.get("concept_template"),
         )
         from .ha import get_effective_ha_category
         group.ha_category = get_effective_ha_category(group, dev, category_overrides=category_overrides)

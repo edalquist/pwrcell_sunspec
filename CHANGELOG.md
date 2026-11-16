@@ -25,7 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added catalog helpers (`wildcard_group_path`, `wildcardize_group_field_key`, `is_group_wildcard_key`, `group_wildcard_matches_field_key`) supporting single-level and nested SunSpec repeating paths (e.g. `battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC`, `inverter.DERVoltVar.Crv.*.Pt.*.V`).
   - Defaults to saving a canonical `*.<Point>` wildcard rule in `ha_config.yaml` when all instances in a sub-group are selected, while supporting explicit per-instance keys, automatically splitting a wildcard into remaining explicit keys when a single instance is unchecked, and auto-collapsing back to a wildcard when all explicit instances are selected.
   - Supports wildcard and per-instance Home Assistant `category_overrides` (with exact instance overrides taking precedence over wildcards), cold-start safety (`StateStore.ensure_field_definition()` never creates literal `*` `StateField` entries and preview logs `group_wildcard_awaiting_poll` until polled), HA config deduplication (`qualify_legacy_ha_config`), and accurate minimal-model solving for wildcard subgroup paths in `resolve_minimal_models_for_paths()`.
-- Added unit, API, optimizer, cold-start, and Node VM frontend test suites in `tests/test_sunspec_groups.py`.
+- **Sub-Group Aware Grouped Registers & Telemetry Comparison (`pwrcell/tools/recommender.py`, `pwrcell/tools/correlator.py`, `pwrcell/grouping.py`, `pwrcell/optimizer.py`, `pwrcell/ui/routes/grouping.py`)**:
+  - Enforced strict sub-group hierarchy, index (`are_compatible_group_instances`), and extremum/average (`AVG` vs `MIN` vs `MAX`) isolation in `find_suggested_groupings()` so module points never cross-match across different instances or against bank-level metrics.
+  - Rolled up aligned multi-instance suggestions and comparisons (with cross-instance min–max summaries, divergence propagation, one-click `Sync Sample`, wildcard approvals, and expandable per-instance breakdowns) in the **Grouped Registers & Telemetry Comparison** modal.
+- Added unit, API, optimizer, cold-start, recommender/correlator, and Node VM frontend test suites in `tests/test_sunspec_groups.py`.
 
 ### Changed
 - **Semantic Grouping & Home Assistant MQTT Discovery for Sub-Groups**:

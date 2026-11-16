@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import yaml
 
-from .catalog import infer_ha_classes
+from .catalog import group_wildcard_matches_field_key, infer_ha_classes, is_group_wildcard_key
 from .config import data_dir, is_addon_data_env
 
 logger = logging.getLogger(__name__)
@@ -182,11 +182,22 @@ def is_field_excluded_from_mapping(
                 target_found = True
                 break
 
+            if "*" in k_part and group_wildcard_matches_field_key(k_part, clean_fk):
+                target = v
+                target_found = True
+                break
+
             kp_parts = k_part.split(".")
             kp_dev = kp_parts[0] if kp_parts else ""
             kp_point = kp_parts[-1] if kp_parts else ""
+            # Only apply model-neutral leaf-name fallback across flat top-level 3-segment keys
+            # so sub-group or wildcard overrides never exclude top-level bank telemetry.
             if (
-                fk_dev
+                len(fk_parts) == 3
+                and len(kp_parts) == 3
+                and "*" not in clean_fk
+                and "*" not in k_part
+                and fk_dev
                 and kp_dev
                 and fk_dev.lower() == kp_dev.lower()
                 and fk_point
@@ -223,7 +234,8 @@ def set_field_grouping_override(
     """Assign a field to a concept (or null to ungroup/isolate)."""
     data = load_custom_groupings(config_path)
     clean_sn = device_sn.strip().upper()
-    qual_key = f"{clean_sn}:{field_key.strip()}"
+    clean_fk = field_key.strip()
+    qual_key = f"{clean_sn}:{clean_fk}"
     
     clean_target = (
         target_concept.strip()
@@ -243,13 +255,21 @@ def set_field_grouping_override(
                     f"grouping across devices is not permitted."
                 )
 
+    if is_group_wildcard_key(clean_fk):
+        for existing_k in list(data.get("field_overrides", {}).keys()):
+            e_sn, e_fk = existing_k.split(":", 1) if ":" in existing_k else ("", existing_k)
+            if (not e_sn or e_sn.strip().upper() == clean_sn) and not is_group_wildcard_key(e_fk):
+                if group_wildcard_matches_field_key(clean_fk, e_fk):
+                    data["field_overrides"].pop(existing_k, None)
+                    data.get("field_transforms", {}).pop(existing_k, None)
+
     data["field_overrides"][qual_key] = clean_target
 
     if clean_target and transform and transform != "none":
         data.setdefault("field_transforms", {})[qual_key] = transform.strip()
     elif transform is None or transform == "none":
         data.get("field_transforms", {}).pop(qual_key, None)
-        data.get("field_transforms", {}).pop(field_key.strip(), None)
+        data.get("field_transforms", {}).pop(clean_fk, None)
 
     if clean_target and custom_label:
         c_entry = data.setdefault("custom_concepts", {}).setdefault(clean_target, {})
@@ -267,12 +287,21 @@ def reset_field_grouping_override(
     """Remove custom grouping override for a field, reverting to automatic grouping."""
     data = load_custom_groupings(config_path)
     clean_sn = device_sn.strip().upper()
-    qual_key = f"{clean_sn}:{field_key.strip()}"
+    clean_fk = field_key.strip()
+    qual_key = f"{clean_sn}:{clean_fk}"
 
     data["field_overrides"].pop(qual_key, None)
-    data["field_overrides"].pop(field_key.strip(), None)
+    data["field_overrides"].pop(clean_fk, None)
     data.get("field_transforms", {}).pop(qual_key, None)
-    data.get("field_transforms", {}).pop(field_key.strip(), None)
+    data.get("field_transforms", {}).pop(clean_fk, None)
+
+    if is_group_wildcard_key(clean_fk):
+        for existing_k in list(data.get("field_overrides", {}).keys()):
+            e_sn, e_fk = existing_k.split(":", 1) if ":" in existing_k else ("", existing_k)
+            if (not e_sn or e_sn.strip().upper() == clean_sn) and group_wildcard_matches_field_key(clean_fk, e_fk):
+                data["field_overrides"].pop(existing_k, None)
+                data.get("field_transforms", {}).pop(existing_k, None)
+
     save_custom_groupings(data, config_path)
     return data
 
@@ -286,12 +315,41 @@ def ungroup_entire_concept(
     """Ungroup all fields currently belonging to a concept for a device."""
     data = load_custom_groupings(config_path)
     clean_sn = device_sn.strip().upper()
+    overrides = data.get("field_overrides", {}) or {}
+    transforms = data.get("field_transforms", {}) or {}
 
-    for f_key in device_fields.keys():
-        qual_key = f"{clean_sn}:{f_key}"
-        data["field_overrides"][qual_key] = None
-        data.get("field_transforms", {}).pop(qual_key, None)
-        data.get("field_transforms", {}).pop(f_key, None)
+    has_wildcard_target = (
+        "*" in (concept_key or "")
+        or any(
+            v == concept_key and (":" not in k or k.split(":", 1)[0].strip().upper() == clean_sn) and is_group_wildcard_key(k)
+            for k, v in overrides.items()
+        )
+    )
+
+    if has_wildcard_target:
+        removed_wildcards: List[str] = []
+        for k, v in list(overrides.items()):
+            k_sn, k_fk = k.split(":", 1) if ":" in k else ("", k)
+            if k_sn and k_sn.strip().upper() != clean_sn:
+                continue
+            if v == concept_key or (k_fk in device_fields):
+                overrides.pop(k, None)
+                transforms.pop(k, None)
+                if is_group_wildcard_key(k_fk):
+                    removed_wildcards.append(k_fk)
+        for wk in removed_wildcards:
+            for k in list(overrides.keys()):
+                k_sn, k_fk = k.split(":", 1) if ":" in k else ("", k)
+                if (not k_sn or k_sn.strip().upper() == clean_sn) and group_wildcard_matches_field_key(wk, k_fk):
+                    overrides.pop(k, None)
+                    transforms.pop(k, None)
+        data.get("custom_concepts", {}).pop(concept_key, None)
+    else:
+        for f_key in device_fields.keys():
+            qual_key = f"{clean_sn}:{f_key}"
+            overrides[qual_key] = None
+            transforms.pop(qual_key, None)
+            transforms.pop(f_key, None)
 
     save_custom_groupings(data, config_path)
     return data
@@ -378,7 +436,15 @@ def approve_suggestions(
             continue
 
         for f_key in field_keys:
-            qual_key = f"{device_sn}:{f_key.strip()}"
+            clean_fk = f_key.strip()
+            qual_key = f"{device_sn}:{clean_fk}"
+            if is_group_wildcard_key(clean_fk):
+                for existing_k in list(data.get("field_overrides", {}).keys()):
+                    e_sn, e_fk = existing_k.split(":", 1) if ":" in existing_k else ("", existing_k)
+                    if (not e_sn or e_sn.strip().upper() == device_sn) and not is_group_wildcard_key(e_fk):
+                        if group_wildcard_matches_field_key(clean_fk, e_fk):
+                            data["field_overrides"].pop(existing_k, None)
+                            field_transforms.pop(existing_k, None)
             data["field_overrides"][qual_key] = target_concept
 
         # Determine which specific field to negate if polarity inversion is requested

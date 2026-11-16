@@ -26,7 +26,13 @@ from pwrcell.client import PwrcellClient
 from pwrcell.config import AppConfig
 from pwrcell.controls import ControlDispatcher
 from pwrcell.fixtures import MockFixtureLoader
-from pwrcell.grouping import clear_custom_groupings_cache
+from pwrcell.grouping import (
+    clear_custom_groupings_cache,
+    is_field_excluded_from_mapping,
+    load_custom_groupings,
+)
+from pwrcell.tools.correlator import evaluate_comparisons
+from pwrcell.tools.recommender import extract_extremum, find_suggested_groupings
 from pwrcell.ha import (
     _resolve_standalone_or_orphan_slug,
     clear_ha_config_cache,
@@ -864,6 +870,159 @@ assert(rawRollup && rawRollup.instances.length === 6, 'Expected raw-mode rollup 
             check=False,
         )
         self.assertEqual(proc.returncode, 0, f"Node VM check failed:\nSTDOUT: {proc.stdout}\nSTDERR: {proc.stderr}")
+
+
+class TestSubgroupRecommenderAndCorrelator(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmp_dir.name)
+        self.ha_config_path = tmp / "ha_config.yaml"
+        self.groupings_path = tmp / "groupings.yaml"
+        self.custom_groupings_path = tmp / "custom_groupings.yaml"
+        pkg_groupings = Path(mapping_module.__file__).resolve().parent / "data" / "groupings.yaml"
+        shutil.copy(pkg_groupings, self.groupings_path)
+
+        self._patches = [
+            mock.patch("pwrcell.ha.get_default_ha_config_path", return_value=self.ha_config_path),
+            mock.patch("pwrcell.bridge.get_default_ha_config_path", return_value=self.ha_config_path),
+            mock.patch("pwrcell.grouping.get_default_grouping_config_path", return_value=self.custom_groupings_path),
+            mock.patch("pwrcell.mapping._resolve_mappings_path", return_value=self.groupings_path),
+        ]
+        for p in self._patches:
+            p.start()
+
+        clear_ha_config_cache()
+        clear_custom_groupings_cache()
+        mapping_module.MappingRegistry._instance = None
+
+        self.client = PwrcellClient(is_mock=True)
+        self.client.start()
+        self.app = create_app(self.client)
+        self.test_client = self.app.test_client()
+        self.bat = self.client.state.get_battery()
+        self.bat_sn = self.bat.serial_number.strip().upper()
+
+    def tearDown(self):
+        self.client.stop()
+        for p in reversed(self._patches):
+            p.stop()
+        clear_ha_config_cache()
+        clear_custom_groupings_cache()
+        mapping_module.MappingRegistry._instance = None
+        self._tmp_dir.cleanup()
+
+    def test_strict_instance_isolation_and_rollup_suggestions(self):
+        suggestions = find_suggested_groupings(self.client.state, dismissed_ids=set())
+        bat_suggs = [s for s in suggestions if s.device_type == "battery"]
+        self.assertGreater(len(bat_suggs), 0)
+
+        for s in bat_suggs:
+            # Verify no AVG vs MIN/MAX mixing
+            exts = {extract_extremum(src.name, src.label) for src in s.sources}
+            self.assertLessEqual(len(exts), 1, f"Mixed extremum/avg in {s.suggested_concept_key}: {exts}")
+
+            # Verify no flat-vs-subgroup mixing and strict per-instance alignment
+            gp_flags = {bool(src.group_path) for src in s.sources}
+            self.assertEqual(len(gp_flags), 1, f"Mixed bank and subgroup in {s.suggested_concept_key}")
+            if s.is_group_rollup:
+                self.assertEqual(s.instance_count, 6)
+                for inst in s.instances:
+                    inst_indices = set()
+                    for isrc in inst["sources"]:
+                        f_obj = self.bat.fields[isrc["field_key"]]
+                        inst_indices.add(f_obj.group_index)
+                    self.assertEqual(len(inst_indices), 1, f"Cross-instance pairing in {inst}")
+
+        soc_rollup = next(
+            (
+                s for s in bat_suggs
+                if s.is_group_rollup
+                and {src.field_key for src in s.sources} == {
+                    "battery.DCB105_warranty.DCB105_module.*.SOC",
+                    "battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC",
+                }
+            ),
+            None,
+        )
+        self.assertIsNotNone(soc_rollup, "Expected single rolled-up M804 ModSoC <-> M64252 SOC suggestion")
+        self.assertEqual(soc_rollup.instance_count, 6)
+        self.assertEqual(soc_rollup.suggested_concept_key, "module_*_state_of_charge")
+
+    def test_approve_rollup_compare_divergence_and_ungroup_all(self):
+        # Mismatched instance merge must be rejected (HTTP 400)
+        bad_resp = self.test_client.post(
+            "/api/grouping/override",
+            json={
+                "device_sn": self.bat_sn,
+                "field_key": "battery.lithium_ion_string.lithium_ion_string_module.1.ModSoC",
+                "member_field_keys": ["battery.DCB105_warranty.DCB105_module.2.SOC"],
+                "target_concept": "bad_cross_inst",
+            },
+        )
+        self.assertEqual(bad_resp.status_code, 400)
+
+        # Approve rolled-up suggestion via API
+        suggs = self.test_client.get("/api/grouping/suggestions").get_json()["suggestions"]
+        soc_sugg = next(
+            s for s in suggs
+            if s.get("is_group_rollup")
+            and "battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC" in [src["field_key"] for src in s["sources"]]
+        )
+        approve_resp = self.test_client.post(
+            "/api/grouping/suggestions/approve",
+            json={
+                "device_sn": soc_sugg["device_sn"],
+                "field_keys": [src["field_key"] for src in soc_sugg["sources"]],
+                "target_concept": soc_sugg["suggested_concept_key"],
+                "label": soc_sugg["suggested_label"],
+                "suggestion_id": soc_sugg["id"],
+            },
+        )
+        self.assertEqual(approve_resp.status_code, 200)
+
+        # Top-level battery_soc must remain unexcluded despite wildcard *.SOC override
+        self.assertFalse(is_field_excluded_from_mapping(self.bat_sn, "battery.lithium_ion_string.SoC", "battery_soc"))
+        self.assertIsNotNone(self.client.state.get_compound_view("battery_soc", device_sn=self.bat_sn))
+
+        # Optimizer builds 6 aligned multi-source instance groups
+        groups = group_device_fields(self.bat, custom_groupings=load_custom_groupings())
+        soc_groups = [g for g in groups if g.concept_template == "module_*_state_of_charge"]
+        self.assertEqual(len(soc_groups), 6)
+        self.assertTrue(all(len(g.sources) == 2 for g in soc_groups))
+
+        # /api/compare rolls up all 6 merged instances into one agreement row
+        cmp_data = self.test_client.get("/api/compare").get_json()
+        rollup_row = next(
+            (r for r in cmp_data["comparisons"] if r.get("is_group_rollup") and r.get("concept_key") == "module_*_state_of_charge"),
+            None,
+        )
+        self.assertIsNotNone(rollup_row)
+        self.assertEqual(rollup_row["instance_count"], 6)
+        self.assertIn(rollup_row["status"], ("EXACT", "CLOSE"))
+        self.assertEqual(len(rollup_row["instances"]), 6)
+        self.assertEqual(len(rollup_row["sample_field_keys"]), 12)
+
+        # Divergence on a single instance surfaces on the rolled-up row and highlights that instance
+        self.bat.fields["battery.lithium_ion_string.lithium_ion_string_module.3.ModSoC"].value = 25.0
+        cmp_div = self.test_client.get("/api/compare").get_json()
+        div_row = next(
+            r for r in cmp_div["comparisons"]
+            if r.get("is_group_rollup") and r.get("concept_key") == "module_*_state_of_charge"
+        )
+        self.assertTrue(div_row["is_discrepant"])
+        self.assertEqual(div_row["status"], "DIVERGENT")
+        self.assertIn("1/6 Divergent", div_row["status_label"])
+        self.assertTrue(div_row["instances"][2]["is_discrepant"])
+        self.assertFalse(div_row["instances"][0]["is_discrepant"])
+
+        # Ungroup All cleanly reverts all 6 wildcard-merged instances in one call
+        ungroup_resp = self.test_client.post(
+            "/api/grouping/ungroup_all",
+            json={"device_sn": self.bat_sn, "concept_key": "module_*_state_of_charge"},
+        )
+        self.assertEqual(ungroup_resp.status_code, 200)
+        groups_after = group_device_fields(self.bat, custom_groupings=load_custom_groupings())
+        self.assertFalse(any(g.concept_template == "module_*_state_of_charge" for g in groups_after))
 
 
 if __name__ == "__main__":

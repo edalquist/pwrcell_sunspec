@@ -124,6 +124,7 @@ class ConceptView:
     group_index: Optional[int] = None
     group_path: Optional[str] = None
     group_label: Optional[str] = None
+    concept_template: Optional[str] = None
 
     @property
     def is_mutation_blocked(self) -> bool:
