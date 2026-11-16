@@ -1,14 +1,14 @@
 # PWRcell Default Home Assistant Entity Configuration
-# Generic hardware-independent defaults for new installations (hybrid MQTT + Modbus).
+# Generated from existing ha_config.yaml (hardware serial numbers stripped)
 
 selected_fields:
+- battery.DCB105_warranty.DCB105_module.*.PackV
 - battery.REbus_status.I
 - battery.REbus_status.St
 - battery.REbus_status.V
 - battery.battery.AChaMax
 - battery.battery.ADisChaMax
 - battery.battery.SoCMax
-- battery.battery.SoCMin
 - battery.battery.SoCRsvMax
 - battery.battery.SoCRsvMin
 - battery.battery.State
@@ -19,14 +19,13 @@ selected_fields:
 - battery.compound.battery_power
 - battery.compound.battery_soc
 - battery.compound.battery_soh
-- battery.compound.battery_temperature
 - battery.compound.battery_voltage
 - battery.compound.max_cell_voltage
 - battery.compound.min_cell_voltage
-- battery.compound.total_dc_current
 - battery.lithium_ion_string.ModTmpAvg
 - battery.lithium_ion_string.ModTmpMax
 - battery.lithium_ion_string.ModTmpMin
+- battery.lithium_ion_string.lithium_ion_string_module.*.ModCellTmpAvg
 - battery.lithium_ion_string.lithium_ion_string_module.*.ModCellTmpMax
 - battery.lithium_ion_string.lithium_ion_string_module.*.ModCellTmpMin
 - battery.lithium_ion_string.lithium_ion_string_module.*.ModCellVAvg
@@ -34,7 +33,6 @@ selected_fields:
 - battery.lithium_ion_string.lithium_ion_string_module.*.ModCellVMin
 - battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC
 - battery.lithium_ion_string.lithium_ion_string_module.*.ModSoH
-- battery.lithium_ion_string.lithium_ion_string_module.*.ModV
 - battery.live.max_discharge_power_w
 - inverter.REbus_exp.Px1
 - inverter.REbus_exp.Px2
@@ -71,8 +69,6 @@ selected_fields:
 - pv_link.REbus_status.V
 - pv_link.compound.accumulated_energy
 - pv_link.compound.device_temperature
-- pv_link.compound.pv_string_current
-- pv_link.compound.pv_string_voltage
 - pv_link.compound.rebus_power
 controllable_fields:
 - system_mode
@@ -104,3 +100,6 @@ category_overrides:
   inverter.inverter.TmpOt: primary
   inverter.inverter.TmpSnk: primary
   inverter.inverter.TmpTrns: primary
+  pv_link.REbus_status.I: primary
+  pv_link.REbus_status.St: primary
+  pv_link.REbus_status.V: primary

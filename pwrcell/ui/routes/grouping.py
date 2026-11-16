@@ -185,6 +185,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
     def reset_grouping_defaults():
         try:
             from ...grouping import get_default_grouping_config_path, save_custom_groupings
+            from ...mapping import reset_mappings_to_defaults
             p = get_default_grouping_config_path()
             if p.exists():
                 try:
@@ -193,6 +194,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                     save_custom_groupings({})
             else:
                 save_custom_groupings({})
+            reset_mappings_to_defaults()
             _sync_grouping_state()
             return jsonify({"success": True, "message": "Grouping overrides reset to default"})
         except Exception as e:

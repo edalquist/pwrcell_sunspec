@@ -374,10 +374,6 @@ groups:
   device_type: battery
   fields:
   - battery.live.storage_ac_charged_energy_wh
-  - battery.DCB105_warranty.WhIn
-  - battery.battery_status.WhIn
-  - battery.model_64252.WhIn
-  - battery.model_64209.WhIn
   synonyms:
   - battery_ac_charged_energy
 - id: battery_ac_discharged_energy
@@ -385,10 +381,6 @@ groups:
   device_type: battery
   fields:
   - battery.live.storage_ac_discharged_energy_wh
-  - battery.DCB105_warranty.WhOut
-  - battery.battery_status.WhOut
-  - battery.model_64252.WhOut
-  - battery.model_64209.WhOut
   synonyms:
   - battery_ac_discharged_energy
 - id: battery_voltage

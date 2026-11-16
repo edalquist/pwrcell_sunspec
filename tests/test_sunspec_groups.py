@@ -1067,17 +1067,42 @@ class TestDefaultConfigsAndExporters(unittest.TestCase):
         # 1. Verify shipped ha_default_config.yaml uses portable compounds and M804 wildcards
         default_doc = yaml.safe_load(Path("config/ha_default_config.yaml").read_text(encoding="utf-8"))
         sel = default_doc["selected_fields"]
+        self.assertIn("battery.REbus_status.P", sel)
         self.assertIn("battery.compound.battery_soc", sel)
         self.assertIn("inverter.compound.grid_power", sel)
         self.assertIn("pv_link.compound.pv_string_voltage", sel)
         self.assertIn("battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC", sel)
         self.assertIn("battery.lithium_ion_string.lithium_ion_string_module.*.ModV", sel)
+        self.assertNotIn("battery.compound.battery_ac_charged_energy", sel)
+        self.assertNotIn("battery.compound.battery_ac_discharged_energy", sel)
         self.assertNotIn("battery.compound.st_64207", sel)
         self.assertNotIn("inverter.compound.st_64207", sel)
         self.assertNotIn("inverter.compound.whin_64208", sel)
         self.assertNotIn("battery.DCB105_warranty.DCB105_module.*.PackV", sel)
-        for ov_k in (default_doc.get("category_overrides") or {}).keys():
+        default_ov = default_doc.get("category_overrides") or {}
+        for ov_k in default_ov.keys():
             self.assertNotIn(".standalone.", ov_k)
+        for pv_k in ("pv_link.REbus_status.I", "pv_link.REbus_status.St", "pv_link.REbus_status.V"):
+            self.assertEqual(default_ov.get(pv_k), "primary")
+        pvl_dev = self.client.state.get_devices_by_type("pv_link")[0]
+        for pv_k in ("pv_link.REbus_status.I", "pv_link.REbus_status.St", "pv_link.REbus_status.V"):
+            self.assertIsNone(get_effective_ha_category(pvl_dev.fields[pv_k], pvl_dev, default_ov))
+
+        # Verify DC WhIn/WhOut remain in battery_imported/exported_energy and battery_ac_* are MQTT-only
+        reg = mapping_module.MappingRegistry.get_instance()
+        raw_to_comp = reg.get_raw_to_compound_map()
+        self.assertEqual(raw_to_comp.get("battery.DCB105_warranty.WhIn"), "battery.compound.battery_imported_energy")
+        self.assertEqual(raw_to_comp.get("battery.battery_status.WhIn"), "battery.compound.battery_imported_energy")
+        self.assertEqual(raw_to_comp.get("battery.DCB105_warranty.WhOut"), "battery.compound.battery_exported_energy")
+        self.assertEqual(raw_to_comp.get("battery.battery_status.WhOut"), "battery.compound.battery_exported_energy")
+        ac_charged = reg.get_by_id("battery_ac_charged_energy")
+        ac_discharged = reg.get_by_id("battery_ac_discharged_energy")
+        self.assertIsNotNone(ac_charged)
+        self.assertEqual(ac_charged.mqtt_fields, ["battery.live.storage_ac_charged_energy_wh"])
+        self.assertEqual(ac_charged.modbus_fields, [])
+        self.assertIsNotNone(ac_discharged)
+        self.assertEqual(ac_discharged.mqtt_fields, ["battery.live.storage_ac_discharged_energy_wh"])
+        self.assertEqual(ac_discharged.modbus_fields, [])
 
         # 2. export_repo_groupings omits ungrouped single-source & sub-group slots and keeps transforms/units
         export_target = Path(self._tmp_dir.name) / "exported_groupings.yaml"
@@ -1090,7 +1115,8 @@ class TestDefaultConfigsAndExporters(unittest.TestCase):
         grid_pwr = next(g for g in exported_doc["groups"] if g["id"] == "grid_power")
         self.assertIn({"path": "inverter.inverter_status.CTPow", "transform": "negate"}, grid_pwr["fields"])
 
-        # 3. generate_ha_default_config canonicalizes .live. -> .compound., keeps wildcards, drops unknown/.standalone.
+        # 3. generate_ha_default_config canonicalizes .live. -> .compound., keeps wildcards,
+        # repairs unambiguous bare <pt>_<model> slugs, and drops unknown/.standalone./ambiguous slugs
         save_ha_config(
             [
                 "000100082128:battery.live.state_of_charge",
@@ -1103,6 +1129,8 @@ class TestDefaultConfigsAndExporters(unittest.TestCase):
             category_overrides={
                 "000100082128:battery.standalone.does_not_exist": "primary",
                 "000100082128:battery.REbus_status.V": "primary",
+                "tmpot_102": "primary",
+                "v_64207": "primary",
             },
         )
         res = generate_ha_default_config(source_path=self.ha_config_path, target_path=self.default_cfg_path)
@@ -1113,7 +1141,100 @@ class TestDefaultConfigsAndExporters(unittest.TestCase):
         self.assertNotIn("battery.lithium_ion_string.lithium_ion_string_module.2.ModSoC", gen_sel)
         self.assertNotIn("inverter.compound.local_custom_only", gen_sel)
         gen_ov = res["data"].get("category_overrides", {})
-        self.assertEqual(gen_ov, {"battery.REbus_status.V": "primary"})
+        self.assertEqual(gen_ov, {"battery.REbus_status.V": "primary", "inverter.inverter.TmpOt": "primary"})
+
+    def test_persisted_legacy_groupings_reload_and_reset_defaults(self):
+        import yaml
+
+        # Write a persisted 3.1.14-style groupings.yaml missing newer members and still
+        # overlapping battery_ac_* with DC WhIn/WhOut registers
+        legacy_doc = {
+            "version": "2.0",
+            "auto_group_heuristics": False,
+            "groups": [
+                {
+                    "id": "inverter_state",
+                    "name": "Inverter Operational State",
+                    "device_type": "inverter",
+                    "fields": [
+                        "inverter.live.inverter_state_name",
+                        "inverter.model_64207.St",
+                        "inverter.model_102.St",
+                        "inverter.inverter.StVnd",
+                    ],
+                },
+                {
+                    "id": "battery_imported_energy",
+                    "name": "Battery Stored / Charged Energy",
+                    "device_type": "battery",
+                    "fields": [
+                        "battery.live.battery_imported_energy_wh",
+                        "battery.REbus_status.E",
+                        "battery.DCB105_warranty.WhIn",
+                    ],
+                },
+                {
+                    "id": "battery_exported_energy",
+                    "name": "Battery Discharged Energy",
+                    "device_type": "battery",
+                    "fields": [
+                        "battery.live.battery_exported_energy_wh",
+                        "battery.model_64252.WhOut",
+                    ],
+                },
+                {
+                    "id": "battery_ac_charged_energy",
+                    "name": "Battery AC Charged Energy",
+                    "device_type": "battery",
+                    "fields": [
+                        "battery.live.storage_ac_charged_energy_wh",
+                        "battery.DCB105_warranty.WhIn",
+                        "battery.model_64252.WhIn",
+                    ],
+                },
+                {
+                    "id": "battery_ac_discharged_energy",
+                    "name": "Battery AC Discharged Energy",
+                    "device_type": "battery",
+                    "fields": [
+                        "battery.live.storage_ac_discharged_energy_wh",
+                        "battery.DCB105_warranty.WhOut",
+                        "battery.model_64252.WhOut",
+                    ],
+                },
+            ],
+            "ungrouped_fields": ["battery.model_64252.V"],
+        }
+        self.groupings_path.write_text(yaml.safe_dump(legacy_doc, sort_keys=False), encoding="utf-8")
+
+        reg = mapping_module.MappingRegistry.get_instance()
+        reg.reload()
+
+        # Reload backfills missing built-in members and strips stale DC WhIn/WhOut from battery_ac_*
+        inv_state = reg.get_by_id("inverter_state")
+        self.assertIn("inverter.DERMeasureAC.InvSt", inv_state.modbus_fields)
+        bat_imp = reg.get_by_id("battery_imported_energy")
+        self.assertIn("battery.battery_status.WhIn", bat_imp.modbus_fields)
+        bat_exp = reg.get_by_id("battery_exported_energy")
+        self.assertIn("battery.DCB105_warranty.WhOut", bat_exp.modbus_fields)
+        ac_charged = reg.get_by_id("battery_ac_charged_energy")
+        self.assertEqual(ac_charged.modbus_fields, [])
+        ac_discharged = reg.get_by_id("battery_ac_discharged_energy")
+        self.assertEqual(ac_discharged.modbus_fields, [])
+        self.assertEqual(
+            reg.get_raw_to_compound_map().get("battery.DCB105_warranty.WhIn"),
+            "battery.compound.battery_imported_energy",
+        )
+
+        # POST /api/grouping/reset_defaults refreshes groupings.yaml on disk from packaged defaults
+        app = create_app(self.client)
+        test_client = app.test_client()
+        resp = test_client.post("/api/grouping/reset_defaults")
+        self.assertEqual(resp.status_code, 200)
+        refreshed_doc = yaml.safe_load(self.groupings_path.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(refreshed_doc.get("groups", [])), 30)
+        refreshed_ac = next(g for g in refreshed_doc["groups"] if g["id"] == "battery_ac_charged_energy")
+        self.assertEqual(refreshed_ac["fields"], ["battery.live.storage_ac_charged_energy_wh"])
 
 
 if __name__ == "__main__":

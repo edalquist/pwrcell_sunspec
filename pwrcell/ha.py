@@ -893,6 +893,47 @@ def unqualify_ha_config(selected_field_keys: Optional[List[str]]) -> List[str]:
     return sorted(list(generic_keys))
 
 
+_UNAMBIGUOUS_MODEL_DEV_TYPE: Dict[int, str] = {
+    101: "inverter",
+    102: "inverter",
+    103: "inverter",
+    701: "inverter",
+    64202: "inverter",
+    64204: "inverter",
+    64208: "inverter",
+    802: "battery",
+    804: "battery",
+    64209: "battery",
+    64252: "battery",
+    401: "pv_link",
+    402: "pv_link",
+    403: "pv_link",
+    404: "pv_link",
+    64251: "pv_link",
+    64200: "rebus_beacon",
+}
+
+
+def _repair_legacy_export_key(key: str) -> Optional[str]:
+    """Resolve '.standalone.' or unambiguous bare '<pt>_<model>' slugs during default export."""
+    clean = (key or "").strip()
+    if ".standalone." in clean and "." in clean:
+        dev_p = clean.split(".", 1)[0]
+        slug = clean.split(".")[-1]
+        return _resolve_standalone_or_orphan_slug(dev_p, slug)
+    if "." not in clean:
+        if "_" not in clean:
+            return None
+        _, suffix = clean.rsplit("_", 1)
+        if not suffix.isdigit():
+            return None
+        dev_t = _UNAMBIGUOUS_MODEL_DEV_TYPE.get(int(suffix))
+        if not dev_t:
+            return None
+        return _resolve_standalone_or_orphan_slug(dev_t, clean)
+    return clean
+
+
 def generate_ha_default_config(
     source_path: Optional[Path | str] = None,
     target_path: Optional[Path | str] = None,
@@ -914,13 +955,10 @@ def generate_ha_default_config(
     canonical_keys: Set[str] = set()
 
     for gk in unqualified_keys:
-        if ".standalone." in gk and "." in gk:
-            dev_p = gk.split(".", 1)[0]
-            slug = gk.split(".")[-1]
-            repaired = _resolve_standalone_or_orphan_slug(dev_p, slug)
-            if not repaired:
-                continue
-            gk = repaired
+        repaired = _repair_legacy_export_key(gk)
+        if not repaired:
+            continue
+        gk = repaired
 
         if (".compound." in gk or ".concept." in gk) and "." in gk:
             dev_p = gk.split(".", 1)[0]
@@ -960,14 +998,10 @@ def generate_ha_default_config(
         for ov_k, ov_v in raw_overrides.items():
             clean_k = ov_k.split(":", 1)[1].strip() if ":" in ov_k else ov_k.strip()
             clean_v = ov_v.strip().lower()
-            if ".standalone." in clean_k and "." in clean_k:
-                dev_p = clean_k.split(".", 1)[0]
-                slug = clean_k.split(".")[-1]
-                repaired = _resolve_standalone_or_orphan_slug(dev_p, slug)
-                if not repaired:
-                    continue
-                clean_k = repaired
-            generic_overrides[clean_k] = clean_v
+            repaired = _repair_legacy_export_key(clean_k)
+            if not repaired:
+                continue
+            generic_overrides[repaired] = clean_v
 
         ov_wildcards = {k for k in generic_overrides if is_group_wildcard_key(k)}
         filtered_overrides = {
