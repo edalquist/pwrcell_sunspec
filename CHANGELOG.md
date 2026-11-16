@@ -5,20 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.3.0] - 2026-11-15
-
-### Added
-- **Collapsible Sub-Group Rollup Rows in Web Explorer (`pwrcell/ui/static/index.html`, `pwrcell/ui/static/app.js`, `pwrcell/ui/static/style.css`)**:
-  - Added **Roll up sub-groups** toolbar toggle (`#rollupSubgroups`, enabled by default whenever the active device exposes repeating sub-group instances) to collapse repeated SunSpec sub-group points (such as Model `804` `ModSoC` or Model `64252` `DCB105_module` metrics across all battery modules) into compact summary rows.
-  - Summary rows display instance counts (e.g. `6× Modules`), a 3-state Home Assistant selection checkbox (`checked` / `indeterminate` / `unchecked`), HA exported badge (`6/6 ★`, `2/6`, `0/6`), cross-instance value range / enum summary with live SSE refresh & flash (`handleLiveFieldUpdate`), and inline group category toggling (`toggleRollupCategoryAction`).
-  - Expanding a rollup opens an embedded per-instance drawer with per-instance HA checkboxes, live values, independent category toggles, `Set`/`Details`/`Copy` actions, and an inline rule-mode pill (`★ Saved as Wildcard (*)` ↔ `Saved as N Explicit Keys`).
-  - Targeted searches (e.g. `"Module 3"`) automatically unroll matching concrete instances, and Optimization Plan Breakdown click-to-jump automatically expands the parent rollup and highlights the target child row.
-- **Wildcard & Explicit Sub-Group Home Assistant Selection Rules (`pwrcell/catalog.py`, `pwrcell/ha.py`, `pwrcell/bridge.py`, `pwrcell/ui/routes/ha.py`, `pwrcell/optimizer.py`)**:
-  - Added catalog helpers (`wildcard_group_path`, `wildcardize_group_field_key`, `is_group_wildcard_key`, `group_wildcard_matches_field_key`) supporting single-level and nested SunSpec repeating paths (e.g. `battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC`, `inverter.DERVoltVar.Crv.*.Pt.*.V`).
-  - Defaults to saving a canonical `*.<Point>` wildcard rule in `ha_config.yaml` when all instances in a sub-group are selected, while supporting explicit per-instance keys, automatically splitting a wildcard into remaining explicit keys when a single instance is unchecked, and auto-collapsing back to a wildcard when all explicit instances are selected.
-  - Supports wildcard and per-instance Home Assistant `category_overrides` (with exact instance overrides taking precedence over wildcards), cold-start safety (`StateStore.ensure_field_definition()` never creates literal `*` `StateField` entries and preview logs `group_wildcard_awaiting_poll` until polled), HA config deduplication (`qualify_legacy_ha_config`), and accurate minimal-model solving for wildcard subgroup paths in `resolve_minimal_models_for_paths()`.
-  - Added unit, API, optimizer, cold-start, and Node VM frontend tests in `tests/test_sunspec_groups.py`.
-
 ## [3.2.0] - 2026-11-15
 
 ### Added
@@ -30,7 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added add-on/config option `include_bulk_table_groups` (default `false`, opt-in in `config.yaml`, `pwrcell/config.py`, `pwrcell/setup_key.py`) so large curve/schedule lookup tables (`126`, `129`–`144`, `705`–`712`, `64229`–`64257`) can be enabled on demand while raw flash buffers (Model `64258` `flash_reader.sector`) are always excluded.
   - Added `group_path` traversal to `SerializedModbusClient.write_point_value()` (`pwrcell/modbus.py`) and `ControlDispatcher.write_field()` (`pwrcell/controls.py`) so writable sub-group points can be updated safely while preserving group metadata.
   - Added Web Explorer UI sub-group instance dividers (`.subgroup-divider-row`), `.badge-subgroup` pills, natural numeric name sorting (`Module 1`, `Module 2`, ..., `Module 10`), and sub-group details in the register modal (`pwrcell/ui/static/app.js`, `pwrcell/ui/static/style.css`).
-  - Added comprehensive unit test suite in `tests/test_sunspec_groups.py`.
+- **Collapsible Sub-Group Rollup Rows in Web Explorer (`pwrcell/ui/static/index.html`, `pwrcell/ui/static/app.js`, `pwrcell/ui/static/style.css`)**:
+  - Added **Roll up sub-groups** toolbar toggle (`#rollupSubgroups`, enabled by default whenever the active device exposes repeating sub-group instances) to collapse repeated SunSpec sub-group points (such as Model `804` `ModSoC` or Model `64252` `DCB105_module` metrics across all battery modules) into compact summary rows.
+  - Summary rows display instance counts (e.g. `6× Modules`), a 3-state Home Assistant selection checkbox (`checked` / `indeterminate` / `unchecked`), HA exported badge (`6/6 ★`, `2/6`, `0/6`), cross-instance value range / enum summary with live SSE refresh & flash (`handleLiveFieldUpdate`), and inline group category toggling (`toggleRollupCategoryAction`).
+  - Expanding a rollup opens an embedded per-instance drawer with per-instance HA checkboxes, live values, independent category toggles, `Set`/`Details`/`Copy` actions, and an inline rule-mode pill (`★ Saved as Wildcard (*)` ↔ `Saved as N Explicit Keys`).
+  - Targeted searches (e.g. `"Module 3"`) automatically unroll matching concrete instances, and Optimization Plan Breakdown click-to-jump automatically expands the parent rollup and highlights the target child row.
+- **Wildcard & Explicit Sub-Group Home Assistant Selection Rules (`pwrcell/catalog.py`, `pwrcell/ha.py`, `pwrcell/bridge.py`, `pwrcell/ui/routes/ha.py`, `pwrcell/optimizer.py`)**:
+  - Added catalog helpers (`wildcard_group_path`, `wildcardize_group_field_key`, `is_group_wildcard_key`, `group_wildcard_matches_field_key`) supporting single-level and nested SunSpec repeating paths (e.g. `battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC`, `inverter.DERVoltVar.Crv.*.Pt.*.V`).
+  - Defaults to saving a canonical `*.<Point>` wildcard rule in `ha_config.yaml` when all instances in a sub-group are selected, while supporting explicit per-instance keys, automatically splitting a wildcard into remaining explicit keys when a single instance is unchecked, and auto-collapsing back to a wildcard when all explicit instances are selected.
+  - Supports wildcard and per-instance Home Assistant `category_overrides` (with exact instance overrides taking precedence over wildcards), cold-start safety (`StateStore.ensure_field_definition()` never creates literal `*` `StateField` entries and preview logs `group_wildcard_awaiting_poll` until polled), HA config deduplication (`qualify_legacy_ha_config`), and accurate minimal-model solving for wildcard subgroup paths in `resolve_minimal_models_for_paths()`.
+- Added unit, API, optimizer, cold-start, and Node VM frontend test suites in `tests/test_sunspec_groups.py`.
 
 ### Changed
 - **Semantic Grouping & Home Assistant MQTT Discovery for Sub-Groups**:
