@@ -106,6 +106,7 @@ def generate_config_from_options(
         "config_poll_interval": int(opts.get("config_poll_interval", 45) or 45),
         "slow_poll_interval": int(opts.get("slow_poll_interval", 300) or 300),
         "enable_polling": True,
+        "include_bulk_table_groups": bool(opts.get("include_bulk_table_groups", False)),
         "log_level": str(opts.get("log_level") or "INFO"),
         "pwrcell": {
             "ssh_tunnel": {

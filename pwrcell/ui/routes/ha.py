@@ -13,8 +13,10 @@ from ...ha import (
     ensure_selected_field_definitions,
     generate_discovery_payload,
     generate_gateway_discovery_payload,
+    get_matching_selected_entries,
     get_recommended_field_keys,
     is_field_selected,
+    is_group_wildcard_key,
     is_raw_field_suppressed,
     load_ha_category_overrides,
     load_ha_config,
@@ -473,10 +475,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                 ):
                     continue
                 if is_field_selected(f_key, dev.serial_number, selected_set):
-                    if f"{sn_clean}:{f_key}" in selected_set:
-                        matched_selected_keys.add(f"{sn_clean}:{f_key}")
-                    if f_key in selected_set:
-                        matched_selected_keys.add(f_key)
+                    matched_selected_keys.update(get_matching_selected_entries(f_key, dev.serial_number, selected_set))
 
                     payload_info = generate_discovery_payload(f, dev, gateway_device=gateway, category_overrides=cat_overrides)
                     preview_list.append({
@@ -515,6 +514,8 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                         reasons.append(f"{uk} (device_not_registered)")
                     elif ".compound." in u_path or ".concept." in u_path:
                         reasons.append(f"{uk} (compound_view_unavailable)")
+                    elif is_group_wildcard_key(u_path):
+                        reasons.append(f"{uk} (group_wildcard_awaiting_poll)")
                     elif u_path not in u_dev.fields:
                         reasons.append(f"{uk} (field_definition_missing)")
                     else:

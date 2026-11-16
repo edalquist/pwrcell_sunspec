@@ -7,6 +7,7 @@ from typing import Optional
 
 from flask import Blueprint, Response, jsonify, request
 
+from ...catalog import group_wildcard_matches_field_key, is_group_wildcard_key
 from ...client import PwrcellClient
 from ...ha import (
     generate_discovery_payload,
@@ -86,10 +87,33 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                 (r for r in all_comps if (r.concept_key == concept_key or r.mapping_id == concept_key) and (not device_sn or r.device_sn == device_sn)),
                 None
             )
-            if matching_row and matching_row.sources:
-                field_keys = [s.get("field_key") for s in matching_row.sources if s.get("field_key")]
+            if matching_row:
+                if getattr(matching_row, "sample_field_keys", None):
+                    field_keys = list(matching_row.sample_field_keys)
+                elif matching_row.sources:
+                    field_keys = [s.get("field_key") for s in matching_row.sources if s.get("field_key")]
                 if not device_sn:
                     device_sn = matching_row.device_sn
+
+        # Expand any sub-group wildcard field_keys to concrete keys before sync sampling
+        if field_keys and any(is_group_wildcard_key(k) for k in field_keys):
+            expanded_keys = []
+            target_devs = (
+                [client.state.get_device(device_sn)]
+                if device_sn
+                else list(client.state.devices.values())
+            )
+            for raw_k in field_keys:
+                if is_group_wildcard_key(raw_k):
+                    for d in target_devs:
+                        if not d:
+                            continue
+                        for d_fk in sorted(d.fields.keys()):
+                            if group_wildcard_matches_field_key(raw_k, d_fk) and d_fk not in expanded_keys:
+                                expanded_keys.append(d_fk)
+                elif raw_k not in expanded_keys:
+                    expanded_keys.append(raw_k)
+            field_keys = expanded_keys
 
         if not field_keys:
             return jsonify({"status": "error", "error": "No field keys or concept provided"}), 400
@@ -108,8 +132,13 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                     None
                 )
             if not matching_row and field_keys:
+                fk_set = set(field_keys)
                 matching_row = next(
-                    (r for r in all_comps if any(s.get("field_key") in field_keys for s in r.sources)),
+                    (
+                        r for r in all_comps
+                        if any(s.get("field_key") in fk_set for s in r.sources)
+                        or any(k in fk_set for k in (getattr(r, "sample_field_keys", None) or []))
+                    ),
                     None
                 )
             if matching_row:
@@ -156,6 +185,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
     def reset_grouping_defaults():
         try:
             from ...grouping import get_default_grouping_config_path, save_custom_groupings
+            from ...mapping import reset_mappings_to_defaults
             p = get_default_grouping_config_path()
             if p.exists():
                 try:
@@ -164,6 +194,7 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                     save_custom_groupings({})
             else:
                 save_custom_groupings({})
+            reset_mappings_to_defaults()
             _sync_grouping_state()
             return jsonify({"success": True, "message": "Grouping overrides reset to default"})
         except Exception as e:
@@ -245,14 +276,37 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             dev = client.state.devices.get(device_sn)
             if dev:
                 from ...optimizer import group_device_fields
-                from ...tools.recommender import are_from_same_model
-                incoming_f = dev.fields.get(field_key)
+                from ...tools.recommender import are_compatible_group_instances, are_from_same_model
+
+                def _resolve_sample_field(fk: str):
+                    if fk in dev.fields:
+                        return dev.fields[fk]
+                    if is_group_wildcard_key(fk):
+                        for cand_k in sorted(dev.fields.keys()):
+                            if group_wildcard_matches_field_key(fk, cand_k):
+                                return dev.fields[cand_k]
+                    return None
+
+                incoming_fields = [f for f in (_resolve_sample_field(k) for k in member_field_keys) if f is not None]
+                for i in range(len(incoming_fields)):
+                    for j in range(i + 1, len(incoming_fields)):
+                        if are_from_same_model(incoming_fields[i], incoming_fields[j]):
+                            return jsonify({
+                                "error": "Cannot merge across fields from the same model. Grouping is strictly for merging corresponding telemetry across different models or protocols."
+                            }), 400
+                        if not are_compatible_group_instances(incoming_fields[i], incoming_fields[j]):
+                            return jsonify({
+                                "error": "Cannot merge fields from different sub-group instances or hierarchy levels."
+                            }), 400
+
+                incoming_f = _resolve_sample_field(field_key)
                 if incoming_f:
                     existing_groups = group_device_fields(dev)
                     target_grp = next(
                         (
                             g for g in existing_groups
                             if g.concept_key == clean_tc
+                            or getattr(g, "concept_template", None) == clean_tc
                             or g.id.endswith(f".concept.{clean_tc}")
                             or g.id.endswith(f".standalone.{clean_tc}")
                         ),
@@ -266,7 +320,11 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
                                 return jsonify({
                                     "error": f"Cannot merge across fields from the same model ({m_name}). Grouping is strictly for merging corresponding telemetry across different models or protocols."
                                 }), 400
-                            if s.field_key and s.field_key not in member_field_keys:
+                            if s.field_key != field_key and not are_compatible_group_instances(s, incoming_f):
+                                return jsonify({
+                                    "error": "Cannot merge fields from different sub-group instances or hierarchy levels."
+                                }), 400
+                            if not is_group_wildcard_key(field_key) and s.field_key and s.field_key not in member_field_keys:
                                 member_field_keys.append(s.field_key)
 
         result = None
@@ -337,13 +395,28 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         if not dev:
             return jsonify({"error": f"Device {device_sn} not found"}), 404
         
+        from ...grouping import load_custom_groupings
         from ...optimizer import group_device_fields
         groups = group_device_fields(dev)
-        grp = next((g for g in groups if g.concept_key == concept_key or g.id == concept_key), None)
-        if not grp:
+        matched_groups = [
+            g for g in groups
+            if g.concept_key == concept_key
+            or g.id == concept_key
+            or getattr(g, "concept_template", None) == concept_key
+        ]
+        device_fields = {s.field_key: None for g in matched_groups for s in g.sources}
+
+        clean_sn = device_sn.strip().upper()
+        for ov_k, ov_tgt in (load_custom_groupings().get("field_overrides", {}) or {}).items():
+            if ov_tgt != concept_key:
+                continue
+            ov_sn, ov_fk = ov_k.split(":", 1) if ":" in ov_k else ("", ov_k)
+            if not ov_sn or ov_sn.strip().upper() == clean_sn:
+                device_fields[ov_fk.strip()] = None
+
+        if not device_fields:
             return jsonify({"error": f"Concept {concept_key} not found"}), 404
-        
-        device_fields = {s.field_key: None for s in grp.sources}
+
         result = ungroup_entire_concept(
             device_sn=device_sn,
             concept_key=concept_key,
@@ -381,13 +454,27 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
 
         dev = client.state.devices.get(device_sn)
         if dev and len(field_keys) > 1:
-            from ...tools.recommender import are_from_same_model
-            f_objs = [dev.fields.get(fk) for fk in field_keys if dev.fields.get(fk)]
+            from ...tools.recommender import are_compatible_group_instances, are_from_same_model
+
+            def _resolve_sample_obj(fk: str):
+                if fk in dev.fields:
+                    return dev.fields[fk]
+                if is_group_wildcard_key(fk):
+                    for cand_k in sorted(dev.fields.keys()):
+                        if group_wildcard_matches_field_key(fk, cand_k):
+                            return dev.fields[cand_k]
+                return None
+
+            f_objs = [f for f in (_resolve_sample_obj(fk) for fk in field_keys) if f is not None]
             for i in range(len(f_objs)):
                 for j in range(i + 1, len(f_objs)):
                     if are_from_same_model(f_objs[i], f_objs[j]):
                         return jsonify({
                             "error": "Cannot merge across fields from the same model."
+                        }), 400
+                    if not are_compatible_group_instances(f_objs[i], f_objs[j]):
+                        return jsonify({
+                            "error": "Cannot merge fields from different sub-group instances or hierarchy levels."
                         }), 400
 
         result = approve_suggestion(

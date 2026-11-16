@@ -19,7 +19,14 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 import yaml
 
 from . import __version__
-from .catalog import get_suggested_precision, normalize_ha_unit, is_diagnostic_point
+from .catalog import (
+    get_suggested_precision,
+    group_wildcard_matches_field_key,
+    is_diagnostic_point,
+    is_group_wildcard_key,
+    normalize_ha_unit,
+    wildcardize_group_field_key,
+)
 from .config import data_dir, is_addon_data_env
 from .state import FieldSource, StateField, StateStore, UnifiedDevice
 
@@ -75,11 +82,18 @@ def is_ha_writable_allowed(field: Any) -> bool:
         return mapping_id in HA_WRITABLE_ALLOWLIST
     pt_name = getattr(field, "name", "") or str(getattr(field, "key", "")).split(".")[-1]
     f_key = getattr(field, "key", "")
-    if pt_name in HA_WRITABLE_ALLOWLIST or f_key in HA_WRITABLE_ALLOWLIST:
+    active_fk = getattr(field, "active_source_key", None)
+    if (
+        pt_name in HA_WRITABLE_ALLOWLIST
+        or f_key in HA_WRITABLE_ALLOWLIST
+        or (active_fk and active_fk in HA_WRITABLE_ALLOWLIST)
+    ):
         return True
     try:
         from .bounds import get_custom_bounds
-        if get_custom_bounds(f_key, getattr(field, "device_sn", None), pt_name):
+        if get_custom_bounds(f_key, getattr(field, "device_sn", None), pt_name) or (
+            active_fk and get_custom_bounds(active_fk, getattr(field, "device_sn", None), pt_name)
+        ):
             return True
     except Exception:
         pass
@@ -112,6 +126,67 @@ def get_default_ha_config_path() -> Path:
     return data_dir() / DEFAULT_HA_CONFIG_FILE
 
 
+def get_matching_selected_entries(
+    field_key: str,
+    device_sn: Optional[str],
+    selected_keys: Iterable[str],
+    mqtt_key: Optional[str] = None,
+    candidate_keys: Optional[Iterable[str]] = None,
+) -> Set[str]:
+    """Return the subset of entries in `selected_keys` that select `field_key` on `device_sn`.
+
+    Supports device-scoped ('<sn>:<key>'), legacy global keys, and sub-group '*' wildcards.
+    """
+    if not selected_keys:
+        return set()
+    s_set = selected_keys if isinstance(selected_keys, set) else set(selected_keys)
+
+    check_keys = [field_key]
+    if ".compound." in field_key:
+        check_keys.append(field_key.replace(".compound.", ".concept."))
+    elif ".concept." in field_key:
+        check_keys.append(field_key.replace(".concept.", ".compound."))
+    if mqtt_key:
+        check_keys.append(mqtt_key)
+    if candidate_keys:
+        check_keys.extend(k for k in candidate_keys if k)
+
+    wildcard_check_keys: List[str] = []
+    for k in check_keys:
+        wk = wildcardize_group_field_key(k)
+        if wk and wk not in wildcard_check_keys:
+            wildcard_check_keys.append(wk)
+
+    matched: Set[str] = set()
+    sn_upper = device_sn.strip().upper() if device_sn else ""
+    prefix = f"{sn_upper}:" if sn_upper else ""
+
+    for k in check_keys:
+        if prefix and f"{prefix}{k}" in s_set:
+            matched.add(f"{prefix}{k}")
+        if k in s_set:
+            matched.add(k)
+
+    for wk in wildcard_check_keys:
+        if prefix and f"{prefix}{wk}" in s_set:
+            matched.add(f"{prefix}{wk}")
+        if wk in s_set:
+            matched.add(wk)
+
+    # Support partial nested wildcards (e.g. 'Crv.1.Pt.*.V') present in selected_keys
+    if any(".*." in sk for sk in s_set):
+        for sk in s_set:
+            if ".*." not in sk:
+                continue
+            for k in check_keys:
+                concrete_q = f"{prefix}{k}" if prefix else k
+                if group_wildcard_matches_field_key(sk, concrete_q):
+                    matched.add(sk)
+                    break
+
+    return matched
+
+
 def is_field_selected(
     field_key: str,
     device_sn: Optional[str],
@@ -119,7 +194,7 @@ def is_field_selected(
     mqtt_key: Optional[str] = None,
     candidate_keys: Optional[Iterable[str]] = None,
 ) -> bool:
-    """Check if a field is selected, supporting both device-scoped ('<sn>:<key>') and legacy global keys."""
+    """Check if a field is selected, supporting device-scoped, legacy global, and sub-group '*' wildcard keys."""
     if not selected_keys:
         return False
     s_set = selected_keys if isinstance(selected_keys, set) else set(selected_keys)
@@ -134,17 +209,29 @@ def is_field_selected(
     if candidate_keys:
         check_keys.extend(k for k in candidate_keys if k)
 
-    # Selected keys are normalized at load time (qualify_legacy_ha_config): '<SERIAL_UPPER>:<field_key>'.
-    if device_sn:
-        prefix = f"{device_sn.strip().upper()}:"
-        for k in check_keys:
-            if f"{prefix}{k}" in s_set:
-                return True
+    sn_upper = device_sn.strip().upper() if device_sn else ""
+    prefix = f"{sn_upper}:" if sn_upper else ""
 
-    # Legacy global keys (no serial prefix) are only present until a device of that type registers.
     for k in check_keys:
+        if prefix and f"{prefix}{k}" in s_set:
+            return True
         if k in s_set:
             return True
+        wk = wildcardize_group_field_key(k)
+        if wk:
+            if prefix and f"{prefix}{wk}" in s_set:
+                return True
+            if wk in s_set:
+                return True
+
+    if any(".*." in sk for sk in s_set):
+        for sk in s_set:
+            if ".*." not in sk:
+                continue
+            for k in check_keys:
+                concrete_q = f"{prefix}{k}" if prefix else k
+                if group_wildcard_matches_field_key(sk, concrete_q):
+                    return True
     return False
 
 
@@ -307,16 +394,30 @@ def _resolve_standalone_or_orphan_slug(
             candidate_devs = [d for d in state_store.devices.values() if d.device_type == dev_type]
 
         for dev in candidate_devs:
+            full_lower = clean_slug.lower()
+            for f in dev.fields.values():
+                f_sub = f.key.split(".", 1)[-1].replace(".", "_").lower() if "." in f.key else f.key.lower()
+                if f_sub == full_lower:
+                    return f.key
+                f_gp = getattr(f, "group_path", None)
+                if f_gp:
+                    gp_slug = re.sub(r"[^a-z0-9]+", "_", f_gp.lower()).strip("_")
+                    pt_slug = re.sub(r"[^a-z0-9]+", "_", (f.name or "").lower()).strip("_")
+                    grp_ck = f"m{f.model_id}_{gp_slug}_{pt_slug}" if f.model_id is not None else f"{gp_slug}_{pt_slug}"
+                    if full_lower == grp_ck:
+                        return f.key
             if mid_int is not None:
                 for f in dev.fields.values():
-                    if f.model_id == mid_int and (f.name or "").lower() == pt_lower:
+                    if f.model_id == mid_int and not getattr(f, "group_path", None) and (f.name or "").lower() == pt_lower:
                         return f.key
             # Match un-indexed / MQTT fields or full point name without model suffix
-            full_lower = clean_slug.lower()
             for f in dev.fields.values():
                 if f.model_id is None and (f.name or "").lower() == full_lower:
                     return f.key
-            name_matches = [f.key for f in dev.fields.values() if (f.name or "").lower() == full_lower]
+            name_matches = [
+                f.key for f in dev.fields.values()
+                if not getattr(f, "group_path", None) and (f.name or "").lower() == full_lower
+            ]
             if len(name_matches) == 1:
                 return name_matches[0]
 
@@ -490,6 +591,24 @@ def qualify_legacy_ha_config(selected_field_keys: Optional[List[str]], state_sto
     if to_remove:
         qualified -= to_remove
 
+    # Deduplicate redundant concrete subgroup keys when an active wildcard rule covers them
+    wildcard_rules = [qk for qk in qualified if is_group_wildcard_key(qk)]
+    if wildcard_rules:
+        redundant_concrete: Set[str] = set()
+        for wk in wildcard_rules:
+            wk_sn = wk.split(":", 1)[0].strip().upper() if ":" in wk else None
+            for qk in qualified:
+                if qk == wk or is_group_wildcard_key(qk):
+                    continue
+                qk_sn = qk.split(":", 1)[0].strip().upper() if ":" in qk else None
+                if wk_sn != qk_sn:
+                    continue
+                if group_wildcard_matches_field_key(wk, qk):
+                    redundant_concrete.add(qk)
+                    logger.debug("Collapsed redundant concrete group key '%s' into active wildcard '%s'", qk, wk)
+        if redundant_concrete:
+            qualified -= redundant_concrete
+
     return sorted(list(qualified))
 
 
@@ -576,7 +695,31 @@ def save_ha_category_override(
         fk_clean = str(fk).strip()
         if not fk_clean:
             continue
-        qualified_key = f"{sn_clean}:{fk_clean}" if sn_clean else fk_clean
+        if is_group_wildcard_key(fk_clean):
+            fk_sn = fk_clean.split(":", 1)[0].strip().upper() if ":" in fk_clean else sn_clean
+            fk_field = fk_clean.split(":", 1)[1].strip() if ":" in fk_clean else fk_clean
+            fk_parts = fk_field.split(".")
+            grp_seg_re = "_".join(r"\d+" if s == "*" else re.escape(s.lower()) for s in fk_parts[2:-1])
+            pt_re = re.escape(re.sub(r"[^a-z0-9]+", "_", fk_parts[-1].lower()).strip("_"))
+            concept_inst_re = re.compile(
+                rf"^{re.escape(fk_parts[0].lower())}\.(?:concept|standalone)\.(?:m\d+_)?{grp_seg_re}_{pt_re}$"
+            )
+            stale_concrete: List[str] = []
+            for ov_k in overrides:
+                ov_sn = ov_k.split(":", 1)[0].strip().upper() if ":" in ov_k else ""
+                ov_field = ov_k.split(":", 1)[1].strip() if ":" in ov_k else ov_k.strip()
+                if fk_sn and ov_sn and ov_sn != fk_sn:
+                    continue
+                if not fk_sn and ov_sn:
+                    continue
+                if ov_field == fk_field:
+                    continue
+                if group_wildcard_matches_field_key(fk_field, ov_field) or concept_inst_re.match(ov_field.lower()):
+                    stale_concrete.append(ov_k)
+            for sk in stale_concrete:
+                overrides.pop(sk, None)
+
+        qualified_key = fk_clean if ":" in fk_clean else (f"{sn_clean}:{fk_clean}" if sn_clean else fk_clean)
         if is_reset:
             overrides.pop(qualified_key, None)
             if ":" in qualified_key:
@@ -657,12 +800,20 @@ def get_effective_ha_category(
             pass
 
         unique_raw = list(dict.fromkeys(c for c in raw_candidates if c))
+        wildcard_raw = list(dict.fromkeys(
+            wk for c in unique_raw if (wk := wildcardize_group_field_key(c)) and wk not in unique_raw
+        ))
 
         candidates: List[str] = []
         if dev_sn:
             for c in unique_raw:
                 candidates.append(f"{dev_sn}:{c}")
         candidates.extend(unique_raw)
+        # Explicit instance overrides take precedence over group '*' wildcard overrides
+        if dev_sn:
+            for wk in wildcard_raw:
+                candidates.append(f"{dev_sn}:{wk}")
+        candidates.extend(wildcard_raw)
 
         for c in candidates:
             if c in category_overrides:
@@ -672,6 +823,23 @@ def get_effective_ha_category(
                 if val in ("diagnostic", "config"):
                     return val
 
+        if any(".*." in ok for ok in category_overrides):
+            for ok, raw_val in category_overrides.items():
+                if ".*." not in ok:
+                    continue
+                if ":" in ok:
+                    ok_sn, ok_field = ok.split(":", 1)
+                    if dev_sn and ok_sn.strip().upper() != dev_sn:
+                        continue
+                else:
+                    ok_field = ok
+                if any(group_wildcard_matches_field_key(ok_field, c) for c in unique_raw):
+                    val = str(raw_val).strip().lower()
+                    if val in ("primary", "sensor", "none", "null", ""):
+                        return None
+                    if val in ("diagnostic", "config"):
+                        return val
+
     # 2. Default logic
     is_writable = is_ha_writable_allowed(field)
     if is_writable:
@@ -679,6 +847,12 @@ def get_effective_ha_category(
         if hint and getattr(hint, "entity_category", None):
             return hint.entity_category
         return getattr(field, "entity_category", None)
+
+    if getattr(field, "group_path", None):
+        hint = getattr(field, "ha_hint", None)
+        if hint and getattr(hint, "entity_category", None) == "config":
+            return "config"
+        return "diagnostic"
 
     f_key = getattr(field, "key", getattr(field, "field_key", None)) or getattr(field, "id", "")
     sub_key = str(f_key).split(".", 1)[-1].replace(".", "_").lower() if f_key else ""
@@ -719,11 +893,54 @@ def unqualify_ha_config(selected_field_keys: Optional[List[str]]) -> List[str]:
     return sorted(list(generic_keys))
 
 
+_UNAMBIGUOUS_MODEL_DEV_TYPE: Dict[int, str] = {
+    101: "inverter",
+    102: "inverter",
+    103: "inverter",
+    701: "inverter",
+    64202: "inverter",
+    64204: "inverter",
+    64208: "inverter",
+    802: "battery",
+    804: "battery",
+    64209: "battery",
+    64252: "battery",
+    401: "pv_link",
+    402: "pv_link",
+    403: "pv_link",
+    404: "pv_link",
+    64251: "pv_link",
+    64200: "rebus_beacon",
+}
+
+
+def _repair_legacy_export_key(key: str) -> Optional[str]:
+    """Resolve '.standalone.' or unambiguous bare '<pt>_<model>' slugs during default export."""
+    clean = (key or "").strip()
+    if ".standalone." in clean and "." in clean:
+        dev_p = clean.split(".", 1)[0]
+        slug = clean.split(".")[-1]
+        return _resolve_standalone_or_orphan_slug(dev_p, slug)
+    if "." not in clean:
+        if "_" not in clean:
+            return None
+        _, suffix = clean.rsplit("_", 1)
+        if not suffix.isdigit():
+            return None
+        dev_t = _UNAMBIGUOUS_MODEL_DEV_TYPE.get(int(suffix))
+        if not dev_t:
+            return None
+        return _resolve_standalone_or_orphan_slug(dev_t, clean)
+    return clean
+
+
 def generate_ha_default_config(
     source_path: Optional[Path | str] = None,
     target_path: Optional[Path | str] = None,
 ) -> Dict[str, Any]:
     """Generate generic ha_default_config dictionary and YAML string from current ha_config.yaml."""
+    from .mapping import MappingRegistry
+
     src = Path(source_path) if source_path else get_default_ha_config_path()
     dst = Path(target_path) if target_path else get_default_seed_config_path()
 
@@ -731,7 +948,37 @@ def generate_ha_default_config(
         raise FileNotFoundError(f"Source configuration file not found: {src}")
 
     raw_keys = load_ha_config(config_path=src, allow_default_seed=False)
-    generic_keys = unqualify_ha_config(raw_keys)
+    unqualified_keys = unqualify_ha_config(raw_keys)
+
+    reg = MappingRegistry.get_instance()
+    raw_to_comp = reg.get_raw_to_compound_map()
+    canonical_keys: Set[str] = set()
+
+    for gk in unqualified_keys:
+        repaired = _repair_legacy_export_key(gk)
+        if not repaired:
+            continue
+        gk = repaired
+
+        if (".compound." in gk or ".concept." in gk) and "." in gk:
+            dev_p = gk.split(".", 1)[0]
+            cid = gk.split(".")[-1]
+            m = reg.get_by_id(cid)
+            if m and (not m.device_type or m.device_type == dev_p):
+                canonical_keys.add(f"{dev_p}.compound.{m.id}")
+            continue
+
+        if not is_group_wildcard_key(gk) and gk in raw_to_comp and not reg.is_field_ungrouped(gk):
+            canonical_keys.add(raw_to_comp[gk])
+        else:
+            canonical_keys.add(gk)
+
+    active_wildcards = [k for k in canonical_keys if is_group_wildcard_key(k)]
+    generic_keys = sorted(
+        k for k in canonical_keys
+        if is_group_wildcard_key(k)
+        or not any(group_wildcard_matches_field_key(w, k) for w in active_wildcards)
+    )
 
     existing_data: Dict[str, Any] = {}
     if dst.exists():
@@ -744,15 +991,29 @@ def generate_ha_default_config(
     out_dict = dict(existing_data)
     out_dict["selected_fields"] = generic_keys
 
-    # Also generalize category overrides if present
+    # Also generalize and deduplicate category overrides if present
     raw_overrides = load_ha_category_overrides(config_path=src)
     if raw_overrides:
         generic_overrides: Dict[str, str] = {}
         for ov_k, ov_v in raw_overrides.items():
             clean_k = ov_k.split(":", 1)[1].strip() if ":" in ov_k else ov_k.strip()
-            generic_overrides[clean_k] = ov_v.strip().lower()
-        if generic_overrides:
-            out_dict["category_overrides"] = dict(sorted(generic_overrides.items()))
+            clean_v = ov_v.strip().lower()
+            repaired = _repair_legacy_export_key(clean_k)
+            if not repaired:
+                continue
+            generic_overrides[repaired] = clean_v
+
+        ov_wildcards = {k for k in generic_overrides if is_group_wildcard_key(k)}
+        filtered_overrides = {
+            k: v for k, v in generic_overrides.items()
+            if k in ov_wildcards
+            or not any(
+                group_wildcard_matches_field_key(w, k) and generic_overrides.get(w) == v
+                for w in ov_wildcards
+            )
+        }
+        if filtered_overrides:
+            out_dict["category_overrides"] = dict(sorted(filtered_overrides.items()))
 
     yaml_header = (
         "# PWRcell Default Home Assistant Entity Configuration\n"
@@ -933,9 +1194,10 @@ def generate_discovery_payload(
 ) -> Dict[str, Any]:
     """Generate modern Home Assistant MQTT Discovery configuration dictionary and topics."""
     is_compound = field.is_compound
+    is_concept = bool(is_compound or hasattr(field, "concept_key"))
     is_writable = is_ha_writable_allowed(field)
 
-    if is_compound:
+    if is_concept:
         platform = field.ha_platform if (is_writable or field.ha_platform == "sensor") else "sensor"
         if is_writable and platform == "sensor":
             if getattr(field, "ha_options", None) or getattr(field, "ha_device_class", None) == "enum":
@@ -958,7 +1220,7 @@ def generate_discovery_payload(
 
     clean_sn = device.serial_number.strip().lower()
 
-    if is_compound:
+    if is_concept:
         concept_id = getattr(field, "concept_key", None) or getattr(field, "mapping_id", None) or getattr(field, "name", "")
         sub_key = str(concept_id).lower().replace(".", "_")
     else:
@@ -1021,9 +1283,10 @@ def generate_discovery_payload(
     sub_key_lower = sub_key.lower()
     pt_name_lower = str(getattr(field, "name", "")).lower()
 
+    has_group = bool(getattr(field, "group_path", None))
     legacy_config_topics = []
     candidates = {sub_key}
-    if pt_name_lower:
+    if pt_name_lower and not has_group:
         candidates.add(pt_name_lower)
     for c in candidates:
         for pfx in ("compound_", "concept_"):
@@ -1032,30 +1295,31 @@ def generate_discovery_payload(
     # Exclude current config_topic and deduplicate
     legacy_config_topics = [t for t in dict.fromkeys(legacy_config_topics) if t != config_topic]
 
-    # Friendly entity naming instead of raw SunSpec unit names
-    if name_clean in ("Watts", "W") or sub_key_lower in ("inverter_w", "w"):
-        name_clean = "Active Power"
-    elif name_clean in ("Amps", "A") or sub_key_lower in ("inverter_a", "string_combiner_dca"):
-        if device.device_type == "pv_link" or "string" in sub_key_lower or "dca" in sub_key_lower:
-            name_clean = "String Current"
-        else:
-            name_clean = "AC Output Current"
-    elif name_clean in ("Amps PhaseA", "AphA") or sub_key_lower in ("inverter_apha", "apha"):
-        name_clean = "Phase A Current"
-    elif name_clean in ("Amps PhaseB", "AphB") or sub_key_lower in ("inverter_aphb", "aphb"):
-        name_clean = "Phase B Current"
-    elif name_clean in ("Amps PhaseC", "AphC") or sub_key_lower in ("inverter_aphc", "aphc"):
-        name_clean = "Phase C Current"
-    elif name_clean.startswith("Phase Voltage AN") or sub_key_lower in ("inverter_phvpha", "phvpha"):
-        name_clean = "Phase A Voltage"
-    elif name_clean.startswith("Phase Voltage BN") or sub_key_lower in ("inverter_phvphb", "phvphb"):
-        name_clean = "Phase B Voltage"
-    elif name_clean.startswith("Phase Voltage CN") or sub_key_lower in ("inverter_phvphc", "phvphc"):
-        name_clean = "Phase C Voltage"
-    elif name_clean == "REbus Voltage " or sub_key_lower.endswith("rebus_status_v"):
-        name_clean = "REbus Voltage"
-    elif sub_key_lower in ("battery_soc", "state_of_charge") and name_clean.lower() in ("battery soc", "soc"):
-        name_clean = "State of Charge"
+    # Friendly entity naming instead of raw SunSpec unit names (top-level entities only)
+    if not has_group:
+        if name_clean in ("Watts", "W") or sub_key_lower in ("inverter_w", "w"):
+            name_clean = "Active Power"
+        elif name_clean in ("Amps", "A") or sub_key_lower in ("inverter_a", "string_combiner_dca"):
+            if device.device_type == "pv_link" or "string" in sub_key_lower or "dca" in sub_key_lower:
+                name_clean = "String Current"
+            else:
+                name_clean = "AC Output Current"
+        elif name_clean in ("Amps PhaseA", "AphA") or sub_key_lower in ("inverter_apha", "apha"):
+            name_clean = "Phase A Current"
+        elif name_clean in ("Amps PhaseB", "AphB") or sub_key_lower in ("inverter_aphb", "aphb"):
+            name_clean = "Phase B Current"
+        elif name_clean in ("Amps PhaseC", "AphC") or sub_key_lower in ("inverter_aphc", "aphc"):
+            name_clean = "Phase C Current"
+        elif name_clean.startswith("Phase Voltage AN") or sub_key_lower in ("inverter_phvpha", "phvpha"):
+            name_clean = "Phase A Voltage"
+        elif name_clean.startswith("Phase Voltage BN") or sub_key_lower in ("inverter_phvphb", "phvphb"):
+            name_clean = "Phase B Voltage"
+        elif name_clean.startswith("Phase Voltage CN") or sub_key_lower in ("inverter_phvphc", "phvphc"):
+            name_clean = "Phase C Voltage"
+        elif name_clean == "REbus Voltage " or sub_key_lower.endswith("rebus_status_v"):
+            name_clean = "REbus Voltage"
+        elif sub_key_lower in ("battery_soc", "state_of_charge") and name_clean.lower() in ("battery soc", "soc"):
+            name_clean = "State of Charge"
 
     device_info = get_device_info(device, gateway_device=gateway_device)
 
@@ -1083,7 +1347,7 @@ def generate_discovery_payload(
         "origin": ORIGIN_INFO,
     }
 
-    if is_compound:
+    if is_concept:
         if platform == "select":
             payload["command_topic"] = command_topic
             if getattr(field, "ha_options", None):
@@ -1254,7 +1518,7 @@ def generate_discovery_payload(
 
     precision = None
     if platform == "sensor":
-        if is_compound:
+        if is_concept:
             precision = getattr(field, "ha_suggested_display_precision", None)
             if precision is None:
                 precision = get_suggested_precision(field.ha_unit or field.units, field.ha_device_class)
@@ -1356,6 +1620,24 @@ def ensure_selected_field_definitions(
             if not any(cand in dev.fields for cand in all_non_excluded) and all_non_excluded:
                 primary_cand = (mqtt_candidates or mb_canonical or mb_alias or override_members)[0]
                 state_store.ensure_field_definition(dev.serial_number, primary_cand)
+        elif is_group_wildcard_key(f_path):
+            # Expand against any concrete subgroup instances already discovered on dev (never create a literal '*' field)
+            p_parts = f_path.split(".")
+            model_sub = p_parts[1]
+            pt_leaf = p_parts[-1]
+            existing_group_paths = {
+                f.group_path
+                for f in dev.fields.values()
+                if f.group_path
+                and f.key
+                and "." in f.key
+                and f.key.split(".")[1] == model_sub
+                and group_wildcard_matches_field_key(f_path, f"{dev.device_type}.{model_sub}.{f.group_path}.{pt_leaf}")
+            }
+            for gp in sorted(existing_group_paths):
+                concrete_path = f"{dev.device_type}.{model_sub}.{gp}.{pt_leaf}"
+                if concrete_path not in dev.fields:
+                    state_store.ensure_field_definition(dev.serial_number, concrete_path)
         elif f_path not in dev.fields:
             state_store.ensure_field_definition(dev.serial_number, f_path)
 

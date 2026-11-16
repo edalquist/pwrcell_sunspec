@@ -1,5 +1,10 @@
+import tempfile
 import unittest
 import time
+from pathlib import Path
+from unittest import mock
+
+from pwrcell.grouping import clear_custom_groupings_cache
 from pwrcell.state import StateStore, FieldSource
 from pwrcell.ha import qualify_legacy_ha_config, is_field_selected
 from pwrcell.mapping import MappingRegistry
@@ -7,7 +12,21 @@ from pwrcell.mapping import MappingRegistry
 
 class TestGroupingAndMqttAuditFixes(unittest.TestCase):
     def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._grp_patch = mock.patch(
+            "pwrcell.grouping.get_default_grouping_config_path",
+            return_value=Path(self._tmp_dir.name) / "custom_groupings.yaml",
+        )
+        self._grp_patch.start()
+        clear_custom_groupings_cache()
+        MappingRegistry._instance = None
         self.state = StateStore()
+
+    def tearDown(self):
+        self._grp_patch.stop()
+        clear_custom_groupings_cache()
+        MappingRegistry._instance = None
+        self._tmp_dir.cleanup()
 
     def test_multi_device_compound_view_secondary_devices(self):
         """Bug H1: Verify secondary PV Links get compound views with their own device-scoped data."""

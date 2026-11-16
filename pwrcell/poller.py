@@ -47,6 +47,7 @@ from .catalog import (
     MODEL_VOLT_VAR,
     MODEL_VOLT_WATT,
     is_sunspec_sentinel,
+    should_ingest_model_groups,
 )
 
 if TYPE_CHECKING:
@@ -90,6 +91,53 @@ def safe_point_cvalue(point: Any) -> Any:
     except (OverflowError, ValueError, TypeError, ZeroDivisionError) as e:
         logger.debug("Error computing cvalue for point %s: %s", getattr(point, "pdef", {}).get("name", point), e)
         return None
+
+
+def extract_model_groups(
+    model_inst: Any,
+    model_id: int,
+    include_bulk_tables: bool = False,
+) -> List[Dict[str, Any]]:
+    """Recursively extract permitted SunSpec sub-group blocks from a pysunspec2 model instance."""
+    groups_obj = getattr(model_inst, "groups", None)
+    if not isinstance(groups_obj, dict):
+        return []
+
+    results: List[Dict[str, Any]] = []
+
+    def _emit_group_obj(g_name: str, g_idx: Optional[int], g_path: str, grp_obj: Any):
+        pts_obj = getattr(grp_obj, "points", None)
+        if isinstance(pts_obj, dict):
+            raw_pts = {p_name: p.value for p_name, p in pts_obj.items()}
+            comp_pts = {p_name: safe_point_cvalue(p) for p_name, p in pts_obj.items()}
+            results.append({
+                "group_name": g_name,
+                "group_index": g_idx,
+                "group_path": g_path,
+                "raw_values": raw_pts,
+                "computed_values": comp_pts,
+            })
+        sub_groups = getattr(grp_obj, "groups", None)
+        if isinstance(sub_groups, dict):
+            _walk_groups(sub_groups, g_path)
+
+    def _walk_groups(groups_dict: Dict[str, Any], parent_path: str):
+        for g_name, g_val in groups_dict.items():
+            if not should_ingest_model_groups(model_id, g_name, include_bulk_tables=include_bulk_tables):
+                continue
+            if isinstance(g_val, (list, tuple)):
+                for idx, inst in enumerate(g_val, start=1):
+                    g_path = f"{parent_path}.{g_name}.{idx}" if parent_path else f"{g_name}.{idx}"
+                    _emit_group_obj(g_name, idx, g_path, inst)
+            elif g_val is not None and (
+                isinstance(getattr(g_val, "points", None), dict)
+                or isinstance(getattr(g_val, "groups", None), dict)
+            ):
+                g_path = f"{parent_path}.{g_name}" if parent_path else g_name
+                _emit_group_obj(g_name, None, g_path, g_val)
+
+    _walk_groups(groups_obj, "")
+    return results
 
 
 class PollingTier(str, Enum):
@@ -162,6 +210,7 @@ DEFAULT_CONFIG_PATHS: List[str] = [
 
 DEFAULT_SLOW_PATHS: List[str] = [
     "battery.battery_status",
+    "battery.lithium_ion_string",
     "inverter.inverter_status",
     "pv_link.string_combiner",
 ]
@@ -491,12 +540,20 @@ class TieredModbusPoller:
                     if model_inst:
                         raw_pts = {p_name: p.value for p_name, p in model_inst.points.items()}
                         comp_pts = {p_name: safe_point_cvalue(p) for p_name, p in model_inst.points.items()}
+                        inc_bulk = bool(getattr(getattr(self.client, "config", None), "include_bulk_table_groups", False))
+                        groups_data = extract_model_groups(
+                            model_inst,
+                            model_id,
+                            include_bulk_tables=inc_bulk,
+                        )
                         self.client.state.update_from_modbus_points(
                             serial_number,
                             model_id,
                             raw_values=raw_pts,
                             computed_values=comp_pts,
                             instance_index=idx,
+                            groups_data=groups_data,
+                            include_bulk_tables=inc_bulk,
                         )
                         any_read = True
                 return any_read

@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-11-15
+
+### Added
+- **Generic SunSpec Sub-Group Support (Per-Module Battery Telemetry & Nested Groups — Issue #18)**:
+  - Recursively parses SunSpec sub-group metamodel definitions (`SunspecGroupDef`, `SunspecPointDef` group metadata, `ModelCatalog`, `SunspecModelDef.get_group_point()`) across all models without colliding with fixed-block register names (`pwrcell/catalog.py`).
+  - Surfacing of per-battery-module telemetry from Model `804` (`lithium_ion_string_module`) and Model `64252` (`DCB105_module` warranty/module health metrics), Model `64200` (`devices` REbus directory slots including `ID`), and nested SunSpec sub-groups (`704`, `705` `Crv.Pt`, etc.).
+  - Explicit group metadata (`group_name`, `group_index`, `group_path`, `group_label`) on `StateField`, `ConceptSource`, `ConceptView`, Modbus register details, and REST APIs (`pwrcell/state.py`, `pwrcell/concept.py`).
+  - Polls SunSpec `battery.lithium_ion_string` (`804`) in `DEFAULT_SLOW_PATHS` and recursively extracts live `pysunspec2` sub-groups (`extract_model_groups` in `pwrcell/poller.py`) and recorded fixtures (`MockFixtureLoader` in `pwrcell/fixtures.py`, `pwrcell/client.py`).
+  - Added add-on/config option `include_bulk_table_groups` (default `false`, opt-in in `config.yaml`, `pwrcell/config.py`, `pwrcell/setup_key.py`) so large curve/schedule lookup tables (`126`, `129`–`144`, `705`–`712`, `64229`–`64257`) can be enabled on demand while raw flash buffers (Model `64258` `flash_reader.sector`) are always excluded.
+  - Added `group_path` traversal to `SerializedModbusClient.write_point_value()` (`pwrcell/modbus.py`) and `ControlDispatcher.write_field()` (`pwrcell/controls.py`) so writable sub-group points can be updated safely while preserving group metadata.
+  - Added Web Explorer UI sub-group instance dividers (`.subgroup-divider-row`), `.badge-subgroup` pills, natural numeric name sorting (`Module 1`, `Module 2`, ..., `Module 10`), and sub-group details in the register modal (`pwrcell/ui/static/app.js`, `pwrcell/ui/static/style.css`).
+- **Collapsible Sub-Group Rollup Rows in Web Explorer (`pwrcell/ui/static/index.html`, `pwrcell/ui/static/app.js`, `pwrcell/ui/static/style.css`)**:
+  - Added **Roll up sub-groups** toolbar toggle (`#rollupSubgroups`, enabled by default whenever the active device exposes repeating sub-group instances) to collapse repeated SunSpec sub-group points (such as Model `804` `ModSoC` or Model `64252` `DCB105_module` metrics across all battery modules) into compact summary rows.
+  - Summary rows display instance counts (e.g. `6× Modules`), a 3-state Home Assistant selection checkbox (`checked` / `indeterminate` / `unchecked`), HA exported badge (`6/6 ★`, `2/6`, `0/6`), cross-instance value range / enum summary with live SSE refresh & flash (`handleLiveFieldUpdate`), and inline group category toggling (`toggleRollupCategoryAction`).
+  - Expanding a rollup opens an embedded per-instance drawer with per-instance HA checkboxes, live values, independent category toggles, `Set`/`Details`/`Copy` actions, and an inline rule-mode pill (`★ Saved as Wildcard (*)` ↔ `Saved as N Explicit Keys`).
+  - Targeted searches (e.g. `"Module 3"`) automatically unroll matching concrete instances, and Optimization Plan Breakdown click-to-jump automatically expands the parent rollup and highlights the target child row.
+- **Wildcard & Explicit Sub-Group Home Assistant Selection Rules (`pwrcell/catalog.py`, `pwrcell/ha.py`, `pwrcell/bridge.py`, `pwrcell/ui/routes/ha.py`, `pwrcell/optimizer.py`)**:
+  - Added catalog helpers (`wildcard_group_path`, `wildcardize_group_field_key`, `is_group_wildcard_key`, `group_wildcard_matches_field_key`) supporting single-level and nested SunSpec repeating paths (e.g. `battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC`, `inverter.DERVoltVar.Crv.*.Pt.*.V`).
+  - Defaults to saving a canonical `*.<Point>` wildcard rule in `ha_config.yaml` when all instances in a sub-group are selected, while supporting explicit per-instance keys, automatically splitting a wildcard into remaining explicit keys when a single instance is unchecked, and auto-collapsing back to a wildcard when all explicit instances are selected.
+  - Supports wildcard and per-instance Home Assistant `category_overrides` (with exact instance overrides taking precedence over wildcards), cold-start safety (`StateStore.ensure_field_definition()` never creates literal `*` `StateField` entries and preview logs `group_wildcard_awaiting_poll` until polled), HA config deduplication (`qualify_legacy_ha_config`), and accurate minimal-model solving for wildcard subgroup paths in `resolve_minimal_models_for_paths()`.
+- **Sub-Group Aware Grouped Registers & Telemetry Comparison (`pwrcell/tools/recommender.py`, `pwrcell/tools/correlator.py`, `pwrcell/grouping.py`, `pwrcell/optimizer.py`, `pwrcell/ui/routes/grouping.py`)**:
+  - Enforced strict sub-group hierarchy, index (`are_compatible_group_instances`), and extremum/average (`AVG` vs `MIN` vs `MAX`) isolation in `find_suggested_groupings()` so module points never cross-match across different instances or against bank-level metrics.
+  - Rolled up aligned multi-instance suggestions and comparisons (with cross-instance min–max summaries, divergence propagation, one-click `Sync Sample`, wildcard approvals, and expandable per-instance breakdowns) in the **Grouped Registers & Telemetry Comparison** modal.
+- **Curated Universal Default Configs & Hardened Exporters (`config/ha_default_config.yaml`, `pwrcell/data/groupings.yaml`, `pwrcell/ha.py`, `pwrcell/grouping.py`, `pwrcell/mapping.py`, `pwrcell/ui/routes/grouping.py`)**:
+  - Updated `config/ha_default_config.yaml` with hybrid `.compound.` keys across inverter, battery, and PV Link devices, `pv_link.REbus_status.{I,St,V}: primary` category overrides, and `Model 804` / `Model 64252` per-module wildcards (`lithium_ion_string_module.*.Mod*`, `DCB105_module.*.PackV`), removing duplicate state/energy entries and stale `.standalone.` category overrides.
+  - Kept `battery_ac_charged_energy` and `battery_ac_discharged_energy` MQTT-only in `pwrcell/data/groupings.yaml` (removing DC `WhIn`/`WhOut` Modbus registers so they no longer shadow `battery_imported_energy` / `battery_exported_energy`), and updated `export_repo_groupings()` / `generate_ha_default_config()` to keep explicit multi-source canonical mappings, preserve sub-group wildcard paths and `unit`/`member_transforms`, upgrade `.live.` keys to `.compound.`, resolve unambiguous bare `<pt>_<model>` slugs, and drop single-source, ambiguous, or stale `.standalone.` artifacts on export.
+  - Updated `MappingRegistry.reload()` (`pwrcell/mapping.py`) to backfill newly added built-in group members/synonyms into persisted add-on `/data/groupings.yaml` files on upgrade while respecting `ungrouped_fields` and stripping stale DC `WhIn`/`WhOut` overlaps from `battery_ac_*`, and added `reset_mappings_to_defaults()` invoked by `POST /api/grouping/reset_defaults` to refresh runtime `groupings.yaml` from packaged defaults.
+- Added unit, API, optimizer, cold-start, recommender/correlator, exporter, and Node VM frontend test suites in `tests/test_sunspec_groups.py`.
+
+### Changed
+- **Semantic Grouping & Home Assistant MQTT Discovery for Sub-Groups**:
+  - Updated `group_device_fields()` (`pwrcell/optimizer.py`) to isolate sub-group points into instance-scoped concepts (`<device_type>.concept.m<model_id>_<group_path>_<point>`) so values never merge across modules/instances or into bank-level metrics.
+  - Updated `pwrcell/ha.py` so sub-group entities attach to their parent `UnifiedDevice`, default to `entity_category: "diagnostic"`, preserve instance-prefixed entity labels and saved config slugs (`_resolve_standalone_or_orphan_slug`), and avoid colliding with top-level legacy discovery topics.
+
+### Fixed
+- Updated the Web Explorer header version badge (`#appVersionBadge`) and `<title>` (`pwrcell/ui/static/index.html`, `pwrcell/ui/server.py`, `pwrcell/ui/routes/devices.py`, `pwrcell/ui/static/app.js`) to dynamically reflect `pwrcell.__version__` (`v3.2.0`) instead of hardcoded `v3.0`.
+- Cleared invalid unit/scale-factor metadata on SunSpec Model `804` `ModCellVMinCell` and defaulted `%` units on Model `64252` `DCB105_module` `SOC`/`SOH` points in `pwrcell/catalog.py`.
+
 ## [3.1.16] - 2026-11-15
 
 ### Fixed

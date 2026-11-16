@@ -18,10 +18,16 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
+from ..catalog import wildcardize_group_field_key
 from ..concept import ConceptView
 from ..mapping import MappingRegistry, ModbusCandidateDef, TelemetryMappingDef as ConfigMappingDef, apply_transform
 from ..optimizer import group_device_fields, clean_unit
 from ..state import FieldSource, StateField, StateStore
+from .recommender import (
+    _format_source_value_summary,
+    _wildcardize_suggestion_label,
+    extract_group_indices,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +148,14 @@ class ComparisonResultRow:
     source_count: int = 0
     polled_count: int = 0
     sources: List[Dict[str, Any]] = field(default_factory=list)
+    is_group_rollup: bool = False
+    instance_count: int = 1
+    sample_field_keys: List[str] = field(default_factory=list)
+    instances: List[Dict[str, Any]] = field(default_factory=list)
+    group_path: Optional[str] = None
+    group_index: Optional[int] = None
+    group_label: Optional[str] = None
+    concept_template: Optional[str] = None
 
     @property
     def is_explicitly_grouped(self) -> bool:
@@ -159,6 +173,7 @@ class ComparisonResultRow:
             "id": self.id or self.mapping_id,
             "mapping_id": self.mapping_id,
             "concept_key": self.concept_key or self.mapping_id,
+            "concept_template": self.concept_template,
             "label": self.label,
             "unit": self.unit,
             "device_sn": self.device_sn,
@@ -183,6 +198,13 @@ class ComparisonResultRow:
             "source_count": self.source_count or len(self.sources),
             "polled_count": self.polled_count,
             "sources": self.sources,
+            "is_group_rollup": self.is_group_rollup,
+            "instance_count": self.instance_count,
+            "sample_field_keys": self.sample_field_keys,
+            "instances": self.instances,
+            "group_path": self.group_path,
+            "group_index": self.group_index,
+            "group_label": self.group_label,
         }
 
 
@@ -190,6 +212,7 @@ def evaluate_comparisons(
     state_store: StateStore,
     mappings: Optional[List[TelemetryMappingDef]] = None,
     custom_groupings: Optional[Dict[str, Any]] = None,
+    rollup_subgroups: bool = True,
 ) -> List[ComparisonResultRow]:
     """Evaluate all grouped registers across all devices and telemetry mappings against current live state."""
     results: List[ComparisonResultRow] = []
@@ -262,6 +285,7 @@ def evaluate_comparisons(
     if state_store.devices:
         for dev in state_store.devices.values():
             groups = group_device_fields(dev, custom_groupings=custom_data)
+            subgroup_buckets: Dict[Tuple[str, ...], List[ComparisonResultRow]] = {}
             for g in groups:
                 # Exclude raw scale factor registers from telemetry comparison & merging UI
                 if getattr(g, "is_scale_factor", False):
@@ -273,7 +297,17 @@ def evaluate_comparisons(
                 mapping_id = f"{dev.serial_number}_{g.concept_key}" if is_telemetry else g.concept_key
 
                 row = _build_group_comparison_row(dev, g, mapping_id=mapping_id)
-                results.append(row)
+                if rollup_subgroups and row.group_path and row.group_index is not None:
+                    wk_sig = tuple(sorted(wildcardize_group_field_key(s["field_key"]) or s["field_key"] for s in row.sources))
+                    subgroup_buckets.setdefault(wk_sig, []).append(row)
+                else:
+                    results.append(row)
+
+            for wk_sig, bucket in subgroup_buckets.items():
+                if len(bucket) == 1:
+                    results.append(bucket[0])
+                else:
+                    results.append(_build_rollup_comparison_row(dev, bucket, wk_sig))
 
     # Sort results with discrepancies first, then multi-source, then matching
     status_priority = {
@@ -297,6 +331,139 @@ def evaluate_comparisons(
     ))
 
     return results
+
+
+def _build_rollup_comparison_row(
+    dev: Any,
+    bucket: List[ComparisonResultRow],
+    wk_sig: Tuple[str, ...],
+) -> ComparisonResultRow:
+    """Collapse aligned sub-group instances (e.g. Module 1..6) into one rolled-up ComparisonResultRow."""
+    ordered = sorted(bucket, key=lambda r: (extract_group_indices(r.group_path), r.concept_key))
+    first = ordered[0]
+    n = len(ordered)
+
+    wk_label, derived_ck = _wildcardize_suggestion_label(first.label, first.group_label)
+    wk_concept_key = first.concept_template or derived_ck
+    rollup_id = f"{dev.serial_number}:rollup:{'|'.join(wk_sig)}"
+
+    disc_rows = [
+        r for r in ordered
+        if r.is_discrepant or r.status in ("DIVERGENT", "UNIT_MISMATCH", "POLARITY_MISMATCH", "SCALE_MISMATCH")
+    ]
+    partial_rows = [r for r in ordered if r.status == "PARTIALLY_POLLED"]
+    close_rows = [r for r in ordered if r.status == "CLOSE"]
+    exact_rows = [r for r in ordered if r.status == "EXACT"]
+    single_rows = [r for r in ordered if r.status == "SINGLE_SOURCE"]
+
+    if disc_rows:
+        sev_order = {"UNIT_MISMATCH": 0, "POLARITY_MISMATCH": 1, "SCALE_MISMATCH": 2, "DIVERGENT": 3}
+        worst = min(disc_rows, key=lambda r: sev_order.get(r.status, 9))
+        status = worst.status
+        is_discrepant = True
+        status_label = f"{len(disc_rows)}/{n} Divergent ✗" if status == "DIVERGENT" else f"{worst.status_label} ({len(disc_rows)}/{n})"
+        deltas = [r.delta for r in disc_rows if r.delta is not None]
+        delta = max(deltas) if deltas else None
+        pcts = [r.match_pct for r in disc_rows if r.match_pct is not None]
+        match_pct = min(pcts) if pcts else 0.0
+        discrepancy_reason = f"{len(disc_rows)} of {n} instances diverge ({worst.group_label or worst.group_path}: {worst.discrepancy_reason})"
+    elif partial_rows:
+        status = "PARTIALLY_POLLED"
+        status_label = f"Partially Polled ({len(partial_rows)}/{n})"
+        is_discrepant = False
+        delta = None
+        match_pct = None
+        discrepancy_reason = f"{len(partial_rows)} of {n} instances partially polled"
+    elif len(exact_rows) == n:
+        status = "EXACT"
+        status_label = f"{n}/{n} Exact Match ✓"
+        is_discrepant = False
+        delta = 0.0
+        match_pct = 100.0
+        discrepancy_reason = f"All {n} sub-group instances agree exactly"
+    elif exact_rows or close_rows:
+        status = "CLOSE"
+        agreed = len(exact_rows) + len(close_rows)
+        status_label = f"{agreed}/{n} Agree (~)"
+        is_discrepant = False
+        deltas = [r.delta for r in ordered if r.delta is not None]
+        delta = max(deltas) if deltas else None
+        pcts = [r.match_pct for r in ordered if r.match_pct is not None]
+        match_pct = min(pcts) if pcts else None
+        discrepancy_reason = f"All {agreed} polled instances agree closely"
+    elif len(single_rows) == n:
+        status = "SINGLE_SOURCE"
+        status_label = f"Single Source ({n}×)"
+        is_discrepant = False
+        delta = 0.0
+        match_pct = 100.0
+        discrepancy_reason = f"Only one source available across {n} instances"
+    else:
+        status = "NO_DATA"
+        status_label = f"No Data ({n}×)"
+        is_discrepant = False
+        delta = None
+        match_pct = None
+        discrepancy_reason = f"No polled values across {n} instances"
+
+    # Build aggregated wildcard source cards preserving source slot ordering
+    wk_sources: List[Dict[str, Any]] = []
+    num_slots = len(first.sources)
+    for slot_idx in range(num_slots):
+        base_s = dict(first.sources[slot_idx])
+        slot_sources = [r.sources[slot_idx] for r in ordered if slot_idx < len(r.sources)]
+        slot_vals = [s.get("value") for s in slot_sources]
+        base_s["field_key"] = wildcardize_group_field_key(base_s.get("field_key", "")) or base_s.get("field_key", "")
+        base_s["label"], _ = _wildcardize_suggestion_label(base_s.get("label", ""), first.group_label)
+        base_s["value_summary"] = _format_source_value_summary(slot_vals, n)
+        base_s["is_divergent"] = any(s.get("is_divergent") for s in slot_sources)
+        base_s["is_custom_override"] = any(s.get("is_custom_override") for s in slot_sources)
+        base_s["group_path"] = wildcardize_group_field_key(first.group_path or "") or first.group_path
+        wk_sources.append(base_s)
+
+    sample_field_keys: List[str] = [
+        s["field_key"]
+        for r in ordered
+        for s in r.sources
+        if s.get("field_key")
+    ]
+
+    return ComparisonResultRow(
+        id=rollup_id,
+        mapping_id=wk_concept_key,
+        concept_key=wk_concept_key,
+        concept_template=first.concept_template,
+        label=wk_label,
+        unit=first.unit,
+        device_sn=dev.serial_number,
+        device_type=dev.device_type,
+        device_name=first.device_name,
+        mqtt_key=first.mqtt_key,
+        mqtt_value=first.mqtt_value,
+        modbus_key=wk_sources[0]["field_key"] if wk_sources else "",
+        modbus_label=wk_sources[0]["label"] if wk_sources else "",
+        modbus_value=first.modbus_value,
+        confidence="HIGH" if status in ("EXACT", "CLOSE") else "CANDIDATE",
+        status=status,
+        status_label=status_label,
+        is_discrepant=is_discrepant,
+        is_custom_override=any(r.is_custom_override for r in ordered),
+        is_scale_factor=first.is_scale_factor,
+        match_pct=match_pct,
+        delta=delta,
+        notes=discrepancy_reason,
+        discrepancy_reason=discrepancy_reason,
+        source_count=len(wk_sources),
+        polled_count=max((r.polled_count for r in ordered), default=0),
+        sources=wk_sources,
+        is_group_rollup=True,
+        instance_count=n,
+        sample_field_keys=sample_field_keys,
+        instances=[r.to_dict() for r in ordered],
+        group_path=wildcardize_group_field_key(first.group_path or "") or first.group_path,
+        group_index=None,
+        group_label=_wildcardize_suggestion_label(first.group_label or "", first.group_label)[0],
+    )
 
 
 def _build_group_comparison_row(dev, g, mapping_id: Optional[str] = None) -> ComparisonResultRow:
@@ -325,6 +492,11 @@ def _build_group_comparison_row(dev, g, mapping_id: Optional[str] = None) -> Com
             "offset": getattr(s, "offset", None),
             "scale_factor": getattr(s, "scale_factor", None),
             "point_type": getattr(s, "point_type", None),
+            "last_updated": getattr(s, "last_updated", None),
+            "group_name": getattr(s, "group_name", None),
+            "group_index": getattr(s, "group_index", None),
+            "group_path": getattr(s, "group_path", None),
+            "group_label": getattr(s, "group_label", None),
         }
         sources_dicts.append(s_dict)
         if s.value is not None:
@@ -500,6 +672,10 @@ def _build_group_comparison_row(dev, g, mapping_id: Optional[str] = None) -> Com
         source_count=len(sources_dicts),
         polled_count=len(polled_sources),
         sources=sources_dicts,
+        group_path=getattr(g, "group_path", None),
+        group_index=getattr(g, "group_index", None),
+        group_label=getattr(g, "group_label", None),
+        concept_template=getattr(g, "concept_template", None),
     )
 
 

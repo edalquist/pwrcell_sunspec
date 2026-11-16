@@ -635,6 +635,21 @@ def save_mappings(
         raise e
 
 
+def reset_mappings_to_defaults(config_path: Optional[Path | str] = None) -> Path:
+    """Reset runtime groupings.yaml back to packaged defaults and reload MappingRegistry."""
+    path = _resolve_mappings_path(config_path)
+    pkg_data_path = Path(__file__).resolve().parent / "data" / DEFAULT_GROUPINGS_FILE
+    if pkg_data_path.exists() and path.resolve() != pkg_data_path.resolve():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(".tmp")
+        tmp_path.write_bytes(pkg_data_path.read_bytes())
+        tmp_path.replace(path)
+        logger.info("Reset groupings configuration at %s from packaged defaults %s", path, pkg_data_path)
+    if MappingRegistry._instance is not None:
+        MappingRegistry._instance.reload()
+    return path
+
+
 class MappingRegistry:
     """Thread-safe singleton/registry of active telemetry mappings."""
 
@@ -685,10 +700,112 @@ class MappingRegistry:
 
         self._mappings = load_mappings(self.config_path)
 
+        defaults = get_default_mappings()
+        default_by_id = {dm.id: dm for dm in defaults}
+        cat_names = self._get_catalog_model_names()
+        rev_cat_names = {v.lower(): k for k, v in cat_names.items()}
+        ungrouped_expanded = set(self.ungrouped_fields)
+        for uk in self.ungrouped_fields:
+            u_parts = uk.split(".")
+            if len(u_parts) >= 3:
+                if u_parts[1].startswith("model_") and u_parts[1][6:].isdigit():
+                    u_mid = int(u_parts[1][6:])
+                    if u_mid in cat_names:
+                        ungrouped_expanded.add(f"{u_parts[0]}.{cat_names[u_mid]}.{'.'.join(u_parts[2:])}")
+                else:
+                    u_mid = rev_cat_names.get(u_parts[1].lower())
+                    if u_mid is not None:
+                        ungrouped_expanded.add(f"{u_parts[0]}.model_{u_mid}.{'.'.join(u_parts[2:])}")
+
+        # Strip legacy DC battery WhIn/WhOut registers that previously overlapped with AC groups
+        _stale_ac_dc_modbus = {
+            "battery_ac_charged_energy": {
+                "battery.DCB105_warranty.WhIn",
+                "battery.battery_status.WhIn",
+                "battery.model_64252.WhIn",
+                "battery.model_64209.WhIn",
+            },
+            "battery_ac_discharged_energy": {
+                "battery.DCB105_warranty.WhOut",
+                "battery.battery_status.WhOut",
+                "battery.model_64252.WhOut",
+                "battery.model_64209.WhOut",
+            },
+        }
+        for m in self._mappings:
+            stale_set = _stale_ac_dc_modbus.get(m.id)
+            if stale_set:
+                m.modbus_fields = [f for f in m.modbus_fields if f not in stale_set]
+
+        # Backfill missing built-in group members/synonyms into persisted runtime groupings
+        # while honoring explicit ungrouped_fields and other groups' existing assignments.
+        field_owners: Dict[str, Set[str]] = {}
+        for m in self._mappings:
+            for fk in m.mqtt_fields + m.modbus_fields:
+                field_owners.setdefault(fk, set()).add(m.id)
+
+        def _is_owned_elsewhere(fk: str, owner_id: str) -> bool:
+            owners = field_owners.get(fk)
+            return bool(owners and any(oid != owner_id for oid in owners))
+
+        for m in self._mappings:
+            dm = default_by_id.get(m.id)
+            if not dm or dm.device_type != m.device_type:
+                continue
+            for mf in dm.mqtt_fields:
+                if mf not in m.mqtt_fields and mf not in ungrouped_expanded and not _is_owned_elsewhere(mf, m.id):
+                    m.mqtt_fields.append(mf)
+                    field_owners.setdefault(mf, set()).add(m.id)
+            for mbf in dm.modbus_fields:
+                if mbf not in m.modbus_fields and mbf not in ungrouped_expanded and not _is_owned_elsewhere(mbf, m.id):
+                    m.modbus_fields.append(mbf)
+                    field_owners.setdefault(mbf, set()).add(m.id)
+                    if mbf in dm.member_transforms and mbf not in m.member_transforms:
+                        m.member_transforms[mbf] = dm.member_transforms[mbf]
+                    if m.transform in ("", "none") and dm.transform not in ("", "none"):
+                        m.transform = dm.transform
+            for syn in dm.synonyms:
+                if syn not in m.synonyms:
+                    m.synonyms.append(syn)
+
+        if self.config_path is None and is_addon_data_env():
+            existing_ids = {m.id for m in self._mappings}
+            missing_defaults = []
+            for dm in defaults:
+                if dm.id in existing_ids:
+                    continue
+                new_dm = TelemetryMappingDef(
+                    id=dm.id,
+                    label=dm.label,
+                    device_type=dm.device_type,
+                    mqtt_fields=[
+                        mf for mf in dm.mqtt_fields
+                        if mf not in ungrouped_expanded and not _is_owned_elsewhere(mf, dm.id)
+                    ],
+                    modbus_fields=[
+                        mbf for mbf in dm.modbus_fields
+                        if mbf not in ungrouped_expanded and not _is_owned_elsewhere(mbf, dm.id)
+                    ],
+                    synonyms=list(dm.synonyms),
+                    transform=dm.transform,
+                    member_transforms=dict(dm.member_transforms),
+                    transform_desc=dm.transform_desc,
+                    unit=dm.unit,
+                    description=dm.description,
+                    ha_platform=dm.ha_platform,
+                    ha_device_class=dm.ha_device_class,
+                    ha_state_class=dm.ha_state_class,
+                )
+                if new_dm.mqtt_fields or new_dm.modbus_fields:
+                    missing_defaults.append(new_dm)
+            if missing_defaults:
+                builtin_list = [m for m in self._mappings if m.id in default_by_id]
+                custom_list = [m for m in self._mappings if m.id not in default_by_id]
+                self._mappings = builtin_list + missing_defaults + custom_list
+
         # Expand legacy/user-saved model_<id> Modbus entries (e.g. inverter.model_64207.St)
         # to also include their canonical catalog model-name counterparts (inverter.REbus_status.St)
         # so persisted groupings.yaml files map live polled registers accurately.
-        cat_names = self._get_catalog_model_names()
         if cat_names:
             for m in self._mappings:
                 for mbf in list(m.modbus_fields):

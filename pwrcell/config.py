@@ -112,6 +112,7 @@ class AppConfig:
   sunspec_cache_dir: str | None = None
   telemetry_mappings_file: str = "telemetry_mappings.yaml"
   polling_tiers: Dict[str, Any] | None = None  # Path-based tier configuration (fast, config, slow)
+  include_bulk_table_groups: bool = False  # Opt-in to expose large repeating curve/schedule table groups
 
   @classmethod
   def read(cls) -> 'AppConfig':

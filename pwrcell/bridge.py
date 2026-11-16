@@ -29,6 +29,7 @@ from .ha import (
     generate_gateway_discovery_payload,
     get_default_ha_config_path,
     get_device_info,
+    get_matching_selected_entries,
     get_recommended_field_keys,
     is_field_selected,
     is_raw_field_suppressed,
@@ -431,10 +432,7 @@ class HomeAssistantBridge:
                     continue
 
                 if is_field_selected(f_key, dev.serial_number, selected_set):
-                    if f"{sn_clean}:{f_key}" in selected_set:
-                        matched_selected_keys.add(f"{sn_clean}:{f_key}")
-                    if f_key in selected_set:
-                        matched_selected_keys.add(f_key)
+                    matched_selected_keys.update(get_matching_selected_entries(f_key, dev.serial_number, selected_set))
                     payload_info = generate_discovery_payload(
                         field,
                         dev,

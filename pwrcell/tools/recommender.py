@@ -14,11 +14,13 @@ Surfaces scored suggestions for one-click user review, batch approval, or dismis
 from __future__ import annotations
 
 import logging
+import math
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ..catalog import is_scale_factor_point
+from ..catalog import is_scale_factor_point, wildcardize_group_field_key
 from ..optimizer import clean_unit, group_device_fields
 from ..state import StateStore, UnifiedDevice
 
@@ -153,6 +155,8 @@ class GroupingCandidateSource:
     raw_value: Any
     units: Optional[str]
     last_updated: Optional[float] = None
+    value_summary: Optional[str] = None
+    group_path: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -175,6 +179,10 @@ class GroupingSuggestion:
     inverted_pair: bool = False
     positive_field_key: Optional[str] = None
     negative_field_key: Optional[str] = None
+    is_group_rollup: bool = False
+    instance_count: int = 1
+    sample_field_keys: List[str] = field(default_factory=list)
+    instances: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -297,14 +305,17 @@ def extract_count_type(name: str, label: str) -> str:
 
 
 def extract_extremum(name: str, label: str) -> Optional[str]:
-    """Distinguish minimum vs maximum extremum points (e.g. CellVMax vs CellVMin, SoCMax vs SoCMin)."""
+    """Distinguish minimum, maximum, and average extremum points (e.g. CellVMax vs CellVMin vs CellVAvg)."""
     cleaned = re.sub(r"[_\W]+", " ", f"{name} {label}").lower()
     is_max = bool(re.search(r"\b(?:max|maximum)\b", cleaned) or re.search(r"cellvmax|socmax|tmpmax|vmax", cleaned))
     is_min = bool(re.search(r"\b(?:min|minimum)\b", cleaned) or re.search(r"cellvmin|socmin|tmpmin|vmin", cleaned))
-    if is_max and not is_min:
+    is_avg = bool(re.search(r"\b(?:avg|average|mean)\b", cleaned) or re.search(r"cellvavg|tmpavg|modtmpavg|vavg", cleaned))
+    if is_max and not is_min and not is_avg:
         return "MAX"
-    if is_min and not is_max:
+    if is_min and not is_max and not is_avg:
         return "MIN"
+    if is_avg and not is_max and not is_min:
+        return "AVG"
     return None
 
 
@@ -377,6 +388,71 @@ def are_from_same_model(s_a: Any, s_b: Any) -> bool:
         return True
 
     return False
+
+
+def extract_group_indices(group_path: Optional[str]) -> Tuple[int, ...]:
+    """Extract numeric repeating-group indices from a group_path (e.g. 'Crv.1.Pt.2' -> (1, 2))."""
+    if not group_path:
+        return ()
+    return tuple(int(seg) for seg in str(group_path).split(".") if seg.isdigit())
+
+
+def are_compatible_group_instances(s_a: Any, s_b: Any, g_a: Any = None, g_b: Any = None) -> bool:
+    """Return True if two fields sit at the same sub-group hierarchy level and instance indices.
+
+    Prevents pairing top-level bank points (group_path=None) with individual module instances,
+    or pairing Module i in one SunSpec model with Module j (i != j) in another model.
+    """
+    gp_a = getattr(s_a, "group_path", None) or (getattr(g_a, "group_path", None) if g_a is not None else None)
+    gp_b = getattr(s_b, "group_path", None) or (getattr(g_b, "group_path", None) if g_b is not None else None)
+    return extract_group_indices(gp_a) == extract_group_indices(gp_b)
+
+
+def _wildcardize_group_label_text(group_label: Optional[str]) -> str:
+    """Replace trailing numeric instance numbers in group_label segments with '*' (e.g. 'Module 1' -> 'Module *')."""
+    if not group_label:
+        return "Instance *"
+    parts = [re.sub(r"\s+\d+$", " *", seg.strip()) for seg in str(group_label).split("/") if seg.strip()]
+    return " / ".join(parts) if parts else "Instance *"
+
+
+def _wildcardize_suggestion_label(first_label: str, first_group_label: Optional[str]) -> Tuple[str, str]:
+    """Build wildcardized concept label and concept key template from an instance suggestion label."""
+    wk_group = _wildcardize_group_label_text(first_group_label)
+    lbl = (first_label or "").strip()
+    g_lbl = (first_group_label or "").strip()
+    if g_lbl and lbl.lower().startswith(g_lbl.lower()):
+        suffix = lbl[len(g_lbl):]
+        wildcard_label = f"{wk_group}{suffix}".strip()
+    elif lbl:
+        wildcard_label = f"{wk_group} {lbl}".strip()
+    else:
+        wildcard_label = wk_group
+
+    wildcard_concept_key = re.sub(r"[^a-z0-9*]+", "_", wildcard_label.lower()).strip("_")
+    wildcard_concept_key = re.sub(r"_+", "_", wildcard_concept_key)
+    if "*" not in wildcard_concept_key:
+        wildcard_concept_key = f"group_*_{wildcard_concept_key}" if wildcard_concept_key else "group_*"
+    return wildcard_label, wildcard_concept_key
+
+
+def _format_source_value_summary(values: List[Any], instance_count: int) -> str:
+    """Format a compact cross-instance value summary for rolled-up candidate cards."""
+    non_null = [v for v in values if v is not None]
+    if not non_null:
+        return "--"
+    if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in non_null):
+        nums = [float(v) for v in non_null]
+        min_v = min(nums)
+        max_v = max(nums)
+        fmt = lambda n: str(int(round(n))) if abs(n - round(n)) < 1e-6 else (f"{n:.3f}".rstrip("0").rstrip(".") if abs(n * 100 - round(n * 100)) > 1e-4 else f"{n:.2f}")
+        if abs(max_v - min_v) < 1e-6:
+            return f"{fmt(min_v)} (all {len(non_null)})"
+        return f"{fmt(min_v)} \u2013 {fmt(max_v)}"
+    strs = [str(v) for v in non_null]
+    if len(set(strs)) == 1:
+        return f"{strs[0]} (all {len(non_null)})"
+    return f"{strs[0]} .. ({instance_count})"
 
 
 GENERIC_CLUSTER_CONCEPTS = {
@@ -475,6 +551,13 @@ def find_suggested_groupings(
         dev_type = dev.device_type
         dev_name = f"{dev.model_name or dev.device_type} ({dev_sn[-4:] if len(dev_sn) >= 4 else dev_sn})"
 
+        # Count discovered concrete instances per wildcard sub-group field key on this device
+        wildcard_instance_counts: Counter[str] = Counter()
+        for f_k in dev.fields.keys():
+            wk_k = wildcardize_group_field_key(f_k)
+            if wk_k:
+                wildcard_instance_counts[wk_k] += 1
+
         # Evaluate existing unified groups for this device
         groups = group_device_fields(dev)
 
@@ -488,6 +571,7 @@ def find_suggested_groupings(
 
         # Check pairs of candidates on this device
         evaluated_pairs: Set[Tuple[str, str]] = set()
+        subgroup_buckets: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
 
         for i in range(len(single_source_candidates)):
             for j in range(i + 1, len(single_source_candidates)):
@@ -507,10 +591,14 @@ def find_suggested_groupings(
                 if are_from_same_model(s_a, s_b):
                     continue
 
-                # 1. Extremum isolation: Min != Max (e.g. CellVMin != CellVMax)
+                # 0b. Strict sub-group hierarchy level & instance alignment
+                if not are_compatible_group_instances(s_a, s_b, g_a, g_b):
+                    continue
+
+                # 1. Extremum & average isolation: MAX != MIN != AVG != instantaneous
                 ext_a = extract_extremum(s_a.name, s_a.label)
                 ext_b = extract_extremum(s_b.name, s_b.label)
-                if ext_a and ext_b and ext_a != ext_b:
+                if (ext_a or ext_b) and ext_a != ext_b:
                     continue
 
                 # 2. Units must be non-empty and compatible
@@ -667,6 +755,43 @@ def find_suggested_groupings(
                         unit=u_a,
                     )
 
+                    gp_a = getattr(s_a, "group_path", None) or getattr(g_a, "group_path", None)
+                    gp_b = getattr(s_b, "group_path", None) or getattr(g_b, "group_path", None)
+                    wk_a = wildcardize_group_field_key(s_a.field_key) if gp_a else None
+                    wk_b = wildcardize_group_field_key(s_b.field_key) if gp_b else None
+
+                    if gp_a and gp_b and wk_a and wk_b:
+                        if wk_a <= wk_b:
+                            first_g, first_s, first_wk = g_a, s_a, wk_a
+                            second_g, second_s, second_wk = g_b, s_b, wk_b
+                        else:
+                            first_g, first_s, first_wk = g_b, s_b, wk_b
+                            second_g, second_s, second_wk = g_a, s_a, wk_a
+                        wk_pair = (first_wk, second_wk)
+                        inst_delta = abs(float(first_s.value) - float(second_s.value)) if is_numeric else None
+                        subgroup_buckets.setdefault(wk_pair, []).append({
+                            "s1": first_s,
+                            "g1": first_g,
+                            "s2": second_s,
+                            "g2": second_g,
+                            "suggested_key": suggested_key,
+                            "suggested_label": suggested_label,
+                            "group_path": getattr(first_s, "group_path", None) or getattr(first_g, "group_path", None),
+                            "group_label": getattr(first_s, "group_label", None) or getattr(first_g, "group_label", None),
+                            "group_index": getattr(first_s, "group_index", None) if getattr(first_s, "group_index", None) is not None else getattr(first_g, "group_index", None),
+                            "confidence": confidence,
+                            "delta": round(inst_delta, 3) if inst_delta is not None else None,
+                            "reasons": reasons,
+                            "units": u_a or "",
+                            "suggested_transform": suggested_transform,
+                            "inverted_pair": is_inverted,
+                            "pos_wk": wildcardize_group_field_key(pos_key) if pos_key else None,
+                            "neg_wk": wildcardize_group_field_key(neg_key) if neg_key else None,
+                            "pos_key": pos_key,
+                            "neg_key": neg_key,
+                        })
+                        continue
+
                     sugg_id = f"sugg_{dev_sn}_{pair_key[0]}_{pair_key[1]}".replace(".", "_").replace(":", "_")
 
                     if sugg_id in dismissed:
@@ -684,6 +809,7 @@ def find_suggested_groupings(
                             raw_value=s_a.raw_value,
                             units=s_a.units,
                             last_updated=getattr(s_a, "last_updated", None),
+                            group_path=gp_a,
                         ),
                         GroupingCandidateSource(
                             source_id=s_b.source_id,
@@ -696,6 +822,7 @@ def find_suggested_groupings(
                             raw_value=s_b.raw_value,
                             units=s_b.units,
                             last_updated=getattr(s_b, "last_updated", None),
+                            group_path=gp_b,
                         ),
                     ]
 
@@ -718,6 +845,176 @@ def find_suggested_groupings(
                             negative_field_key=neg_key,
                         )
                     )
+
+        # Roll up aligned sub-group instance suggestions into single wildcard cards
+        for (wk_1, wk_2), bucket in subgroup_buckets.items():
+            expected_count = min(
+                wildcard_instance_counts.get(wk_1, len(bucket)),
+                wildcard_instance_counts.get(wk_2, len(bucket)),
+            )
+            bucket.sort(key=lambda item: (extract_group_indices(item["group_path"]), item["s1"].field_key))
+
+            if expected_count >= 2:
+                if len(bucket) < max(2, math.ceil(expected_count * 0.5)):
+                    continue
+
+                first_item = bucket[0]
+                wk_sugg_id = f"sugg_{dev_sn}_{wk_1}_{wk_2}".replace(".", "_").replace(":", "_").replace("*", "all")
+                if wk_sugg_id in dismissed:
+                    continue
+
+                wk_label, wk_concept_key = _wildcardize_suggestion_label(
+                    first_item["suggested_label"],
+                    first_item["group_label"],
+                )
+                avg_conf = min(0.99, round(sum(item["confidence"] for item in bucket) / len(bucket), 2))
+                conf_label = "HIGH" if avg_conf >= 0.85 else "MEDIUM"
+
+                s1_first = first_item["s1"]
+                s2_first = first_item["s2"]
+                s1_vals = [item["s1"].value for item in bucket]
+                s2_vals = [item["s2"].value for item in bucket]
+                s1_label_wk, _ = _wildcardize_suggestion_label(s1_first.label, first_item["group_label"])
+                s2_label_wk, _ = _wildcardize_suggestion_label(s2_first.label, first_item["group_label"])
+
+                wk_sources = [
+                    GroupingCandidateSource(
+                        source_id=s1_first.source_id,
+                        source_type=s1_first.source_type,
+                        field_key=wk_1,
+                        name=s1_first.name,
+                        label=s1_label_wk,
+                        model_id=s1_first.model_id,
+                        value=s1_first.value,
+                        raw_value=s1_first.raw_value,
+                        units=s1_first.units,
+                        last_updated=getattr(s1_first, "last_updated", None),
+                        value_summary=_format_source_value_summary(s1_vals, len(bucket)),
+                        group_path=wk_1,
+                    ),
+                    GroupingCandidateSource(
+                        source_id=s2_first.source_id,
+                        source_type=s2_first.source_type,
+                        field_key=wk_2,
+                        name=s2_first.name,
+                        label=s2_label_wk,
+                        model_id=s2_first.model_id,
+                        value=s2_first.value,
+                        raw_value=s2_first.raw_value,
+                        units=s2_first.units,
+                        last_updated=getattr(s2_first, "last_updated", None),
+                        value_summary=_format_source_value_summary(s2_vals, len(bucket)),
+                        group_path=wk_2,
+                    ),
+                ]
+
+                sample_keys: List[str] = []
+                inst_rows: List[Dict[str, Any]] = []
+                for item in bucket:
+                    sample_keys.extend([item["s1"].field_key, item["s2"].field_key])
+                    inst_rows.append({
+                        "group_index": item["group_index"],
+                        "group_path": item["group_path"],
+                        "instance_label": item["group_label"] or item["group_path"] or f"Instance {item['group_index']}",
+                        "confidence": item["confidence"],
+                        "delta": item["delta"],
+                        "sources": [
+                            {
+                                "source_id": item["s1"].source_id,
+                                "field_key": item["s1"].field_key,
+                                "value": item["s1"].value,
+                                "units": item["s1"].units,
+                            },
+                            {
+                                "source_id": item["s2"].source_id,
+                                "field_key": item["s2"].field_key,
+                                "value": item["s2"].value,
+                                "units": item["s2"].units,
+                            },
+                        ],
+                    })
+
+                rollup_reasons = [
+                    f"Matches across {len(bucket)}/{expected_count} sub-group instances (strictly index-aligned)",
+                    *(first_item["reasons"] or []),
+                ]
+
+                suggestions.append(
+                    GroupingSuggestion(
+                        id=wk_sugg_id,
+                        device_sn=dev_sn,
+                        device_type=dev_type,
+                        device_name=dev_name,
+                        suggested_concept_key=wk_concept_key,
+                        suggested_label=wk_label,
+                        units=first_item["units"],
+                        confidence=avg_conf,
+                        confidence_label=conf_label,
+                        reasons=rollup_reasons,
+                        sources=wk_sources,
+                        suggested_transform=first_item["suggested_transform"],
+                        inverted_pair=first_item["inverted_pair"],
+                        positive_field_key=first_item["pos_wk"] or first_item["pos_key"],
+                        negative_field_key=first_item["neg_wk"] or first_item["neg_key"],
+                        is_group_rollup=True,
+                        instance_count=len(bucket),
+                        sample_field_keys=sample_keys,
+                        instances=inst_rows,
+                    )
+                )
+            elif len(bucket) == 1:
+                item = bucket[0]
+                s1, s2 = item["s1"], item["s2"]
+                p_k = tuple(sorted([s1.field_key, s2.field_key]))
+                s_id = f"sugg_{dev_sn}_{p_k[0]}_{p_k[1]}".replace(".", "_").replace(":", "_")
+                if s_id in dismissed:
+                    continue
+                suggestions.append(
+                    GroupingSuggestion(
+                        id=s_id,
+                        device_sn=dev_sn,
+                        device_type=dev_type,
+                        device_name=dev_name,
+                        suggested_concept_key=item["suggested_key"],
+                        suggested_label=item["suggested_label"],
+                        units=item["units"],
+                        confidence=item["confidence"],
+                        confidence_label="HIGH" if item["confidence"] >= 0.85 else "MEDIUM",
+                        reasons=item["reasons"],
+                        sources=[
+                            GroupingCandidateSource(
+                                source_id=s1.source_id,
+                                source_type=s1.source_type,
+                                field_key=s1.field_key,
+                                name=s1.name,
+                                label=s1.label,
+                                model_id=s1.model_id,
+                                value=s1.value,
+                                raw_value=s1.raw_value,
+                                units=s1.units,
+                                last_updated=getattr(s1, "last_updated", None),
+                                group_path=item["group_path"],
+                            ),
+                            GroupingCandidateSource(
+                                source_id=s2.source_id,
+                                source_type=s2.source_type,
+                                field_key=s2.field_key,
+                                name=s2.name,
+                                label=s2.label,
+                                model_id=s2.model_id,
+                                value=s2.value,
+                                raw_value=s2.raw_value,
+                                units=s2.units,
+                                last_updated=getattr(s2, "last_updated", None),
+                                group_path=item["group_path"],
+                            ),
+                        ],
+                        suggested_transform=item["suggested_transform"],
+                        inverted_pair=item["inverted_pair"],
+                        positive_field_key=item["pos_key"],
+                        negative_field_key=item["neg_key"],
+                    )
+                )
 
     # Sort suggestions by confidence descending
     suggestions.sort(key=lambda s: -s.confidence)

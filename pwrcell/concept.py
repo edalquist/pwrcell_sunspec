@@ -45,6 +45,10 @@ class ConceptSource:
     is_primary: bool = False
     device_sn: str = ""
     last_updated: Optional[float] = None
+    group_name: Optional[str] = None
+    group_index: Optional[int] = None
+    group_path: Optional[str] = None
+    group_label: Optional[str] = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -116,6 +120,11 @@ class ConceptView:
     model_id: Optional[int] = None
     model_name: str = "concept"
     model_label: str = "Unified Concept"
+    group_name: Optional[str] = None
+    group_index: Optional[int] = None
+    group_path: Optional[str] = None
+    group_label: Optional[str] = None
+    concept_template: Optional[str] = None
 
     @property
     def is_mutation_blocked(self) -> bool:
@@ -379,6 +388,10 @@ class ConceptView:
             "is_scale_factor": self.is_scale_factor,
             "is_custom_override": self.is_custom_override,
             "is_compound": self.is_compound,
+            "group_name": self.group_name,
+            "group_index": self.group_index,
+            "group_path": self.group_path,
+            "group_label": self.group_label,
             "member_keys": member_keys,
             "source_count": len(self.sources),
             "sunspec_model_count": len({s.model_id for s in self.sources if s.model_id is not None}),

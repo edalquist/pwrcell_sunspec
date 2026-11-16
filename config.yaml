@@ -1,5 +1,5 @@
 name: "Generac PWRcell"
-version: "3.1.16"
+version: "3.2.0"
 slug: "pwrcell"
 description: "Generac PWRcell SunSpec Gateway, Home Assistant MQTT Bridge & Web Explorer"
 url: "https://github.com/edalquist/pwrcell_sunspec"
@@ -40,6 +40,7 @@ schema:
   config_poll_interval: int?
   slow_poll_interval: int?
   enable_web_explorer: bool?
+  include_bulk_table_groups: bool?
   log_level: list(DEBUG|INFO|WARNING|ERROR)?
   mock_mode: bool?
 
@@ -60,5 +61,6 @@ options:
   config_poll_interval: 45
   slow_poll_interval: 300
   enable_web_explorer: true
+  include_bulk_table_groups: false
   log_level: "INFO"
   mock_mode: false

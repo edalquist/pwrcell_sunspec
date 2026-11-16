@@ -173,7 +173,11 @@ class PwrcellClient:
     def _start_mock_mode(self):
         """Populate state store from model_dump and start synthetic telemetry simulator."""
         logger.info("Initializing PWRcell client in MOCK/SIMULATION mode")
-        loader = MockFixtureLoader(catalog=self.catalog)
+        inc_bulk = bool(getattr(self.config, "include_bulk_table_groups", False))
+        loader = MockFixtureLoader(
+            catalog=self.catalog,
+            include_bulk_table_groups=inc_bulk,
+        )
         for sn, mock_dev in loader.devices.items():
             self.state.register_device(
                 serial_number=sn,
@@ -184,12 +188,20 @@ class PwrcellClient:
                 version=mock_dev.version,
                 supported_models=mock_dev.supported_models,
             )
-            # Ingest points from mock models
+            # Ingest points and sub-groups from mock models
             for model_id, models_list in mock_dev.models.items():
-                for model_inst in models_list:
+                for idx, model_inst in enumerate(models_list):
                     raw_pts = {p.name: p.raw_value for p in model_inst.points.values()}
                     comp_pts = {p.name: p.scaled_value for p in model_inst.points.values()}
-                    self.state.update_from_modbus_points(sn, model_id, raw_values=raw_pts, computed_values=comp_pts)
+                    self.state.update_from_modbus_points(
+                        sn,
+                        model_id,
+                        raw_values=raw_pts,
+                        computed_values=comp_pts,
+                        instance_index=idx,
+                        groups_data=model_inst.groups,
+                        include_bulk_tables=inc_bulk,
+                    )
 
         # Refresh model assignments with discovered mock device state
         self.poller.refresh_model_resolutions()
