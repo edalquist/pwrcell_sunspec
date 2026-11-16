@@ -1,5 +1,5 @@
 # PWRcell Default Home Assistant Entity Configuration
-# Generated from existing ha_config.yaml (hardware serial numbers stripped)
+# Generic hardware-independent defaults for new installations (hybrid MQTT + Modbus).
 
 selected_fields:
 - battery.REbus_status.I
@@ -12,57 +12,68 @@ selected_fields:
 - battery.battery.SoCRsvMax
 - battery.battery.SoCRsvMin
 - battery.battery.State
+- battery.compound.battery_ac_charged_energy
+- battery.compound.battery_ac_discharged_energy
 - battery.compound.battery_exported_energy
 - battery.compound.battery_imported_energy
+- battery.compound.battery_power
+- battery.compound.battery_soc
+- battery.compound.battery_soh
+- battery.compound.battery_temperature
 - battery.compound.battery_voltage
 - battery.compound.max_cell_voltage
 - battery.compound.min_cell_voltage
+- battery.compound.total_dc_current
 - battery.lithium_ion_string.ModTmpAvg
 - battery.lithium_ion_string.ModTmpMax
 - battery.lithium_ion_string.ModTmpMin
-- battery.compound.battery_power
+- battery.lithium_ion_string.lithium_ion_string_module.*.ModCellTmpMax
+- battery.lithium_ion_string.lithium_ion_string_module.*.ModCellTmpMin
+- battery.lithium_ion_string.lithium_ion_string_module.*.ModCellVAvg
+- battery.lithium_ion_string.lithium_ion_string_module.*.ModCellVMax
+- battery.lithium_ion_string.lithium_ion_string_module.*.ModCellVMin
+- battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC
+- battery.lithium_ion_string.lithium_ion_string_module.*.ModSoH
+- battery.lithium_ion_string.lithium_ion_string_module.*.ModV
 - battery.live.max_discharge_power_w
-- battery.compound.battery_soc
-- battery.compound.battery_soh
-- battery.compound.battery_ac_charged_energy
-- battery.compound.battery_ac_discharged_energy
 - inverter.REbus_exp.Px1
 - inverter.REbus_exp.Px2
 - inverter.REbus_status.I
 - inverter.REbus_status.P
-- inverter.REbus_status.T
+- inverter.compound.ac_frequency
+- inverter.compound.cabinet_temperature
 - inverter.compound.grid_exported_energy
 - inverter.compound.grid_imported_energy
+- inverter.compound.grid_power
+- inverter.compound.inverter_output_energy
 - inverter.compound.inverter_output_power
-- inverter.inverter.A
-- inverter.inverter.AphA
-- inverter.inverter.AphB
+- inverter.compound.inverter_state
+- inverter.compound.phase_a_current
+- inverter.compound.phase_a_voltage
+- inverter.compound.phase_b_current
+- inverter.compound.phase_b_voltage
 - inverter.compound.rebus_voltage
-- inverter.inverter.Hz
+- inverter.compound.solar_power
+- inverter.compound.system_mode
+- inverter.inverter.A
 - inverter.inverter.PF
-- inverter.inverter.PhVphA
-- inverter.inverter.PhVphB
-- inverter.inverter.TmpCab
 - inverter.inverter.TmpOt
 - inverter.inverter.TmpSnk
 - inverter.inverter.TmpTrns
 - inverter.inverter.VA
 - inverter.inverter.VAr
-- inverter.compound.grid_power
 - inverter.live.inverter_max_power_w
-- inverter.compound.inverter_output_energy
-- inverter.compound.inverter_state
 - inverter.live.load_imported_energy_wh
 - inverter.live.load_power_w
 - inverter.live.solar_generation_energy_wh
-- inverter.compound.solar_power
-- inverter.compound.system_mode
-- pv_link.compound.accumulated_energy
-- pv_link.compound.rebus_power
-- pv_link.compound.device_temperature
 - pv_link.REbus_status.I
 - pv_link.REbus_status.St
 - pv_link.REbus_status.V
+- pv_link.compound.accumulated_energy
+- pv_link.compound.device_temperature
+- pv_link.compound.pv_string_current
+- pv_link.compound.pv_string_voltage
+- pv_link.compound.rebus_power
 controllable_fields:
 - system_mode
 - SysMd
@@ -87,26 +98,9 @@ category_overrides:
   battery.lithium_ion_string.ModTmpAvg: primary
   battery.lithium_ion_string.ModTmpMax: primary
   battery.lithium_ion_string.ModTmpMin: primary
-  battery.standalone.i_64207: primary
-  battery.standalone.modtmpavg_804: primary
-  battery.standalone.modtmpmax_804: primary
-  battery.standalone.modtmpmin_804: primary
-  battery.standalone.st_64207: primary
-  battery.standalone.v_64207: primary
   inverter.REbus_exp.Px1: primary
   inverter.REbus_exp.Px2: primary
-  inverter.REbus_exp.Whin: primary
   inverter.REbus_status.I: primary
   inverter.inverter.TmpOt: primary
   inverter.inverter.TmpSnk: primary
   inverter.inverter.TmpTrns: primary
-  inverter.standalone.i_64207: primary
-  inverter.standalone.px1_64204: primary
-  inverter.standalone.px2_64204: primary
-  inverter.standalone.tmpot_102: primary
-  inverter.standalone.tmpsnk_102: primary
-  inverter.standalone.tmptrns_102: primary
-  inverter.standalone.whin_64204: primary
-  pv_link.standalone.i_64207: primary
-  pv_link.standalone.st_64207: primary
-  pv_link.standalone.v_64207: primary

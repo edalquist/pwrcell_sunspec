@@ -28,6 +28,7 @@ from pwrcell.controls import ControlDispatcher
 from pwrcell.fixtures import MockFixtureLoader
 from pwrcell.grouping import (
     clear_custom_groupings_cache,
+    export_repo_groupings,
     is_field_excluded_from_mapping,
     load_custom_groupings,
 )
@@ -38,6 +39,7 @@ from pwrcell.ha import (
     clear_ha_config_cache,
     ensure_selected_field_definitions,
     generate_discovery_payload,
+    generate_ha_default_config,
     get_effective_ha_category,
     is_field_selected,
     load_ha_config,
@@ -1023,6 +1025,95 @@ class TestSubgroupRecommenderAndCorrelator(unittest.TestCase):
         self.assertEqual(ungroup_resp.status_code, 200)
         groups_after = group_device_fields(self.bat, custom_groupings=load_custom_groupings())
         self.assertFalse(any(g.concept_template == "module_*_state_of_charge" for g in groups_after))
+
+
+class TestDefaultConfigsAndExporters(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmp_dir.name)
+        self.ha_config_path = tmp / "ha_config.yaml"
+        self.default_cfg_path = tmp / "ha_default_config.yaml"
+        self.groupings_path = tmp / "groupings.yaml"
+        self.custom_groupings_path = tmp / "custom_groupings.yaml"
+        pkg_groupings = Path(mapping_module.__file__).resolve().parent / "data" / "groupings.yaml"
+        shutil.copy(pkg_groupings, self.groupings_path)
+
+        self._patches = [
+            mock.patch("pwrcell.ha.get_default_ha_config_path", return_value=self.ha_config_path),
+            mock.patch("pwrcell.grouping.get_default_grouping_config_path", return_value=self.custom_groupings_path),
+            mock.patch("pwrcell.mapping._resolve_mappings_path", return_value=self.groupings_path),
+        ]
+        for p in self._patches:
+            p.start()
+
+        clear_ha_config_cache()
+        clear_custom_groupings_cache()
+        mapping_module.MappingRegistry._instance = None
+        self.client = PwrcellClient(is_mock=True)
+        self.client.start()
+
+    def tearDown(self):
+        self.client.stop()
+        for p in reversed(self._patches):
+            p.stop()
+        clear_ha_config_cache()
+        clear_custom_groupings_cache()
+        mapping_module.MappingRegistry._instance = None
+        self._tmp_dir.cleanup()
+
+    def test_repo_default_configs_are_clean_and_exporters_preserve_portability(self):
+        import yaml
+
+        # 1. Verify shipped ha_default_config.yaml uses portable compounds and M804 wildcards
+        default_doc = yaml.safe_load(Path("config/ha_default_config.yaml").read_text(encoding="utf-8"))
+        sel = default_doc["selected_fields"]
+        self.assertIn("battery.compound.battery_soc", sel)
+        self.assertIn("inverter.compound.grid_power", sel)
+        self.assertIn("pv_link.compound.pv_string_voltage", sel)
+        self.assertIn("battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC", sel)
+        self.assertIn("battery.lithium_ion_string.lithium_ion_string_module.*.ModV", sel)
+        self.assertNotIn("battery.compound.st_64207", sel)
+        self.assertNotIn("inverter.compound.st_64207", sel)
+        self.assertNotIn("inverter.compound.whin_64208", sel)
+        self.assertNotIn("battery.DCB105_warranty.DCB105_module.*.PackV", sel)
+        for ov_k in (default_doc.get("category_overrides") or {}).keys():
+            self.assertNotIn(".standalone.", ov_k)
+
+        # 2. export_repo_groupings omits ungrouped single-source & sub-group slots and keeps transforms/units
+        export_target = Path(self._tmp_dir.name) / "exported_groupings.yaml"
+        export_repo_groupings(self.client.state, target_path=export_target)
+        exported_doc = yaml.safe_load(export_target.read_text(encoding="utf-8"))
+        exported_ids = {g["id"] for g in exported_doc.get("groups", [])}
+        self.assertIn("solar_power", exported_ids)
+        self.assertIn("battery_soc", exported_ids)
+        self.assertFalse(any(gid.startswith("m64200_devices_") for gid in exported_ids))
+        grid_pwr = next(g for g in exported_doc["groups"] if g["id"] == "grid_power")
+        self.assertIn({"path": "inverter.inverter_status.CTPow", "transform": "negate"}, grid_pwr["fields"])
+
+        # 3. generate_ha_default_config canonicalizes .live. -> .compound., keeps wildcards, drops unknown/.standalone.
+        save_ha_config(
+            [
+                "000100082128:battery.live.state_of_charge",
+                "000100082128:battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC",
+                "000100082128:battery.lithium_ion_string.lithium_ion_string_module.2.ModSoC",
+                "0001000714E9:inverter.compound.local_custom_only",
+                "000100082128:battery.standalone.socmin_802",
+            ],
+            config_path=self.ha_config_path,
+            category_overrides={
+                "000100082128:battery.standalone.does_not_exist": "primary",
+                "000100082128:battery.REbus_status.V": "primary",
+            },
+        )
+        res = generate_ha_default_config(source_path=self.ha_config_path, target_path=self.default_cfg_path)
+        gen_sel = res["selected_fields"]
+        self.assertIn("battery.compound.battery_soc", gen_sel)
+        self.assertIn("battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC", gen_sel)
+        self.assertIn("battery.battery.SoCMin", gen_sel)
+        self.assertNotIn("battery.lithium_ion_string.lithium_ion_string_module.2.ModSoC", gen_sel)
+        self.assertNotIn("inverter.compound.local_custom_only", gen_sel)
+        gen_ov = res["data"].get("category_overrides", {})
+        self.assertEqual(gen_ov, {"battery.REbus_status.V": "primary"})
 
 
 if __name__ == "__main__":

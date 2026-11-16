@@ -898,6 +898,8 @@ def generate_ha_default_config(
     target_path: Optional[Path | str] = None,
 ) -> Dict[str, Any]:
     """Generate generic ha_default_config dictionary and YAML string from current ha_config.yaml."""
+    from .mapping import MappingRegistry
+
     src = Path(source_path) if source_path else get_default_ha_config_path()
     dst = Path(target_path) if target_path else get_default_seed_config_path()
 
@@ -905,7 +907,40 @@ def generate_ha_default_config(
         raise FileNotFoundError(f"Source configuration file not found: {src}")
 
     raw_keys = load_ha_config(config_path=src, allow_default_seed=False)
-    generic_keys = unqualify_ha_config(raw_keys)
+    unqualified_keys = unqualify_ha_config(raw_keys)
+
+    reg = MappingRegistry.get_instance()
+    raw_to_comp = reg.get_raw_to_compound_map()
+    canonical_keys: Set[str] = set()
+
+    for gk in unqualified_keys:
+        if ".standalone." in gk and "." in gk:
+            dev_p = gk.split(".", 1)[0]
+            slug = gk.split(".")[-1]
+            repaired = _resolve_standalone_or_orphan_slug(dev_p, slug)
+            if not repaired:
+                continue
+            gk = repaired
+
+        if (".compound." in gk or ".concept." in gk) and "." in gk:
+            dev_p = gk.split(".", 1)[0]
+            cid = gk.split(".")[-1]
+            m = reg.get_by_id(cid)
+            if m and (not m.device_type or m.device_type == dev_p):
+                canonical_keys.add(f"{dev_p}.compound.{m.id}")
+            continue
+
+        if not is_group_wildcard_key(gk) and gk in raw_to_comp and not reg.is_field_ungrouped(gk):
+            canonical_keys.add(raw_to_comp[gk])
+        else:
+            canonical_keys.add(gk)
+
+    active_wildcards = [k for k in canonical_keys if is_group_wildcard_key(k)]
+    generic_keys = sorted(
+        k for k in canonical_keys
+        if is_group_wildcard_key(k)
+        or not any(group_wildcard_matches_field_key(w, k) for w in active_wildcards)
+    )
 
     existing_data: Dict[str, Any] = {}
     if dst.exists():
@@ -918,15 +953,33 @@ def generate_ha_default_config(
     out_dict = dict(existing_data)
     out_dict["selected_fields"] = generic_keys
 
-    # Also generalize category overrides if present
+    # Also generalize and deduplicate category overrides if present
     raw_overrides = load_ha_category_overrides(config_path=src)
     if raw_overrides:
         generic_overrides: Dict[str, str] = {}
         for ov_k, ov_v in raw_overrides.items():
             clean_k = ov_k.split(":", 1)[1].strip() if ":" in ov_k else ov_k.strip()
-            generic_overrides[clean_k] = ov_v.strip().lower()
-        if generic_overrides:
-            out_dict["category_overrides"] = dict(sorted(generic_overrides.items()))
+            clean_v = ov_v.strip().lower()
+            if ".standalone." in clean_k and "." in clean_k:
+                dev_p = clean_k.split(".", 1)[0]
+                slug = clean_k.split(".")[-1]
+                repaired = _resolve_standalone_or_orphan_slug(dev_p, slug)
+                if not repaired:
+                    continue
+                clean_k = repaired
+            generic_overrides[clean_k] = clean_v
+
+        ov_wildcards = {k for k in generic_overrides if is_group_wildcard_key(k)}
+        filtered_overrides = {
+            k: v for k, v in generic_overrides.items()
+            if k in ov_wildcards
+            or not any(
+                group_wildcard_matches_field_key(w, k) and generic_overrides.get(w) == v
+                for w in ov_wildcards
+            )
+        }
+        if filtered_overrides:
+            out_dict["category_overrides"] = dict(sorted(filtered_overrides.items()))
 
     yaml_header = (
         "# PWRcell Default Home Assistant Entity Configuration\n"

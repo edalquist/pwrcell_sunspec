@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import yaml
 
-from .catalog import group_wildcard_matches_field_key, infer_ha_classes, is_group_wildcard_key
+from .catalog import (
+    group_wildcard_matches_field_key,
+    infer_ha_classes,
+    is_group_wildcard_key,
+    wildcardize_group_field_key,
+)
 from .config import data_dir, is_addon_data_env
 
 logger = logging.getLogger(__name__)
@@ -560,11 +565,14 @@ def export_as_telemetry_mappings(
     exported_ungrouped: Set[str] = set(reg.ungrouped_fields)
 
     # When exporting full mappings, pre-populate with all canonical package mappings
+    canonical_keys: Set[Tuple[str, str]] = set()
     if not only_custom:
         for m in reg.get_all():
             map_key = (m.device_type, m.id)
+            canonical_keys.add(map_key)
             f_list = []
             f_seen = set()
+            member_tfs = getattr(m, "member_transforms", None) or {}
             for mf in m.mqtt_fields:
                 if mf not in f_seen:
                     f_seen.add(mf)
@@ -572,8 +580,9 @@ def export_as_telemetry_mappings(
             for mbf in m.modbus_fields:
                 if mbf not in f_seen:
                     f_seen.add(mbf)
-                    if m.transform and m.transform != "none":
-                        f_list.append({"path": mbf, "transform": m.transform})
+                    tf = member_tfs.get(mbf) if member_tfs else m.transform
+                    if tf and tf != "none":
+                        f_list.append({"path": mbf, "transform": tf})
                     else:
                         f_list.append(mbf)
             entry_item: Dict[str, Any] = {
@@ -584,6 +593,8 @@ def export_as_telemetry_mappings(
             }
             if m.synonyms:
                 entry_item["synonyms"] = list(m.synonyms)
+            if m.unit:
+                entry_item["unit"] = m.unit
             mappings_by_key[map_key] = entry_item
 
     # Collect overrides where target is null/standalone
@@ -618,33 +629,46 @@ def export_as_telemetry_mappings(
                             exported_ungrouped.add(ref)
                     continue
 
-                # Filter if only exporting custom groups
+                # Filter if only exporting custom groups, and always skip unmerged sub-group instances
+                def _is_ov_match(fk: str) -> bool:
+                    if f"{dev_sn}:{fk}" in overrides or fk in overrides:
+                        return True
+                    wk = wildcardize_group_field_key(fk)
+                    return bool(wk and (f"{dev_sn}:{wk}" in overrides or wk in overrides))
+
                 is_custom = (
                     getattr(g, "is_custom_override", False)
                     or g.concept_key in custom_concepts
-                    or any(f"{dev_sn}:{s.field_key}" in overrides or s.field_key in overrides for s in g.sources)
+                    or getattr(g, "concept_template", None) in custom_concepts
+                    or any(_is_ov_match(s.field_key) for s in g.sources)
                 )
+
+                if getattr(g, "group_path", None) and not is_custom:
+                    continue
 
                 if only_custom and not is_custom:
                     continue
 
-                map_key = (dev_type, g.concept_key)
+                export_id = getattr(g, "concept_template", None) or g.concept_key
+                map_key = (dev_type, export_id)
 
                 # Extract MQTT and Modbus sources
                 mqtt_sources = [s for s in g.sources if s.source_type == "MQTT"]
                 mb_sources = [s for s in g.sources if s.source_type != "MQTT"]
 
-                # Modbus candidates
+                # Modbus candidates (preserve sub-group wildcard paths instead of collapsing onto flat model_id.name)
                 candidates: List[str] = []
                 for s in mb_sources:
-                    if s.model_id and s.name:
+                    if getattr(s, "group_path", None):
+                        cand_ref = wildcardize_group_field_key(s.field_key) or s.field_key
+                    elif s.model_id and s.name:
                         cand_ref = f"{dev_type}.model_{s.model_id}.{s.name}"
                     else:
                         cand_ref = s.field_key
                     if cand_ref not in candidates:
                         candidates.append(cand_ref)
 
-                mqtt_keys = [s.field_key for s in mqtt_sources] if mqtt_sources else ([f"{dev_type}.live.{g.concept_key}"] if not candidates else [])
+                mqtt_keys = [s.field_key for s in mqtt_sources] if mqtt_sources else ([f"{dev_type}.live.{export_id}"] if not candidates else [])
 
                 # Skip single unmapped fields if only exporting explicit groupings
                 if only_explicit_groupings and not is_custom and (len(mqtt_keys) + len(candidates)) <= 1:
@@ -676,16 +700,19 @@ def export_as_telemetry_mappings(
                             platform=getattr(g, "ha_platform", "sensor"),
                         )
 
+                    c_meta = (
+                        raw_data.get("custom_concepts", {}).get(export_id)
+                        or raw_data.get("custom_concepts", {}).get(g.concept_key, {})
+                    )
                     entry: Dict[str, Any] = {
-                        "id": g.concept_key,
-                        "name": g.label or g.concept_key.replace("_", " ").title(),
+                        "id": export_id,
+                        "name": c_meta.get("label") or g.label or export_id.replace("_", " ").title(),
                         "device_type": dev_type,
                         "fields": [],
                     }
-                    orig_m = reg.get_by_id(g.concept_key)
+                    orig_m = reg.get_by_id(export_id) or reg.get_by_id(g.concept_key)
                     if orig_m and orig_m.synonyms:
                         entry["synonyms"] = list(orig_m.synonyms)
-                    c_meta = raw_data.get("custom_concepts", {}).get(g.concept_key, {})
                     g_trans = (
                         next((s.transform for s in mb_sources if getattr(s, "transform", None)), None)
                         or c_meta.get("transform")
@@ -695,7 +722,7 @@ def export_as_telemetry_mappings(
                     for mk in mqtt_keys:
                         entry["fields"].append(mk)
                     for c in candidates:
-                        c_tf = next((s.transform for s in mb_sources if (s.field_key == c or getattr(s, "name", "") == c.split(".")[-1]) and getattr(s, "transform", None)), None) or g_trans
+                        c_tf = next((s.transform for s in mb_sources if (s.field_key == c or wildcardize_group_field_key(s.field_key) == c or getattr(s, "name", "") == c.split(".")[-1]) and getattr(s, "transform", None)), None) or g_trans
                         if c_tf and c_tf != "none":
                             entry["fields"].append({"path": c, "transform": c_tf})
                         else:
@@ -704,8 +731,9 @@ def export_as_telemetry_mappings(
                     mappings_by_key[map_key] = entry
 
     mappings_list = [
-        m for m in mappings_by_key.values()
+        m for map_k, m in mappings_by_key.items()
         if not only_explicit_groupings
+        or map_k in canonical_keys
         or m.get("id") in custom_concepts
         or len(m.get("fields", [])) > 1
     ]
@@ -742,7 +770,7 @@ def export_repo_groupings(
         state_store=state_store,
         config_path=config_path,
         only_custom=False,
-        only_explicit_groupings=False,
+        only_explicit_groupings=True,
     )
     if target_path:
         dst = Path(target_path)
