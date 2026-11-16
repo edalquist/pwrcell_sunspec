@@ -205,7 +205,6 @@ DEFAULT_FAST_PATHS: List[str] = [
 
 DEFAULT_CONFIG_PATHS: List[str] = [
     "rebus_beacon.REbus_dir",
-    "inverter.inverter",
 ]
 
 DEFAULT_SLOW_PATHS: List[str] = [

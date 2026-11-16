@@ -40,7 +40,6 @@ mqtt:
 #     interval: 45
 #     paths:
 #       - rebus_beacon.REbus_dir
-#       - inverter.inverter
 #   slow:
 #     interval: 300
 #     paths:

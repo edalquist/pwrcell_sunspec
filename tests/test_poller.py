@@ -344,6 +344,8 @@ class TestTieredModbusPoller(unittest.TestCase):
         self.assertEqual(DEFAULT_FAST_MODELS, resolve_paths_to_models(DEFAULT_FAST_PATHS))
         self.assertEqual(DEFAULT_CONFIG_MODELS, resolve_paths_to_models(DEFAULT_CONFIG_PATHS))
         self.assertEqual(DEFAULT_SLOW_MODELS, resolve_paths_to_models(DEFAULT_SLOW_PATHS))
+        self.assertIn("inverter.inverter", DEFAULT_FAST_PATHS)
+        self.assertNotIn("inverter.inverter", DEFAULT_CONFIG_PATHS)
 
     def test_poll_device_model_reads_multiple_instances(self):
         """Verify poll_device_model reads all instances of a repeating SunSpec model without key collisions."""

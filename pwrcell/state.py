@@ -22,6 +22,7 @@ from .catalog import (
     ModelCatalog,
     SUNSPEC_SENTINELS_BY_TYPE,
     SunspecPointDef,
+    VENDOR_PSEUDO_SENTINELS_BY_TYPE,
     format_group_field_label,
     format_group_label,
     get_catalog,
@@ -29,6 +30,7 @@ from .catalog import (
     infer_ha_classes,
     is_scale_factor_point,
     is_sunspec_sentinel,
+    is_vendor_pseudo_sentinel,
     should_ingest_model_groups,
     strip_group_indices,
 )
@@ -59,30 +61,31 @@ _KIND_BY_DEVICE_CLASS = {
 }
 
 
-def validate_field_value(
+def _check_field_bounds(
     value: Any,
     units: Optional[str] = None,
     device_class: Optional[str] = None,
     name: Optional[str] = None,
-) -> Optional[Any]:
-    """Validate a parsed/scaled field value against physical plausibility bounds.
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Check a parsed/scaled field value against physical plausibility bounds.
 
-    Bounds are selected from the explicit units (authoritative) or device_class metadata, never from
-    point-name substrings. Returns None if the value is invalid or physically implausible.
+    Returns ``(validated_value, rejected_label)`` where ``rejected_label`` is ``None`` when
+    accepted, ``"overflow"`` for NaN/Inf/astronomical values, or the kind label (e.g. ``"voltage"``)
+    when out of range.
     """
     if value is None:
-        return None
+        return None, None
 
     if is_scale_factor_point(name) or (name or "").lower().endswith("_sf") or (name or "").lower().startswith("sf_"):
-        return value
+        return value, None
 
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if math.isnan(value) or math.isinf(value):
-            return None
+            return None, "overflow"
 
         # Check astronomical scale/overflow
         if abs(value) > 1e12:
-            return None
+            return None, "overflow"
 
         kind = _KIND_BY_UNIT.get((units or "").strip().upper())
         if kind is None:
@@ -90,10 +93,33 @@ def validate_field_value(
         if kind is not None:
             label, lo, hi = _BOUNDS_BY_KIND[kind]
             if value < lo or value > hi:
-                logger.warning("Rejected out-of-bounds %s reading %s for %s (%s)", label, value, name, units)
-                return None
+                return None, label
 
-    return value
+    return value, None
+
+
+def validate_field_value(
+    value: Any,
+    units: Optional[str] = None,
+    device_class: Optional[str] = None,
+    name: Optional[str] = None,
+    *,
+    log_warning: bool = True,
+) -> Optional[Any]:
+    """Validate a parsed/scaled field value against physical plausibility bounds.
+
+    Bounds are selected from the explicit units (authoritative) or device_class metadata, never from
+    point-name substrings. Returns None if the value is invalid or physically implausible.
+    """
+    validated, rejected_label = _check_field_bounds(
+        value,
+        units=units,
+        device_class=device_class,
+        name=name,
+    )
+    if rejected_label and rejected_label != "overflow" and log_warning:
+        logger.warning("Rejected out-of-bounds %s reading %s for %s (%s)", rejected_label, value, name, units)
+    return validated
 
 
 class FieldSource(str, Enum):
@@ -734,6 +760,7 @@ class StateStore:
         self._compound_listeners: List[Callable[[CompoundFieldView], None]] = []
         self._monotonic_drop_counts: Dict[tuple[str, str], tuple[int, float]] = {}
         self._monotonic_offsets: Dict[tuple[str, str], float] = {}
+        self._rejected_bounds_state: Dict[tuple[str, str], str] = {}
         self._offset_file = offset_file
         self._load_monotonic_offsets()
         self._lock = threading.RLock()
@@ -1772,39 +1799,6 @@ class StateStore:
             if not label:
                 label = name
 
-            # Validate value against physical plausibility and sentinels
-            if value is not None:
-                value = validate_field_value(
-                    value,
-                    units=units,
-                    device_class=ha_hint.device_class if ha_hint else None,
-                    name=name,
-                )
-            if isinstance(raw_value, float) and (math.isnan(raw_value) or math.isinf(raw_value)):
-                raw_value = None
-            if raw_value is None and value is not None:
-                raw_value = value
-
-            # Resolve enum symbol name for integer value if enum/symbols defined
-            if (is_enum or (symbols and not is_bitfield)) and isinstance(value, int):
-                sym_list = symbols or []
-                sym_by_val = {}
-                for s in sym_list:
-                    s_v = s.get("value") if isinstance(s, dict) else getattr(s, "value", None)
-                    s_n = s.get("name") if isinstance(s, dict) else getattr(s, "name", None)
-                    if s_v is not None and s_n:
-                        sym_by_val[s_v] = s_n
-                if value in sym_by_val:
-                    value = sym_by_val[value]
-                else:
-                    non_zero = [v for v in sym_by_val.keys() if v != 0]
-                    if non_zero and all(v % 16 == 0 for v in non_zero):
-                        base_v = value & ~0x000F
-                        if base_v in sym_by_val:
-                            if substate is None:
-                                substate = value & 0x000F
-                            value = sym_by_val[base_v]
-
             model_id, model_name, model_label = self._resolve_model_metadata(
                 sub_group, model_id, model_name, model_label
             )
@@ -1835,6 +1829,91 @@ class StateStore:
                         mqtt_eq = None
 
             existing = dev.fields.get(key)
+            reject_key = (dev.serial_number, key)
+            eff_pt_type = point_type if point_type is not None else (existing.point_type if existing else None)
+
+            if isinstance(raw_value, float) and (math.isnan(raw_value) or math.isinf(raw_value)):
+                raw_value = None
+
+            # Validate value against physical plausibility, suppressing vendor pseudo-sentinels and repeat warnings
+            if value is not None:
+                validated_val, rejected_label = _check_field_bounds(
+                    value,
+                    units=units,
+                    device_class=ha_hint.device_class if ha_hint else None,
+                    name=name,
+                )
+                if rejected_label is not None:
+                    orig_val = value
+                    value = None
+                    if rejected_label != "overflow" and is_vendor_pseudo_sentinel(raw_value, eff_pt_type):
+                        orig_raw = raw_value
+                        raw_value = None
+                        if self._rejected_bounds_state.get(reject_key) != "pseudo_sentinel":
+                            self._rejected_bounds_state[reject_key] = "pseudo_sentinel"
+                            logger.debug(
+                                "Treated out-of-bounds %s vendor pseudo-sentinel raw=%s (scaled=%s %s) as unimplemented for %s on %s",
+                                rejected_label,
+                                orig_raw,
+                                orig_val,
+                                units,
+                                key,
+                                dev.serial_number,
+                            )
+                    elif rejected_label != "overflow":
+                        if self._rejected_bounds_state.get(reject_key) != "bounds":
+                            self._rejected_bounds_state[reject_key] = "bounds"
+                            logger.warning(
+                                "Rejected out-of-bounds %s reading %s for %s (%s) on %s (suppressing repeat warnings until valid)",
+                                rejected_label,
+                                orig_val,
+                                name,
+                                units,
+                                dev.serial_number,
+                            )
+                        else:
+                            logger.debug(
+                                "Rejected repeated out-of-bounds %s reading %s for %s (%s) on %s",
+                                rejected_label,
+                                orig_val,
+                                name,
+                                units,
+                                dev.serial_number,
+                            )
+                else:
+                    value = validated_val
+                    prev_state = self._rejected_bounds_state.pop(reject_key, None)
+                    if prev_state == "bounds":
+                        logger.info(
+                            "Field %s on %s recovered to valid reading %s (%s)",
+                            key,
+                            dev.serial_number,
+                            value,
+                            units,
+                        )
+
+            if raw_value is None and value is not None:
+                raw_value = value
+
+            # Resolve enum symbol name for integer value if enum/symbols defined
+            if (is_enum or (symbols and not is_bitfield)) and isinstance(value, int):
+                sym_list = symbols or []
+                sym_by_val = {}
+                for s in sym_list:
+                    s_v = s.get("value") if isinstance(s, dict) else getattr(s, "value", None)
+                    s_n = s.get("name") if isinstance(s, dict) else getattr(s, "name", None)
+                    if s_v is not None and s_n:
+                        sym_by_val[s_v] = s_n
+                if value in sym_by_val:
+                    value = sym_by_val[value]
+                else:
+                    non_zero = [v for v in sym_by_val.keys() if v != 0]
+                    if non_zero and all(v % 16 == 0 for v in non_zero):
+                        base_v = value & ~0x000F
+                        if base_v in sym_by_val:
+                            if substate is None:
+                                substate = value & 0x000F
+                            value = sym_by_val[base_v]
             value, suppress = self._process_counter_monotonicity(
                 dev, key, name, existing, value, units, ha_hint
             )

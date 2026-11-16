@@ -299,6 +299,33 @@ def is_sunspec_sentinel(raw_value: Any, point_type: Optional[str] = None) -> boo
     return int_val in {-0x8000, 0x8000, 0xFFFF, -0x80000000, 0x80000000, 0xFFFFFFFF}
 
 
+# Non-standard vendor near-boundary / overflow pseudo-sentinels emitted by some firmware
+# instead of canonical SunSpec unimplemented sentinels (only treated as unimplemented when
+# the scaled reading also fails physical plausibility bounds).
+VENDOR_PSEUDO_SENTINELS_BY_TYPE: Dict[str, set[int]] = {
+    "int16": {0x7FFF, 0x7FFE, -0x7FFF},
+    "uint16": {0xFFFE},
+    "int32": {0x7FFFFFFF, 0x7FFFFFFE, -0x7FFFFFFF},
+    "uint32": {0xFFFFFFFE},
+}
+
+
+def is_vendor_pseudo_sentinel(raw_value: Any, point_type: Optional[str] = None) -> bool:
+    """Return True if raw_value is a known non-standard vendor sentinel for point_type."""
+    if raw_value is None or isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+        return False
+    if isinstance(raw_value, float) and (
+        not raw_value.is_integer() or raw_value != raw_value or abs(raw_value) == float("inf")
+    ):
+        return False
+    if not point_type:
+        return False
+    pt = point_type.strip().lower()
+    if pt in VENDOR_PSEUDO_SENTINELS_BY_TYPE:
+        return int(raw_value) in VENDOR_PSEUDO_SENTINELS_BY_TYPE[pt]
+    return False
+
+
 
 def is_scale_factor_point(
     name: Optional[str] = None,

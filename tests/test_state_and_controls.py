@@ -1,5 +1,6 @@
 """Unit tests for pwrcell.state and pwrcell.controls."""
 
+import logging
 import unittest
 from pwrcell.catalog import get_catalog
 from pwrcell.controls import ControlDispatcher
@@ -1106,6 +1107,121 @@ class TestStateAndControls(unittest.TestCase):
         self.assertEqual(f_direct.value, "LOW_SUN")
         self.assertEqual(f_direct.raw_value, 12546)
         self.assertEqual(f_direct.substate, 2)
+
+    def test_issue_15_vendor_pseudo_sentinel_ppvph_no_warning_spam(self):
+        """Model 102 PPVphAB/BC/CA returning vendor pseudo-sentinel 0xFFFE (65534 -> 6553.4 V) must not emit WARNING spam, while in-bounds 65534 values are preserved."""
+        raw_vals = {
+            "PPVphAB": 65534,
+            "PPVphBC": 65534,
+            "PPVphCA": 65534,
+            "PhVphA": 1234,
+            "PhVphB": 1241,
+            "PhVphC": 65535,
+            "V_SF": -1,
+        }
+        comp_vals = {
+            "PPVphAB": 6553.4,
+            "PPVphBC": 6553.4,
+            "PPVphCA": 6553.4,
+            "PhVphA": 123.4,
+            "PhVphB": 124.1,
+            "PhVphC": None,
+            "V_SF": -1,
+        }
+
+        with self.assertLogs("pwrcell.state", level="DEBUG") as cm:
+            for _ in range(3):
+                self.state.update_from_modbus_points(
+                    serial_number=self.inv.serial_number,
+                    model_id=102,
+                    raw_values=raw_vals,
+                    computed_values=comp_vals,
+                )
+
+        warn_records = [r for r in cm.records if r.levelno >= logging.WARNING]
+        self.assertEqual(warn_records, [], f"Expected zero warnings, got: {[r.getMessage() for r in warn_records]}")
+
+        pseudo_debugs = [r for r in cm.records if r.levelno == logging.DEBUG and "pseudo-sentinel" in r.getMessage()]
+        self.assertEqual(len(pseudo_debugs), 3)
+
+        for pt_name in ("PPVphAB", "PPVphBC", "PPVphCA", "PhVphC"):
+            f = self.inv.fields.get(f"inverter.inverter.{pt_name}")
+            self.assertIsNotNone(f)
+            self.assertIsNone(f.value)
+            self.assertIsNone(f.raw_value)
+
+        self.assertEqual(self.inv.fields["inverter.inverter.PhVphA"].value, 123.4)
+        self.assertEqual(self.inv.fields["inverter.inverter.PhVphB"].value, 124.1)
+
+        # In-bounds 0xFFFE (65534) values on uint16 and acc32 must NOT be dropped
+        f_wchamax = self.state.set_field(
+            device_sn=self.bat.serial_number,
+            name="WChaRteMax",
+            value=65534.0,
+            raw_value=65534,
+            units="W",
+            point_type="uint16",
+            sub_group="battery",
+        )
+        self.assertEqual(f_wchamax.value, 65534.0)
+        self.assertEqual(f_wchamax.raw_value, 65534)
+
+        self.state.update_from_modbus_points(
+            serial_number=self.bat.serial_number,
+            model_id=64209,
+            raw_values={"WhIn": 65534},
+            computed_values={"WhIn": 65534},
+        )
+        self.assertEqual(self.bat.fields["battery.battery_status.WhIn"].value, 65534)
+        self.assertEqual(self.bat.fields["battery.battery_status.WhIn"].raw_value, 65534)
+
+    def test_out_of_bounds_warning_deduplication_and_recovery(self):
+        """Out-of-bounds readings log WARNING once per episode, repeat at DEBUG, log INFO on recovery, and warn again on a new episode."""
+        with self.assertLogs("pwrcell.state", level="DEBUG") as cm:
+            for val, raw in ((8225.0, 82250), (8225.0, 82250), (8226.5, 82265)):
+                f = self.state.set_field(
+                    device_sn=self.inv.serial_number,
+                    name="PhVphA",
+                    sub_group="inverter",
+                    value=val,
+                    raw_value=raw,
+                    units="V",
+                    point_type="uint16",
+                )
+                self.assertIsNone(f.value)
+
+        warn_msgs = [r.getMessage() for r in cm.records if r.levelno == logging.WARNING]
+        debug_msgs = [r.getMessage() for r in cm.records if r.levelno == logging.DEBUG and "Rejected repeated" in r.getMessage()]
+        self.assertEqual(len(warn_msgs), 1)
+        self.assertEqual(len(debug_msgs), 2)
+
+        with self.assertLogs("pwrcell.state", level="INFO") as cm_rec:
+            f_ok = self.state.set_field(
+                device_sn=self.inv.serial_number,
+                name="PhVphA",
+                sub_group="inverter",
+                value=121.5,
+                raw_value=1215,
+                units="V",
+                point_type="uint16",
+            )
+            self.assertEqual(f_ok.value, 121.5)
+
+        info_msgs = [r.getMessage() for r in cm_rec.records if r.levelno == logging.INFO and "recovered" in r.getMessage()]
+        self.assertEqual(len(info_msgs), 1)
+
+        with self.assertLogs("pwrcell.state", level="WARNING") as cm_new:
+            f_bad2 = self.state.set_field(
+                device_sn=self.inv.serial_number,
+                name="PhVphA",
+                sub_group="inverter",
+                value=9000.0,
+                raw_value=90000,
+                units="V",
+                point_type="uint16",
+            )
+            self.assertIsNone(f_bad2.value)
+        self.assertEqual(len(cm_new.records), 1)
 
 
 if __name__ == "__main__":

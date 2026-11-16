@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.1] - 2026-11-15
+
+### Fixed
+- **Suppress Out-of-Bounds Warning Log-Spam & Handle Vendor Pseudo-Sentinels (Issue #15)**:
+  - Added `VENDOR_PSEUDO_SENTINELS_BY_TYPE` and `is_vendor_pseudo_sentinel()` (`pwrcell/catalog.py`) to identify non-standard firmware near-boundary sentinels (such as `0xFFFE` / `65534` emitted by some inverter firmware on unimplemented `PPVphAB`/`PPVphBC`/`PPVphCA` registers instead of canonical `0xFFFF`).
+  - Updated `StateStore.set_field()` (`pwrcell/state.py`) so readings that **both** fail physical plausibility bounds and match a vendor pseudo-sentinel for the register's point type are treated as unimplemented (`value=None`, `raw_value=None`, logged once at `DEBUG`) without emitting `WARNING` spam, while leaving valid in-bounds `65534` readings and accumulator counters untouched.
+  - Added per-field state-transition deduplication in `StateStore` (`_rejected_bounds_state`) so genuine non-sentinel out-of-bounds readings log at `WARNING` only once per episode (repeating at `DEBUG` until a valid reading triggers `INFO` recovery).
+  - Removed redundant `"inverter.inverter"` (Model 102, read-only) from `DEFAULT_CONFIG_PATHS` (`pwrcell/poller.py`, `config/pwrcell.example.yaml`) since it is already polled on the faster telemetry tier (`DEFAULT_FAST_PATHS`).
+  - Added regression tests in `tests/test_state_and_controls.py` and `tests/test_poller.py`.
+
 ## [3.2.0] - 2026-11-15
 
 ### Added
