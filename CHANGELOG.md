@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [3.2.0] - 2026-11-15
 
 ### Added
-- **Generic SunSpec Sub-Group Support (Per-Module Battery Telemetry & Nested Groups)**:
+- **Generic SunSpec Sub-Group Support (Per-Module Battery Telemetry & Nested Groups — Issue #18)**:
   - Recursively parses SunSpec sub-group metamodel definitions (`SunspecGroupDef`, `SunspecPointDef` group metadata, `ModelCatalog`, `SunspecModelDef.get_group_point()`) across all models without colliding with fixed-block register names (`pwrcell/catalog.py`).
   - Surfacing of per-battery-module telemetry from Model `804` (`lithium_ion_string_module`) and Model `64252` (`DCB105_module` warranty/module health metrics), Model `64200` (`devices` REbus directory slots including `ID`), and nested SunSpec sub-groups (`704`, `705` `Crv.Pt`, etc.).
   - Explicit group metadata (`group_name`, `group_index`, `group_path`, `group_label`) on `StateField`, `ConceptSource`, `ConceptView`, Modbus register details, and REST APIs (`pwrcell/state.py`, `pwrcell/concept.py`).
