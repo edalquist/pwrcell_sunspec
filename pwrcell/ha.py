@@ -1517,17 +1517,74 @@ def generate_discovery_payload(
         payload.pop("device_class", None)
 
     precision = None
-    if platform == "sensor":
+    if (
+        platform == "sensor"
+        and payload.get("device_class") != "enum"
+        and not getattr(field, "is_enum", False)
+        and not getattr(field, "is_bitfield", False)
+        and getattr(field, "point_type", None) != "string"
+    ):
         if is_concept:
-            precision = getattr(field, "ha_suggested_display_precision", None)
-            if precision is None:
-                precision = get_suggested_precision(field.ha_unit or field.units, field.ha_device_class)
-        elif field.ha_hint:
-            precision = getattr(field.ha_hint, "suggested_display_precision", None)
-            if precision is None:
-                precision = get_suggested_precision(field.ha_hint.unit_of_measurement or field.units, field.ha_hint.device_class)
-        elif field.units:
-            precision = get_suggested_precision(field.units)
+            cands: List[int] = []
+            c_prec = getattr(field, "ha_suggested_display_precision", None)
+            if c_prec is not None:
+                cands.append(c_prec)
+            base_prec = get_suggested_precision(
+                payload.get("unit_of_measurement") or field.ha_unit or field.units,
+                device_class=payload.get("device_class") or field.ha_device_class,
+                point_name=getattr(field, "concept_key", None) or getattr(field, "name", None),
+            )
+            if base_prec is not None:
+                cands.append(base_prec)
+            latest_src = getattr(field, "latest_source", None)
+            if latest_src not in (FieldSource.MQTT_PUSH.value, "MQTT") and hasattr(device, "fields"):
+                for s in getattr(field, "sources", []):
+                    if getattr(s, "source_type", None) == "MQTT":
+                        continue
+                    s_fk = getattr(s, "field_key", None)
+                    src_f = device.fields.get(s_fk) if s_fk else None
+                    if src_f is not None and not getattr(src_f, "is_enum", False) and not getattr(src_f, "is_bitfield", False) and getattr(src_f, "point_type", None) != "string":
+                        src_sf = device.get_scale_factor_value(src_f) if hasattr(device, "get_scale_factor_value") else None
+                        src_prec = get_suggested_precision(
+                            payload.get("unit_of_measurement") or field.ha_unit or field.units or src_f.units,
+                            device_class=payload.get("device_class") or field.ha_device_class,
+                            point_name=src_f.name,
+                            sf_value=src_sf,
+                            sf_name=src_f.scale_factor_point,
+                        )
+                        if src_prec is not None:
+                            cands.append(src_prec)
+                        elif src_f.ha_hint and src_f.ha_hint.suggested_display_precision is not None:
+                            cands.append(src_f.ha_hint.suggested_display_precision)
+                        if getattr(s, "transform", None) == "wh_to_kwh":
+                            cands.append(3)
+            precision = max(cands) if cands else None
+        else:
+            sf_val = device.get_scale_factor_value(field) if hasattr(device, "get_scale_factor_value") else None
+            sf_name = getattr(field, "scale_factor_point", None)
+            pt_name = getattr(field, "name", None)
+            eff_unit = (
+                payload.get("unit_of_measurement")
+                or (field.ha_hint.unit_of_measurement if field.ha_hint else None)
+                or field.units
+            )
+            eff_dclass = (
+                payload.get("device_class")
+                or (field.ha_hint.device_class if field.ha_hint else None)
+            )
+            derived_prec = get_suggested_precision(
+                eff_unit,
+                device_class=eff_dclass,
+                point_name=pt_name,
+                sf_value=sf_val,
+                sf_name=sf_name,
+            )
+            hint_prec = getattr(field.ha_hint, "suggested_display_precision", None) if field.ha_hint else None
+            if sf_val is not None:
+                precision = derived_prec
+            else:
+                cands = [p for p in (hint_prec, derived_prec) if p is not None]
+                precision = max(cands) if cands else None
 
         if precision is not None:
             payload["suggested_display_precision"] = precision

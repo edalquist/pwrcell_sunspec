@@ -20,6 +20,7 @@ import paho.mqtt.client as mqtt
 from paho.mqtt.properties import Properties
 from paho.mqtt.reasoncodes import ReasonCode
 
+from .catalog import get_suggested_precision
 from .client import PwrcellClient
 from .config import AppConfig, MqttConfig
 from .ha import (
@@ -71,10 +72,10 @@ def format_state_value(value: Any, precision: Optional[int] = None) -> Optional[
                 return str(int(round(value)))
             return f"{value:.{precision}f}"
         if isinstance(value, float):
-            rounded = round(value, 4)
+            rounded = round(value, 6)
             if rounded == int(rounded):
                 return str(int(rounded))
-            return f"{rounded:.4f}".rstrip("0").rstrip(".")
+            return f"{rounded:.6f}".rstrip("0").rstrip(".")
         return str(value)
     return str(value)
 
@@ -402,7 +403,7 @@ class HomeAssistantBridge:
                         self._mqttc.subscribe(cmd_topic)
 
                     if c_view.latest_value is not None:
-                        val_str = format_state_value(c_view.latest_value, payload_info.get("suggested_display_precision"))
+                        val_str = format_state_value(c_view.latest_value)
                         if val_str is not None:
                             self._mqttc.publish(payload_info["state_topic"], val_str, retain=True)
 
@@ -557,10 +558,40 @@ class HomeAssistantBridge:
                 }
                 self._mqttc.publish(attr_topic, json.dumps(attr_payload), retain=retain)
         else:
-            precision = payload_info.get("suggested_display_precision")
-            val_str = format_state_value(field.value, precision)
+            val_str = format_state_value(field.value)
             if val_str is not None:
                 self._mqttc.publish(state_topic, val_str, retain=retain)
+
+    @staticmethod
+    def _get_expected_sensor_precision(item: Any, dev: Any, payload_info: Dict[str, Any]) -> Optional[int]:
+        """Compute expected suggested_display_precision for a cached sensor discovery payload."""
+        if payload_info.get("platform") != "sensor":
+            return None
+        p_dict = payload_info.get("payload") or {}
+        if (
+            p_dict.get("device_class") == "enum"
+            or getattr(item, "is_enum", False)
+            or getattr(item, "is_bitfield", False)
+            or getattr(item, "point_type", None) == "string"
+        ):
+            return None
+        if getattr(item, "is_compound", False) or hasattr(item, "concept_key"):
+            return getattr(item, "ha_suggested_display_precision", None)
+
+        sf_val = dev.get_scale_factor_value(item) if hasattr(dev, "get_scale_factor_value") else None
+        hint = getattr(item, "ha_hint", None)
+        hint_prec = getattr(hint, "suggested_display_precision", None) if hint else None
+        if sf_val is not None:
+            eff_unit = p_dict.get("unit_of_measurement") or (hint.unit_of_measurement if hint else None) or getattr(item, "units", None)
+            eff_dclass = p_dict.get("device_class") or (hint.device_class if hint else None)
+            return get_suggested_precision(
+                eff_unit,
+                device_class=eff_dclass,
+                point_name=getattr(item, "name", None),
+                sf_value=sf_val,
+                sf_name=getattr(item, "scale_factor_point", None),
+            )
+        return hint_prec
 
     def _is_field_suppressed_by_compound(self, field: StateField) -> bool:
         """Check if a raw field is suppressed because its unified compound view is active."""
@@ -624,6 +655,12 @@ class HomeAssistantBridge:
         cache_key = f"{dev.serial_number.strip().upper()}:{field.key}"
         with self._lock:
             payload_info = self._payload_info_cache.get(cache_key)
+        force_discovery = False
+        if payload_info is not None:
+            expected_prec = self._get_expected_sensor_precision(field, dev, payload_info)
+            if expected_prec is not None and expected_prec != payload_info.get("suggested_display_precision"):
+                payload_info = None
+                force_discovery = True
         if payload_info is None:
             gateway = self.client.state.get_beacon() or self.client.state.get_inverter()
             payload_info = generate_discovery_payload(
@@ -639,7 +676,7 @@ class HomeAssistantBridge:
 
         config_topic = payload_info["config_topic"]
         with self._lock:
-            needs_discovery = config_topic not in self._published_discovery_topics
+            needs_discovery = force_discovery or (config_topic not in self._published_discovery_topics)
             if needs_discovery:
                 self._published_discovery_topics.add(config_topic)
         if needs_discovery:
@@ -704,6 +741,12 @@ class HomeAssistantBridge:
             return
         self._publish_device_availability(dev)
         gateway = self.client.state.get_beacon() or self.client.state.get_inverter()
+        force_discovery = False
+        if payload_info is not None:
+            expected_prec = self._get_expected_sensor_precision(c_view, dev, payload_info)
+            if expected_prec is not None and expected_prec != payload_info.get("suggested_display_precision"):
+                payload_info = None
+                force_discovery = True
         if payload_info is None:
             payload_info = generate_discovery_payload(
                 c_view,
@@ -718,7 +761,7 @@ class HomeAssistantBridge:
 
         config_topic = payload_info["config_topic"]
         with self._lock:
-            needs_discovery = config_topic not in self._published_discovery_topics
+            needs_discovery = force_discovery or (config_topic not in self._published_discovery_topics)
             if needs_discovery:
                 self._published_discovery_topics.add(config_topic)
         if needs_discovery:
@@ -765,8 +808,7 @@ class HomeAssistantBridge:
                 self._mqttc.subscribe(cmd_topic)
 
         state_topic = payload_info["state_topic"]
-        precision = payload_info.get("suggested_display_precision")
-        val_str = format_state_value(c_view.latest_value, precision)
+        val_str = format_state_value(c_view.latest_value)
         if val_str is not None:
             self._mqttc.publish(state_topic, val_str, retain=True)
 

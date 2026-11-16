@@ -196,7 +196,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
         self.assertEqual(c_view.latest_value, "PRIORITY_BACKUP")
 
     def test_suggested_display_precision_and_state_formatting(self):
-        """Verify that suggested_display_precision is added to discovery payload and published states are formatted cleanly."""
+        """Verify that suggested_display_precision reflects scale factors and published states are never truncated/rounded."""
         inv = self.client.state.get_inverter()
         sn = inv.serial_number
 
@@ -206,24 +206,33 @@ class TestHomeAssistantBridge(unittest.TestCase):
         config_topic = f"homeassistant/sensor/pwrcell_{sn.lower()}/inverter_a/config"
         matching_call = next(call for call in self.mock_mqttc.publish.call_args_list if call[0][0] == config_topic)
         payload = json.loads(matching_call[0][1])
-        # Current in Amperes has precision 1
-        self.assertEqual(payload.get("suggested_display_precision"), 1)
+        # Current in Amperes with A_SF=-2 has precision 2
+        self.assertEqual(payload.get("suggested_display_precision"), 2)
 
-        # Update field with noisy float
+        # Update field with high-precision value and float representation artifact
         self.client.state.subscribe(self.bridge._on_field_update)
+        state_topic = f"pwrcell/{sn.lower()}/inverter_a/state"
         self.mock_mqttc.publish.reset_mock()
         self.client.state.set_field(
             device_sn=sn,
             name="A",
             sub_group="inverter",
-            value=12.345678,
+            value=12.345,
             units="A",
         )
-
-        state_topic = f"pwrcell/{sn.lower()}/inverter_a/state"
         state_call = next(call for call in self.mock_mqttc.publish.call_args_list if call[0][0] == state_topic)
-        # Should be formatted to 1 decimal place: "12.3"
-        self.assertEqual(state_call[0][1], "12.3")
+        self.assertEqual(state_call[0][1], "12.345")
+
+        self.mock_mqttc.publish.reset_mock()
+        self.client.state.set_field(
+            device_sn=sn,
+            name="A",
+            sub_group="inverter",
+            value=12.34500000000001,
+            units="A",
+        )
+        state_call = next(call for call in self.mock_mqttc.publish.call_args_list if call[0][0] == state_topic)
+        self.assertEqual(state_call[0][1], "12.345")
 
     def test_format_state_value_never_scientific_notation(self):
         """Verify format_state_value never formats numbers with scientific notation."""
@@ -274,7 +283,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
         self.assertEqual(payload.get("suggested_display_precision"), 0)
         self.assertEqual(payload.get("unit_of_measurement"), "Wh")
 
-        # Update field with large energy value: 63,050,200 Wh (63.05 MWh)
+        # Update field with large energy value: 63,050,200.4 Wh (untruncated)
         self.client.state.subscribe(self.bridge._on_field_update)
         self.client.state.subscribe_compound(self.bridge._on_compound_update)
         self.mock_mqttc.publish.reset_mock()
@@ -288,8 +297,170 @@ class TestHomeAssistantBridge(unittest.TestCase):
 
         state_topic = f"pwrcell/{sn.lower()}/inverter_output_energy/state"
         state_call = next(call for call in self.mock_mqttc.publish.call_args_list if call[0][0] == state_topic)
-        self.assertEqual(state_call[0][1], "63050200")
+        self.assertEqual(state_call[0][1], "63050200.4")
         self.assertNotIn("e+", state_call[0][1])
+
+        self.mock_mqttc.publish.reset_mock()
+        self.client.state.set_field(
+            device_sn=sn,
+            name="inverter_output_exported_energy_wh",
+            sub_group="live",
+            value=63050201.0,
+            units="Wh",
+        )
+        state_call_int = next(call for call in self.mock_mqttc.publish.call_args_list if call[0][0] == state_topic)
+        self.assertEqual(state_call_int[0][1], "63050201")
+
+    def test_battery_module_3_decimal_precision_and_unrounded_state(self):
+        """3-decimal battery module cell voltages and 2-decimal pack voltages preserve precision in discovery and state."""
+        from pwrcell.optimizer import group_device_fields
+
+        bat = self.client.state.get_battery()
+        self.assertIsNotNone(bat)
+        bat_sn = bat.serial_number
+        bat_sn_lower = bat_sn.strip().lower()
+
+        self.client.state.update_from_modbus_points(
+            serial_number=bat_sn,
+            model_id=802,
+            raw_values={"CellV_SF": -3, "CellVMin": 3939, "CellVMax": 3945},
+            computed_values={"CellVMin": 3.939, "CellVMax": 3.945},
+        )
+        self.client.state.update_from_modbus_points(
+            serial_number=bat_sn,
+            model_id=64252,
+            raw_values={"sf_1000": -3},
+            computed_values={},
+            groups_data=[
+                {
+                    "group_name": "DCB105_module",
+                    "group_index": 3,
+                    "group_path": "DCB105_module.3",
+                    "raw_values": {"MinCellV": 3939},
+                    "computed_values": {"MinCellV": 3.939},
+                }
+            ],
+        )
+        self.client.state.update_from_modbus_points(
+            serial_number=bat_sn,
+            model_id=804,
+            raw_values={"CellV_SF": -3, "CellVMin": 3939, "CellVMax": 3945},
+            computed_values={"CellVMin": 3.939, "CellVMax": 3.945},
+            groups_data=[
+                {
+                    "group_name": "lithium_ion_string_module",
+                    "group_index": 3,
+                    "group_path": "lithium_ion_string_module.3",
+                    "raw_values": {"ModCellVMin": 3939, "ModCellVMax": 3945},
+                    "computed_values": {"ModCellVMin": 3.939, "ModCellVMax": 3.945},
+                }
+            ],
+        )
+
+        self.bridge.selected_field_keys = [
+            f"{bat_sn}:battery.lithium_ion_string.lithium_ion_string_module.3.ModCellVMin",
+            f"{bat_sn}:battery.DCB105_warranty.DCB105_module.1.MaxCellV",
+            f"{bat_sn}:battery.DCB105_warranty.DCB105_module.1.PackV",
+            f"{bat_sn}:battery.compound.min_cell_voltage",
+            f"{bat_sn}:battery.compound.max_cell_voltage",
+        ]
+        self.mock_mqttc.publish.reset_mock()
+        self.bridge.publish_discovery()
+
+        published = {call[0][0]: call[0][1] for call in self.mock_mqttc.publish.call_args_list}
+
+        # 1. Model 804 ModCellVMin (CellV_SF=-3)
+        m804_cfg_topic = f"homeassistant/sensor/pwrcell_{bat_sn_lower}/lithium_ion_string_lithium_ion_string_module_3_modcellvmin/config"
+        m804_state_topic = f"pwrcell/{bat_sn_lower}/lithium_ion_string_lithium_ion_string_module_3_modcellvmin/state"
+        self.assertIn(m804_cfg_topic, published)
+        m804_cfg = json.loads(published[m804_cfg_topic])
+        self.assertEqual(m804_cfg.get("suggested_display_precision"), 3)
+        self.assertEqual(published.get(m804_state_topic), "3.939")
+
+        # 2. Model 64252 DCB105_module MaxCellV (sf_1000=-3) and PackV (sf_100=-2)
+        dcb_max_cfg_topic = f"homeassistant/sensor/pwrcell_{bat_sn_lower}/dcb105_warranty_dcb105_module_1_maxcellv/config"
+        dcb_pack_cfg_topic = f"homeassistant/sensor/pwrcell_{bat_sn_lower}/dcb105_warranty_dcb105_module_1_packv/config"
+        dcb_pack_state_topic = f"pwrcell/{bat_sn_lower}/dcb105_warranty_dcb105_module_1_packv/state"
+        self.assertEqual(json.loads(published[dcb_max_cfg_topic]).get("suggested_display_precision"), 3)
+        self.assertEqual(json.loads(published[dcb_pack_cfg_topic]).get("suggested_display_precision"), 2)
+        self.assertEqual(published.get(dcb_pack_state_topic), "49.79")
+
+        # 3. Compound min_cell_voltage / max_cell_voltage
+        min_cv_cfg_topic = f"homeassistant/sensor/pwrcell_{bat_sn_lower}/min_cell_voltage/config"
+        min_cv_state_topic = f"pwrcell/{bat_sn_lower}/min_cell_voltage/state"
+        max_cv_cfg_topic = f"homeassistant/sensor/pwrcell_{bat_sn_lower}/max_cell_voltage/config"
+        self.assertEqual(json.loads(published[min_cv_cfg_topic]).get("suggested_display_precision"), 3)
+        self.assertEqual(json.loads(published[max_cv_cfg_topic]).get("suggested_display_precision"), 3)
+        self.assertEqual(published.get(min_cv_state_topic), "3.939")
+
+        # 4. Custom wildcard concept module_3_minimum_cell_voltage
+        unified = group_device_fields(
+            bat,
+            custom_groupings={
+                "field_overrides": {
+                    f"{bat_sn}:battery.lithium_ion_string.lithium_ion_string_module.*.ModCellVMin": "module_*_minimum_cell_voltage",
+                    f"{bat_sn}:battery.DCB105_warranty.DCB105_module.*.MinCellV": "module_*_minimum_cell_voltage",
+                },
+                "custom_concepts": {
+                    "module_*_minimum_cell_voltage": {"label": "Module * Minimum Cell Voltage"},
+                },
+            },
+        )
+        mod3_concept = next((g for g in unified if g.concept_key == "module_3_minimum_cell_voltage"), None)
+        self.assertIsNotNone(mod3_concept)
+        mod3_disc = generate_discovery_payload(mod3_concept, bat)
+        self.assertEqual(mod3_disc["payload"].get("suggested_display_precision"), 3)
+        self.assertEqual(format_state_value(mod3_concept.latest_value), "3.939")
+
+        # 5. Cold-start discovery refresh when scale factor becomes available on later poll
+        self.bridge.selected_field_keys = [f"{bat_sn}:battery.custom_model.CustomPackV"]
+        self.bridge._selected_set = set(self.bridge.selected_field_keys)
+        self.client.state.set_field(
+            device_sn=bat_sn,
+            name="CustomPackV",
+            sub_group="custom_model",
+            model_id=64999,
+            value=49.7,
+            raw_value=497,
+            units="V",
+            scale_factor_point="CustomSF",
+        )
+        self.mock_mqttc.publish.reset_mock()
+        self.bridge.publish_discovery()
+
+        custom_cfg_topic = f"homeassistant/sensor/pwrcell_{bat_sn_lower}/custom_model_custompackv/config"
+        custom_state_topic = f"pwrcell/{bat_sn_lower}/custom_model_custompackv/state"
+        initial_cfg = next(
+            json.loads(c[0][1]) for c in self.mock_mqttc.publish.call_args_list if c[0][0] == custom_cfg_topic
+        )
+        self.assertEqual(initial_cfg.get("suggested_display_precision"), 1)
+
+        # Now poll CustomSF=-3 and update CustomPackV=49.795 via StateStore subscription
+        self.client.state.subscribe(self.bridge._on_field_update)
+        self.mock_mqttc.publish.reset_mock()
+        self.client.state.set_field(
+            device_sn=bat_sn,
+            name="CustomSF",
+            sub_group="custom_model",
+            model_id=64999,
+            value=-3,
+            raw_value=-3,
+            is_scale_factor=True,
+        )
+        self.client.state.set_field(
+            device_sn=bat_sn,
+            name="CustomPackV",
+            sub_group="custom_model",
+            model_id=64999,
+            value=49.795,
+            raw_value=49795,
+            units="V",
+            scale_factor_point="CustomSF",
+        )
+        refreshed_calls = {c[0][0]: c[0][1] for c in self.mock_mqttc.publish.call_args_list}
+        self.assertIn(custom_cfg_topic, refreshed_calls)
+        self.assertEqual(json.loads(refreshed_calls[custom_cfg_topic]).get("suggested_display_precision"), 3)
+        self.assertEqual(refreshed_calls.get(custom_state_topic), "49.795")
 
     def test_start_with_empty_client_name_and_running_flag(self):
         """Verify bridge.start() falls back to HOSTNAME / default without NameError and only marks _running on success."""

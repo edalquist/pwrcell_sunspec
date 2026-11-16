@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.2] - 2026-11-15
+
+### Fixed
+- **Preserve Full Sensor Precision & Scale-Factor-Aware Display Precision in Home Assistant**:
+  - Updated `get_suggested_precision()` and `ModelCatalog.derive_ha_metadata()` (`pwrcell/catalog.py`) with `infer_scale_factor_precision()` to derive `suggested_display_precision` from live SunSpec scale factor values (`sf_value`), static scale-factor register names (`CellV_SF`, `sf_1000`, `sf_100`, `A_SF`, `I_sf`, etc.), and cell-voltage point names (excluding integer cell/module index counters like `ModCellVMinCell`). Battery module cell voltages (`ModCellVMin`/`ModCellVMax`/`ModCellVAvg` in Model `804`, `MaxCellV`/`MinCellV` in Model `64252`) now advertise 3 decimal places, `PackV` and 2-decimal current points advertise 2 decimal places.
+  - Propagated scale-factor precision across `UnifiedDevice.get_scale_factor_value()`, `StateField.to_dict()`, `StateStore._build_field()`, `StateStore.ensure_field_definition()`, `StateStore.get_compound_view()` (`pwrcell/state.py`), `group_device_fields()` (`pwrcell/optimizer.py`), and `generate_discovery_payload()` (`pwrcell/ha.py`).
+  - Stopped rounding/truncating MQTT state payloads in `HomeAssistantBridge` (`pwrcell/bridge.py`) to `suggested_display_precision`, expanded float artifact cleanup in `format_state_value()` to 6 decimal places without scientific notation, and added automatic discovery payload cache refresh (`_get_expected_sensor_precision`) when a scale factor arrives after initial cold-start discovery.
+
 ## [3.2.1] - 2026-11-15
 
 ### Fixed

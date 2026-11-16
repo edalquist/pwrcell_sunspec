@@ -619,6 +619,26 @@ class StateField:
             else:
                 raw_hex_str = f"0x{self.raw_value:X}"
 
+        ha_platform = self.ha_hint.platform if self.ha_hint else "sensor"
+        ha_precision = None
+        if ha_platform == "sensor" and not self.is_enum and not self.is_bitfield and self.point_type != "string":
+            eff_dclass = self.ha_hint.device_class if self.ha_hint else None
+            if eff_dclass != "enum":
+                eff_unit = (self.ha_hint.unit_of_measurement if self.ha_hint else None) or self.units
+                derived_prec = get_suggested_precision(
+                    eff_unit,
+                    device_class=eff_dclass,
+                    point_name=self.name,
+                    sf_value=sf_value,
+                    sf_name=self.scale_factor_point,
+                )
+                hint_prec = self.ha_hint.suggested_display_precision if self.ha_hint else None
+                if sf_value is not None:
+                    ha_precision = derived_prec
+                else:
+                    cands = [p for p in (hint_prec, derived_prec) if p is not None]
+                    ha_precision = max(cands) if cands else None
+
         return {
             "key": self.key,
             "device_sn": self.device_sn,
@@ -652,13 +672,14 @@ class StateField:
             "compound_key": self.compound_key,
             "is_compound_raw": self.is_compound_raw,
             "symbols": serialized_symbols,
-            "ha_platform": self.ha_hint.platform if self.ha_hint else "sensor",
+            "ha_platform": ha_platform,
             "ha_device_class": self.ha_hint.device_class if self.ha_hint else None,
             "ha_state_class": self.ha_hint.state_class if self.ha_hint else None,
             "ha_unit": self.ha_hint.unit_of_measurement if self.ha_hint else self.units,
             "ha_category": self.get_ha_category(category_overrides=category_overrides),
             "is_diagnostic": self.get_ha_category(category_overrides=category_overrides) == "diagnostic",
             "ha_options": self.ha_hint.options if self.ha_hint else None,
+            "ha_suggested_display_precision": ha_precision,
             "model_id": self.model_id,
             "model_name": self.model_name,
             "model_label": self.model_label,
@@ -692,13 +713,28 @@ class UnifiedDevice:
         parts = field.key.split(".")
         if len(parts) >= 2:
             group = parts[1]
+            if getattr(field, "group_path", None):
+                grp_sf_key = f"{self.device_type}.{group}.{field.group_path}.{field.scale_factor_point}"
+                if grp_sf_key in fields_snapshot:
+                    val = fields_snapshot[grp_sf_key].value
+                    if isinstance(val, (int, float)) and not isinstance(val, bool):
+                        return int(val)
             sf_key = f"{self.device_type}.{group}.{field.scale_factor_point}"
             if sf_key in fields_snapshot:
                 val = fields_snapshot[sf_key].value
-                if isinstance(val, (int, float)):
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
                     return int(val)
+        if getattr(field, "model_id", None) is not None:
+            for f in fields_snapshot.values():
+                if (
+                    f.model_id == field.model_id
+                    and f.name == field.scale_factor_point
+                    and isinstance(f.value, (int, float))
+                    and not isinstance(f.value, bool)
+                ):
+                    return int(f.value)
         for f in fields_snapshot.values():
-            if f.name == field.scale_factor_point and isinstance(f.value, (int, float)):
+            if f.name == field.scale_factor_point and isinstance(f.value, (int, float)) and not isinstance(f.value, bool):
                 return int(f.value)
         return None
 
@@ -1280,9 +1316,45 @@ class StateStore:
                 ha_state_class = None
 
         precision = None
-        if ha_platform == "sensor":
+        if ha_platform == "sensor" and ha_device_class != "enum":
             u = (m.unit or (mb_field.units if mb_field else (mqtt_field.units if mqtt_field else "")) or "").strip()
-            precision = get_suggested_precision(u, device_class=ha_device_class, point_name=m.id)
+            cands: List[int] = []
+            base_p = get_suggested_precision(u, device_class=ha_device_class, point_name=m.id)
+            if base_p is not None:
+                cands.append(base_p)
+            if latest_src != FieldSource.MQTT_PUSH.value:
+                if mb_fields:
+                    for mbf in mb_fields:
+                        if getattr(mbf, "is_enum", False) or getattr(mbf, "is_bitfield", False) or getattr(mbf, "point_type", None) == "string":
+                            continue
+                        mbf_sf = target_dev.get_scale_factor_value(mbf)
+                        mbf_prec = get_suggested_precision(
+                            u or mbf.units,
+                            device_class=ha_device_class,
+                            point_name=mbf.name,
+                            sf_value=mbf_sf,
+                            sf_name=mbf.scale_factor_point,
+                        )
+                        if mbf_prec is not None:
+                            cands.append(mbf_prec)
+                        hint_p = getattr(mbf.ha_hint, "suggested_display_precision", None) if mbf.ha_hint else None
+                        if hint_p is not None:
+                            cands.append(hint_p)
+                elif self.catalog:
+                    for cand_key in candidates:
+                        pt_d = self.catalog.get_point_for_field(cand_key)
+                        if pt_d and not pt_d.is_enum and not pt_d.is_bitfield and pt_d.type != "string":
+                            cand_p = get_suggested_precision(
+                                u or pt_d.units,
+                                device_class=ha_device_class,
+                                point_name=pt_d.name,
+                                sf_name=pt_d.sf,
+                            )
+                            if cand_p is not None:
+                                cands.append(cand_p)
+                if eff_transform == "wh_to_kwh":
+                    cands.append(3)
+            precision = max(cands) if cands else None
 
         sources: List[ConceptSource] = []
         if mqtt_field:
@@ -1703,16 +1775,27 @@ class StateStore:
 
         merged_ha_hint = pick(ha_hint, "ha_hint")
         eff_group_path = pick(group_path, "group_path")
+        merged_is_enum = bool(pick(is_enum, "is_enum"))
+        merged_sf_point = pick(scale_factor_point, "scale_factor_point")
         if not merged_ha_hint:
             inf_d, inf_s = infer_ha_classes(units=merged_units, name=name, platform="sensor")
             cat = "diagnostic" if (eff_group_path or is_diagnostic_point(name, model_id)) else None
             if inf_d or inf_s or cat:
+                sugg_prec = None
+                if not merged_is_enum and not merged_bitfield and merged_pt_type != "string":
+                    sugg_prec = get_suggested_precision(
+                        merged_units,
+                        device_class=inf_d,
+                        point_name=name,
+                        sf_name=merged_sf_point,
+                    )
                 merged_ha_hint = HomeAssistantHint(
                     platform="sensor",
                     device_class=inf_d,
                     state_class=inf_s,
                     unit_of_measurement=merged_units,
                     entity_category=cat,
+                    suggested_display_precision=sugg_prec,
                 )
 
         return StateField(
@@ -2126,7 +2209,32 @@ class StateStore:
                             inst_idx = group_index if (group_index and group_index >= 1) else 1
                             offset = grp_def.base_offset + (inst_idx - 1) * grp_def.size + cat_point.within_group_offset
                     size = cat_point.size
-                    ha_hint = self.catalog.derive_ha_metadata(cat_point, model_id)
+                    sf_val = None
+                    if cat_point.sf:
+                        sf_candidates = []
+                        if group_path:
+                            sf_candidates.append(f"{dev_type}.{sub_group}.{group_path}.{cat_point.sf}")
+                            if model_name and model_name != sub_group:
+                                sf_candidates.append(f"{dev_type}.{model_name}.{group_path}.{cat_point.sf}")
+                        sf_candidates.append(f"{dev_type}.{sub_group}.{cat_point.sf}")
+                        if model_name and model_name != sub_group:
+                            sf_candidates.append(f"{dev_type}.{model_name}.{cat_point.sf}")
+                        for sf_cand_key in sf_candidates:
+                            sf_f = dev.fields.get(sf_cand_key)
+                            if sf_f is not None and isinstance(sf_f.value, (int, float)) and not isinstance(sf_f.value, bool):
+                                sf_val = int(sf_f.value)
+                                break
+                        if sf_val is None and model_id is not None:
+                            for f_existing in dev.fields.values():
+                                if (
+                                    f_existing.model_id == model_id
+                                    and f_existing.name == cat_point.sf
+                                    and isinstance(f_existing.value, (int, float))
+                                    and not isinstance(f_existing.value, bool)
+                                ):
+                                    sf_val = int(f_existing.value)
+                                    break
+                    ha_hint = self.catalog.derive_ha_metadata(cat_point, model_id, sf_value=sf_val)
                     if group_path and ha_hint and not cat_point.is_writable and not ha_hint.entity_category:
                         ha_hint.entity_category = "diagnostic"
                 else:

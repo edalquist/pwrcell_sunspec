@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from .catalog import (
+    get_suggested_precision,
     group_wildcard_matches_field_key,
     infer_ha_classes,
     is_scale_factor_point,
@@ -1139,6 +1140,48 @@ def group_device_fields(
                 g.bitmask_flags = active_src.bitmask_flags
             if active_src.is_scale_factor:
                 g.is_scale_factor = True
+
+        if (
+            g.ha_platform == "sensor"
+            and g.ha_device_class != "enum"
+            and not g.is_enum
+            and not g.is_bitfield
+            and g.point_type != "string"
+        ):
+            prec_cands: List[int] = []
+            base_g_prec = get_suggested_precision(
+                g.ha_unit or g.units,
+                device_class=g.ha_device_class,
+                point_name=g.concept_key or g.name,
+            )
+            if base_g_prec is not None:
+                prec_cands.append(base_g_prec)
+
+            is_mqtt_active = bool(active_src and active_src.source_type == "MQTT")
+            if not is_mqtt_active:
+                check_srcs = ([active_src] if active_src else []) + [
+                    s for s in g.sources if s is not active_src and s.source_type != "MQTT"
+                ]
+                for s in check_srcs:
+                    if s.is_enum or s.is_bitfield or s.point_type == "string":
+                        continue
+                    f_obj = all_fields.get(s.field_key)
+                    sf_v = dev.get_scale_factor_value(f_obj) if (f_obj is not None and hasattr(dev, "get_scale_factor_value")) else None
+                    s_prec = get_suggested_precision(
+                        g.ha_unit or g.units or s.units,
+                        device_class=g.ha_device_class,
+                        point_name=s.name,
+                        sf_value=sf_v,
+                        sf_name=s.scale_factor,
+                    )
+                    if s_prec is not None:
+                        prec_cands.append(s_prec)
+                    if f_obj is not None and f_obj.ha_hint and f_obj.ha_hint.suggested_display_precision is not None:
+                        prec_cands.append(f_obj.ha_hint.suggested_display_precision)
+                    if s.transform == "wh_to_kwh":
+                        prec_cands.append(3)
+
+            g.ha_suggested_display_precision = max(prec_cands) if prec_cands else None
 
         # Also identify the optimal SunSpec candidate among Modbus sources for comparison/fallback
         mb_sources = [s for s in g.sources if s.source_type != "MQTT"]

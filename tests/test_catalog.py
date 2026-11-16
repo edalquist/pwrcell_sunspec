@@ -101,6 +101,41 @@ class TestModelCatalog(unittest.TestCase):
         self.assertEqual(get_suggested_precision(None, device_class="frequency"), 2)
         self.assertIsNone(get_suggested_precision(None, None))
 
+        # Scale-factor-aware precision (sf_value takes authority when negative)
+        self.assertEqual(get_suggested_precision("V", sf_value=-3), 3)
+        self.assertEqual(get_suggested_precision("V", sf_value=-2), 2)
+        self.assertEqual(get_suggested_precision("V", sf_value=-1), 1)
+        self.assertEqual(get_suggested_precision("V", sf_value=0), 1)
+        self.assertEqual(get_suggested_precision("W", sf_value=-1), 1)
+        self.assertEqual(get_suggested_precision("Ah", sf_value=-2), 2)
+        self.assertEqual(get_suggested_precision("cos()", sf_value=-3), 3)
+
+        # Static sf_name fallback (cold start before first poll)
+        self.assertEqual(get_suggested_precision("V", sf_name="CellV_SF"), 3)
+        self.assertEqual(get_suggested_precision("V", sf_name="sf_1000"), 3)
+        self.assertEqual(get_suggested_precision("V", sf_name="sf_100"), 2)
+        self.assertEqual(get_suggested_precision("A", sf_name="A_SF"), 2)
+        self.assertEqual(get_suggested_precision("V", sf_name="sf_10"), 1)
+
+        # Cell-voltage point_name fallback and index exclusions
+        self.assertEqual(get_suggested_precision("V", point_name="ModCellVMin"), 3)
+        self.assertEqual(get_suggested_precision("V", point_name="max_cell_voltage"), 3)
+        self.assertIsNone(get_suggested_precision(None, point_name="ModCellVMinCell"))
+
+        # Catalog derive_ha_metadata propagates scale-factor precision
+        m804 = self.catalog.get_model(804)
+        mod_vmin = m804.get_group_point("lithium_ion_string_module.1", "ModCellVMin")
+        self.assertEqual(self.catalog.derive_ha_metadata(mod_vmin, 804, sf_value=-3).suggested_display_precision, 3)
+        self.assertEqual(self.catalog.derive_ha_metadata(mod_vmin, 804, sf_value=None).suggested_display_precision, 3)
+        mod_vmin_cell = m804.get_group_point("lithium_ion_string_module.1", "ModCellVMinCell")
+        self.assertIsNone(self.catalog.derive_ha_metadata(mod_vmin_cell, 804).suggested_display_precision)
+
+        m64252 = self.catalog.get_model(64252)
+        pack_v = m64252.get_group_point("DCB105_module.1", "PackV")
+        max_cell_v = m64252.get_group_point("DCB105_module.1", "MaxCellV")
+        self.assertEqual(self.catalog.derive_ha_metadata(pack_v, 64252).suggested_display_precision, 2)
+        self.assertEqual(self.catalog.derive_ha_metadata(max_cell_v, 64252).suggested_display_precision, 3)
+
     def test_sunspec_model_constants_match_catalog(self):
         from pwrcell.catalog import (
             MODEL_BATTERY_BASE,

@@ -346,28 +346,77 @@ def is_scale_factor_point(
     return False
 
 
+def infer_scale_factor_precision(
+    sf_value: Optional[int] = None,
+    sf_name: Optional[str] = None,
+    point_name: Optional[str] = None,
+    unit: Optional[str] = None,
+    device_class: Optional[str] = None,
+) -> Optional[int]:
+    """Infer decimal precision from an authoritative SunSpec scale factor or point metadata."""
+    if sf_value is not None and not isinstance(sf_value, bool) and isinstance(sf_value, (int, float)):
+        sf_int = int(sf_value)
+        if -10 <= sf_int <= 10:
+            return min(abs(sf_int), 6) if sf_int < 0 else 0
+
+    if sf_name:
+        sfn = sf_name.strip().lower()
+        if sfn in ("sf_1000", "x1000_sf", "sf_x1000", "cellv_sf", "outpfset_sf", "pfrtg_sf"):
+            return 3
+        if sfn in ("sf_100", "x100_sf", "sf_x100", "i_sf", "a_sf", "dca_sf", "amax_sf", "artg_sf", "ahrtg_sf", "hz_sf"):
+            return 2
+        if sfn in ("sf_10", "x10_sf", "sf_x10"):
+            return 1
+
+    if point_name:
+        pn = point_name.strip().lower()
+        u_norm = (normalize_ha_unit(unit) or "").strip()
+        if not pn.endswith(("cell", "mod", "str", "idx", "cnt", "num")):
+            if "cell" in pn and ("volt" in pn or "cellv" in pn) and u_norm in ("V", "") and (
+                u_norm == "V" or device_class == "voltage" or "cell_voltage" in pn or "cellv" in pn
+            ):
+                return 3
+
+    return None
+
+
 def get_suggested_precision(
     unit: Optional[str],
     device_class: Optional[str] = None,
     point_name: Optional[str] = None,
+    sf_value: Optional[int] = None,
+    sf_name: Optional[str] = None,
 ) -> Optional[int]:
     """Derive Home Assistant suggested display precision for numeric sensors."""
-    u = (unit or "").strip()
-    if u in ("W", "VA", "VAr", "VAR", "Wh", "Ws", "VAh", "varh"):
-        return 0
-    if u in ("kWh", "Hz", "kVAh", "kvarh"):
-        return 2
-    if u in ("V", "A", "%", "C", "°C", "kW"):
-        return 1
-    if device_class == "power":
-        return 0
-    if device_class == "energy":
-        return 2 if "k" in u.lower() else 0
-    if device_class in ("voltage", "current", "battery", "temperature"):
-        return 1
-    if device_class == "frequency":
-        return 2
-    return None
+    u = (normalize_ha_unit(unit) or "").strip()
+    base: Optional[int] = None
+    if u in ("W", "VA", "VAr", "VAR", "var", "Wh", "Ws", "VAh", "varh"):
+        base = 0
+    elif u in ("kWh", "Hz", "kVAh", "kvarh"):
+        base = 2
+    elif u in ("V", "A", "%", "C", "°C", "kW"):
+        base = 1
+    elif device_class == "power":
+        base = 0
+    elif device_class == "energy":
+        base = 2 if "k" in u.lower() else 0
+    elif device_class in ("voltage", "current", "battery", "temperature"):
+        base = 1
+    elif device_class == "frequency":
+        base = 2
+
+    sf_prec = infer_scale_factor_precision(
+        sf_value=sf_value,
+        sf_name=sf_name,
+        point_name=point_name,
+        unit=u,
+        device_class=device_class,
+    )
+    if base is not None and sf_prec is not None:
+        return max(base, sf_prec)
+    if sf_prec is not None and sf_prec > 0:
+        return sf_prec
+    return base
 
 
 def normalize_ha_unit(unit: Optional[str]) -> Optional[str]:
@@ -1617,6 +1666,8 @@ class ModelCatalog:
             canonical_units,
             device_class=device_class,
             point_name=point.name,
+            sf_value=sf_value,
+            sf_name=point.sf,
         )
 
         return HomeAssistantHint(
