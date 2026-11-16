@@ -1064,24 +1064,28 @@ class TestDefaultConfigsAndExporters(unittest.TestCase):
     def test_repo_default_configs_are_clean_and_exporters_preserve_portability(self):
         import yaml
 
-        # 1. Verify shipped ha_default_config.yaml uses portable compounds and M804 wildcards
+        # 1. Verify shipped ha_default_config.yaml uses portable compounds, valid overrides, and wildcards
         default_doc = yaml.safe_load(Path("config/ha_default_config.yaml").read_text(encoding="utf-8"))
         sel = default_doc["selected_fields"]
-        self.assertIn("battery.REbus_status.P", sel)
+        reg = mapping_module.MappingRegistry.get_instance()
         self.assertIn("battery.compound.battery_soc", sel)
         self.assertIn("inverter.compound.grid_power", sel)
-        self.assertIn("pv_link.compound.pv_string_voltage", sel)
+        self.assertIn("pv_link.compound.rebus_power", sel)
         self.assertIn("battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC", sel)
-        self.assertIn("battery.lithium_ion_string.lithium_ion_string_module.*.ModV", sel)
-        self.assertNotIn("battery.compound.battery_ac_charged_energy", sel)
-        self.assertNotIn("battery.compound.battery_ac_discharged_energy", sel)
+        self.assertIn("battery.DCB105_warranty.DCB105_module.*.PackV", sel)
         self.assertNotIn("battery.compound.st_64207", sel)
         self.assertNotIn("inverter.compound.st_64207", sel)
         self.assertNotIn("inverter.compound.whin_64208", sel)
-        self.assertNotIn("battery.DCB105_warranty.DCB105_module.*.PackV", sel)
+        for k in sel:
+            self.assertNotIn(":", k)
+            self.assertNotIn(".standalone.", k)
+            self.assertNotIn(".concept.", k)
+            if ".compound." in k:
+                self.assertIsNotNone(reg.get_by_id(k.split(".")[-1]), f"Unknown compound in default config: {k}")
         default_ov = default_doc.get("category_overrides") or {}
         for ov_k in default_ov.keys():
             self.assertNotIn(".standalone.", ov_k)
+            self.assertIn(".", ov_k)
         for pv_k in ("pv_link.REbus_status.I", "pv_link.REbus_status.St", "pv_link.REbus_status.V"):
             self.assertEqual(default_ov.get(pv_k), "primary")
         pvl_dev = self.client.state.get_devices_by_type("pv_link")[0]
@@ -1089,7 +1093,6 @@ class TestDefaultConfigsAndExporters(unittest.TestCase):
             self.assertIsNone(get_effective_ha_category(pvl_dev.fields[pv_k], pvl_dev, default_ov))
 
         # Verify DC WhIn/WhOut remain in battery_imported/exported_energy and battery_ac_* are MQTT-only
-        reg = mapping_module.MappingRegistry.get_instance()
         raw_to_comp = reg.get_raw_to_compound_map()
         self.assertEqual(raw_to_comp.get("battery.DCB105_warranty.WhIn"), "battery.compound.battery_imported_energy")
         self.assertEqual(raw_to_comp.get("battery.battery_status.WhIn"), "battery.compound.battery_imported_energy")

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import re
 import threading
 import time
 from pathlib import Path
@@ -75,7 +76,24 @@ def create_app(client: PwrcellClient) -> Flask:
 
     @app.route("/")
     def index():
-        return send_from_directory(str(static_dir), "index.html")
+        from .. import __version__
+
+        html = (static_dir / "index.html").read_text(encoding="utf-8")
+        html = re.sub(
+            r"<title>PWRcell Explorer \([^)]*\)</title>",
+            f"<title>PWRcell Explorer (v{__version__})</title>",
+            html,
+        )
+        html = re.sub(
+            r'<span class="version-badge"(?:\s+id="appVersionBadge")?>[^<]*</span>',
+            f'<span class="version-badge" id="appVersionBadge">v{__version__}</span>',
+            html,
+        )
+        return Response(
+            html,
+            mimetype="text/html; charset=utf-8",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @app.route("/api/stream")
     def sse_stream():

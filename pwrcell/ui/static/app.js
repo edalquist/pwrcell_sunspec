@@ -49,6 +49,7 @@ const state = {
 
 // DOM Elements
 const el = {
+  appVersionBadge: document.getElementById('appVersionBadge'),
   deviceList: document.getElementById('deviceList'),
   deviceCountBadge: document.getElementById('deviceCountBadge'),
   activeDeviceName: document.getElementById('activeDeviceName'),
@@ -298,6 +299,11 @@ async function fetchOverview() {
 }
 
 function updateOverviewUI(data) {
+  if (data.version) {
+    const verLabel = String(data.version).startsWith('v') ? String(data.version) : `v${data.version}`;
+    if (el.appVersionBadge) el.appVersionBadge.textContent = verLabel;
+    document.title = `PWRcell Explorer (${verLabel})`;
+  }
   state.isMock = data.is_mock;
   el.modeTag.textContent = data.is_mock ? 'Simulator' : 'Live Unit';
   el.modeTag.style.borderColor = data.is_mock ? '#3b82f640' : '#10b98140';

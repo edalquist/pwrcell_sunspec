@@ -79,8 +79,10 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         )
 
         ha_selected = qualify_legacy_ha_config(load_ha_config(), client.state)
+        from ... import __version__
 
         return jsonify({
+            "version": __version__,
             "is_mock": client.is_mock,
             "device_count": len(client.state.devices),
             "initial_poll_running": getattr(client, "is_initial_poll_running", False),

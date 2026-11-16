@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from pwrcell import __version__
 from pwrcell import mapping as mapping_module
 from pwrcell.client import PwrcellClient
 from pwrcell.ha import generate_discovery_payload, get_recommended_field_keys, load_ha_config, save_ha_config
@@ -51,6 +52,8 @@ class TestWebExplorerApi(unittest.TestCase):
         resp = self.test_client.get("/")
         self.assertEqual(resp.status_code, 200)
         self.assertIn(b"PWRcell Explorer", resp.data)
+        self.assertIn(f"v{__version__}".encode("utf-8"), resp.data)
+        self.assertNotIn(b">v3.0<", resp.data)
         self.assertIn(b"data-sort=\"model\"", resp.data)
         self.assertIn(b"data-sort=\"value\"", resp.data)
         self.assertIn(b"data-sort=\"ha\"", resp.data)
@@ -70,6 +73,7 @@ class TestWebExplorerApi(unittest.TestCase):
         resp = self.test_client.get("/api/overview")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
+        self.assertEqual(data.get("version"), __version__)
         self.assertTrue(data["is_mock"])
         self.assertEqual(data["device_count"], 9)
         self.assertIn("grid_power_w", data)
