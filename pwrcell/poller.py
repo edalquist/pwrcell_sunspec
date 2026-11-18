@@ -19,7 +19,7 @@ import queue
 import threading
 import time
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
 
 from .catalog import (
     MODEL_BATTERY_BASE,
@@ -48,6 +48,11 @@ from .catalog import (
     MODEL_VOLT_WATT,
     is_sunspec_sentinel,
     should_ingest_model_groups,
+)
+from .modbus import (
+    is_address_exception,
+    is_device_unavailable_exception,
+    is_transport_error,
 )
 
 if TYPE_CHECKING:
@@ -364,12 +369,22 @@ class TieredModbusPoller:
         fast_paths: Optional[List[str]] = None,
         config_paths: Optional[List[str]] = None,
         slow_paths: Optional[List[str]] = None,
+        offline_threshold: int = 3,
+        rescan_cooldown: float = 60.0,
+        reconnect_cooldown: float = 30.0,
+        mqtt_stale_timeout: float = 120.0,
+        clock: Optional[Callable[[], float]] = None,
     ):
         self.client = client
         self.fast_interval = max(1.0, float(fast_interval))
         self.config_interval = max(5.0, float(config_interval))
         self.slow_interval = max(10.0, float(slow_interval))
         self.enabled = enabled
+        self.offline_threshold = max(1, int(offline_threshold))
+        self.rescan_cooldown = max(0.0, float(rescan_cooldown))
+        self.reconnect_cooldown = max(0.0, float(reconnect_cooldown))
+        self.mqtt_stale_timeout = max(0.0, float(mqtt_stale_timeout))
+        self._clock = clock or time.time
 
         self.fast_paths = list(fast_paths) if fast_paths is not None else list(DEFAULT_FAST_PATHS)
         self.config_paths = list(config_paths) if config_paths is not None else list(DEFAULT_CONFIG_PATHS)
@@ -427,9 +442,26 @@ class TieredModbusPoller:
 
         self._pending_triggers: queue.Queue[str] = queue.Queue()
         self._last_discovery_retry: float = 0.0
+        self._device_failed_cycles: Dict[str, int] = {}
+        self._device_last_error: Dict[str, str] = {}
+        self._device_last_rescan: Dict[str, float] = {}
+        self._device_needs_rescan: Set[str] = set()
+        self._ever_supported_models: Dict[str, Set[int]] = {}
+        self._consecutive_failed_tiers: int = 0
+        self._consecutive_transport_errors: int = 0
+        self._last_modbus_success: float = 0.0
+        self._last_reconnect_attempt: float = 0.0
+        self._modbus_connected: bool = True
+        self._reconnect_count: int = 0
+        self._rescan_count: int = 0
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._cond = threading.Condition()
+
+    @property
+    def modbus_connected(self) -> bool:
+        with self._cond:
+            return self._modbus_connected
 
     def start(self):
         """Start background polling thread."""
@@ -497,16 +529,82 @@ class TieredModbusPoller:
         polled_count = 0
         attempted_models = 0
         devices = self.client.state.get_devices_snapshot()
+        any_availability_change = False
 
         for dev in devices:
             if dev.slave_id is None:
                 continue
             target_models = models_map.get(dev.device_type, [])
+            dev_attempted = 0
+            dev_succeeded = 0
             for mid in target_models:
                 attempted_models += 1
+                dev_attempted += 1
                 success = self.poll_device_model(dev.slave_id, dev.serial_number, mid)
                 if success:
                     polled_count += 1
+                    dev_succeeded += 1
+
+            if self.client.modbus is not None and dev_attempted > 0:
+                if dev_succeeded > 0:
+                    with self._cond:
+                        self._device_failed_cycles[dev.serial_number] = 0
+                else:
+                    with self._cond:
+                        streak = self._device_failed_cycles.get(dev.serial_number, 0) + 1
+                        self._device_failed_cycles[dev.serial_number] = streak
+                        last_err = self._device_last_error.get(dev.serial_number, "Modbus read failed")
+                        if streak >= self.offline_threshold:
+                            self._device_needs_rescan.add(dev.serial_number)
+                    if streak >= self.offline_threshold:
+                        changed = self.client.state.set_device_online(
+                            dev.serial_number,
+                            False,
+                            error=last_err,
+                            consecutive_errors=streak,
+                        )
+                        if changed:
+                            any_availability_change = True
+                            logger.warning(
+                                "Device %s (slave %d) marked OFFLINE after %d consecutive failed Modbus poll cycles (last error: %s)",
+                                dev.serial_number,
+                                dev.slave_id,
+                                streak,
+                                last_err,
+                            )
+
+        if self.client.modbus is not None and attempted_models > 0:
+            if polled_count > 0:
+                with self._cond:
+                    self._consecutive_failed_tiers = 0
+                    self._modbus_connected = True
+            else:
+                with self._cond:
+                    self._consecutive_failed_tiers += 1
+                    failed_tiers = self._consecutive_failed_tiers
+                    transport_errs = self._consecutive_transport_errors
+                    should_reconnect = (
+                        failed_tiers >= self.offline_threshold
+                        or transport_errs >= self.offline_threshold
+                    )
+                    was_connected = self._modbus_connected
+                    if should_reconnect:
+                        self._modbus_connected = False
+                if should_reconnect:
+                    if was_connected:
+                        any_availability_change = True
+                        logger.warning(
+                            "Modbus connectivity lost across all devices (%d consecutive failed poll cycles, %d transport errors)",
+                            failed_tiers,
+                            transport_errs,
+                        )
+                    self._maybe_reconnect_modbus(reason=f"{failed_tiers} consecutive failed poll cycles")
+
+        if any_availability_change and self.client.bridge:
+            try:
+                self.client.bridge.check_availability()
+            except Exception as be:
+                logger.debug("Error checking HA availability after offline transition: %s", be)
 
         now = time.time()
         with self._cond:
@@ -518,50 +616,177 @@ class TieredModbusPoller:
         logger.debug("Completed Modbus poll for tier '%s': %d/%d models updated", tier_str, polled_count, attempted_models)
         return polled_count
 
-    def poll_device_model(self, slave_id: int, serial_number: str, model_id: int) -> bool:
+    def _maybe_rescan_device(self, slave_id: int, serial_number: str, reason: str) -> bool:
+        """Invalidate and rescan SunSpec model definitions for a single slave, subject to cooldown."""
+        if not self.client.modbus:
+            return False
+        with self._cond:
+            now = self._clock()
+            last_rescan = self._device_last_rescan.get(serial_number, 0.0)
+            if last_rescan > 0.0 and (now - last_rescan) < self.rescan_cooldown:
+                return False
+            self._device_last_rescan[serial_number] = now
+            self._rescan_count += 1
+
+        logger.warning("Rescanning SunSpec model map for %s (slave %d): %s", serial_number, slave_id, reason)
+        rescanned = self.client.modbus.rescan_device(slave_id, full_model_read=False)
+        if not rescanned:
+            return False
+
+        models = getattr(rescanned, "models", None) or {}
+        if 1 in models or "common" in models:
+            try:
+                m1 = self.client.modbus.read_model_block(rescanned, 1)
+                if m1 and hasattr(rescanned, "common") and rescanned.common:
+                    sn_pt = getattr(rescanned.common[0], "SN", None)
+                    live_sn = (
+                        str(sn_pt.value).strip()
+                        if (sn_pt is not None and getattr(sn_pt, "value", None) is not None)
+                        else ""
+                    )
+                    if live_sn and live_sn not in ("0", "None") and live_sn.upper() != serial_number.strip().upper():
+                        logger.warning(
+                            "Device serial mismatch after rescan on slave %d (cached=%s, live=%s); triggering full Modbus rescan",
+                            slave_id,
+                            serial_number,
+                            live_sn,
+                        )
+                        self.client.rescan_devices()
+                        return False
+            except Exception as e:
+                logger.debug("Could not verify Model 1 serial during rescan of slave %d: %s", slave_id, e)
+
+        supported = [mid for mid in models.keys() if isinstance(mid, int)]
+        if supported:
+            self.client.state.set_supported_models(serial_number, supported)
+            with self._cond:
+                self._ever_supported_models.setdefault(serial_number, set()).update(supported)
+            self.refresh_model_resolutions()
+        return True
+
+    def _maybe_reconnect_modbus(self, reason: str) -> bool:
+        """Reset Modbus socket and force-rebuild SSH tunnel, subject to reconnect_cooldown."""
+        if not self.client.modbus:
+            return False
+        with self._cond:
+            now = self._clock()
+            if self._last_reconnect_attempt > 0.0 and (now - self._last_reconnect_attempt) < self.reconnect_cooldown:
+                return False
+            self._last_reconnect_attempt = now
+            self._reconnect_count += 1
+
+        logger.warning("Modbus connectivity lost (%s); resetting Modbus connection and SSH tunnel...", reason)
+        if callable(getattr(self.client.modbus, "reset_connection", None)):
+            self.client.modbus.reset_connection(force_tunnel=True, reason=reason)
+        return True
+
+    def poll_device_model(
+        self,
+        slave_id: int,
+        serial_number: str,
+        model_id: int,
+        _allow_rescan: bool = True,
+    ) -> bool:
         """Read a single SunSpec model block for a device and update StateStore."""
         if not self.client.modbus:
             return False
+
+        dev = self.client.state.get_device(serial_number)
+        if dev and dev.supported_models:
+            with self._cond:
+                self._ever_supported_models.setdefault(serial_number, set()).update(dev.supported_models)
 
         try:
             tcp_dev = self.client.modbus.get_or_create_device(slave_id)
             if not tcp_dev.models:
                 tcp_dev = self.client.modbus.scan_device(slave_id, full_model_read=False)
                 if not tcp_dev:
+                    with self._cond:
+                        self._device_last_error[serial_number] = f"Device {slave_id} SunSpec scan failed (no response)"
                     return False
 
-            if model_id in tcp_dev.models:
-                models_list = tcp_dev.models.get(model_id) or []
-                num_instances = len(models_list) if isinstance(models_list, (list, tuple)) else 1
-                any_read = False
-                for idx in range(max(1, num_instances)):
-                    model_inst = self.client.modbus.read_model_block(tcp_dev, model_id, index=idx)
-                    if model_inst:
-                        raw_pts = {p_name: p.value for p_name, p in model_inst.points.items()}
-                        comp_pts = {p_name: safe_point_cvalue(p) for p_name, p in model_inst.points.items()}
-                        inc_bulk = bool(getattr(getattr(self.client, "config", None), "include_bulk_table_groups", False))
-                        groups_data = extract_model_groups(
-                            model_inst,
-                            model_id,
-                            include_bulk_tables=inc_bulk,
-                        )
-                        self.client.state.update_from_modbus_points(
-                            serial_number,
-                            model_id,
-                            raw_values=raw_pts,
-                            computed_values=comp_pts,
-                            instance_index=idx,
-                            groups_data=groups_data,
-                            include_bulk_tables=inc_bulk,
-                        )
-                        any_read = True
-                return any_read
+            if model_id not in tcp_dev.models:
+                with self._cond:
+                    ever_supported = model_id in self._ever_supported_models.get(serial_number, set())
+                if _allow_rescan and ever_supported:
+                    if self._maybe_rescan_device(
+                        slave_id,
+                        serial_number,
+                        reason=f"previously supported model {model_id} missing from cached map",
+                    ):
+                        return self.poll_device_model(slave_id, serial_number, model_id, _allow_rescan=False)
+                return False
+
+            models_list = tcp_dev.models.get(model_id) or []
+            num_instances = len(models_list) if isinstance(models_list, (list, tuple)) else 1
+            any_read = False
+            for idx in range(max(1, num_instances)):
+                model_inst = self.client.modbus.read_model_block(tcp_dev, model_id, index=idx)
+                if model_inst:
+                    raw_pts = {p_name: p.value for p_name, p in model_inst.points.items()}
+                    comp_pts = {p_name: safe_point_cvalue(p) for p_name, p in model_inst.points.items()}
+                    inc_bulk = bool(getattr(getattr(self.client, "config", None), "include_bulk_table_groups", False))
+                    groups_data = extract_model_groups(
+                        model_inst,
+                        model_id,
+                        include_bulk_tables=inc_bulk,
+                    )
+                    self.client.state.update_from_modbus_points(
+                        serial_number,
+                        model_id,
+                        raw_values=raw_pts,
+                        computed_values=comp_pts,
+                        instance_index=idx,
+                        groups_data=groups_data,
+                        include_bulk_tables=inc_bulk,
+                    )
+                    any_read = True
+
+            if any_read:
+                with self._cond:
+                    self._consecutive_transport_errors = 0
+                    self._last_modbus_success = self._clock()
+                    was_modbus_connected = self._modbus_connected
+                    self._modbus_connected = True
+                    self._ever_supported_models.setdefault(serial_number, set()).add(model_id)
+                    needs_recovery_rescan = serial_number in self._device_needs_rescan
+                    if needs_recovery_rescan:
+                        self._device_needs_rescan.discard(serial_number)
+                changed_online = self.client.state.set_device_online(serial_number, True)
+                if changed_online:
+                    logger.info("Device %s (slave %d) Modbus connectivity restored", serial_number, slave_id)
+                if (changed_online or not was_modbus_connected) and self.client.bridge:
+                    try:
+                        self.client.bridge.check_availability()
+                    except Exception as be:
+                        logger.debug("Error checking HA availability on recovery: %s", be)
+                if needs_recovery_rescan:
+                    self._maybe_rescan_device(
+                        slave_id,
+                        serial_number,
+                        reason="device recovered after offline period",
+                    )
+            return any_read
         except Exception as e:
             with self._cond:
                 self.poll_counts["errors"] = self.poll_counts.get("errors", 0) + 1
                 err_cnt = self.poll_counts["errors"]
+                self._device_last_error[serial_number] = str(e)
+                if is_transport_error(e):
+                    self._consecutive_transport_errors += 1
+
+            if _allow_rescan and is_address_exception(e):
+                if self._maybe_rescan_device(
+                    slave_id,
+                    serial_number,
+                    reason=f"Modbus exception 2 on model {model_id}",
+                ):
+                    return self.poll_device_model(slave_id, serial_number, model_id, _allow_rescan=False)
+
             if err_cnt % 20 == 1:
                 logger.warning("Repeated Modbus read failure on model %s (slave %d, %s): %s (total errors: %d)", model_id, slave_id, serial_number, e, err_cnt)
+            elif is_device_unavailable_exception(e):
+                logger.debug("Downstream device %s (slave %d) unavailable reading model %s: %s", serial_number, slave_id, model_id, e)
             else:
                 logger.debug("Failed reading model %s on slave %d (%s): %s", model_id, slave_id, serial_number, e)
 
@@ -680,6 +905,14 @@ class TieredModbusPoller:
                     "config": {k: list(v) for k, v in self.config_models.items()},
                     "slow": {k: list(v) for k, v in self.slow_models.items()},
                 },
+                "connectivity": {
+                    "modbus_connected": self._modbus_connected,
+                    "last_modbus_success": self._last_modbus_success,
+                    "consecutive_failed_tiers": self._consecutive_failed_tiers,
+                    "consecutive_transport_errors": self._consecutive_transport_errors,
+                    "reconnect_count": self._reconnect_count,
+                    "rescan_count": self._rescan_count,
+                },
             }
 
     def _worker_loop(self):
@@ -750,6 +983,20 @@ class TieredModbusPoller:
                         self.poll_tier(tier_enum)
                     except Exception as e:
                         logger.error("Error during %s tier poll: %s", tier_key, e)
+
+            mqtt_client = self.client.mqtt
+            if (
+                mqtt_client
+                and not getattr(self.client, "is_mock", False)
+                and callable(getattr(mqtt_client, "check_health_and_reconnect", None))
+            ):
+                try:
+                    mqtt_client.check_health_and_reconnect(
+                        stale_timeout=self.mqtt_stale_timeout,
+                        reconnect_cooldown=self.reconnect_cooldown,
+                    )
+                except Exception as me:
+                    logger.debug("Error checking internal MQTT connectivity: %s", me)
 
             bridge = self.client.bridge
             if bridge:

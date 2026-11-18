@@ -114,6 +114,9 @@ class HomeAssistantBridge:
         self._payload_info_cache: Dict[str, Dict[str, Any]] = {}
         self._device_online_state: Dict[str, str] = {}
         self._mqttc: Optional[mqtt.Client] = None
+        self._ha_mqtt_connected: bool = False
+        self._ha_disconnected_since: float = 0.0
+        self._ha_last_reconnect_attempt: float = 0.0
         self._cmd_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="PwrCellHACmd")
         self._lock = threading.RLock()
         self._running = False
@@ -125,11 +128,33 @@ class HomeAssistantBridge:
         if self.client.modbus and getattr(self.client.modbus, "tunnel", None) is not None:
             if not self.client.modbus.tunnel.is_active:
                 return False
+        if not getattr(self.client, "is_mock", False) and getattr(dev, "device_type", None) == "rebus_beacon":
+            mb_down = (
+                self.client.poller is not None
+                and not getattr(self.client.poller, "modbus_connected", True)
+            )
+            mqtt_down = (
+                self.client.mqtt is None
+                or (
+                    callable(getattr(self.client.mqtt, "is_healthy", None))
+                    and not self.client.mqtt.is_healthy()
+                )
+            )
+            if mb_down and mqtt_down:
+                return False
         last_seen = getattr(dev, "last_seen", 0.0) or 0.0
         if last_seen > 0.0 and self.stale_timeout > 0.0:
             if (self._clock() - last_seen) > self.stale_timeout:
                 return False
         return True
+
+    def get_status(self) -> Dict[str, Any]:
+        """Return connectivity status summary for the Home Assistant MQTT bridge."""
+        with self._lock:
+            return {
+                "connected": self._ha_mqtt_connected,
+                "running": self._running,
+            }
 
     def _publish_device_availability(self, dev: Any, force: bool = False):
         """Publish per-device online/offline status when changed or forced."""
@@ -148,6 +173,38 @@ class HomeAssistantBridge:
         """Check freshness and transport health across all devices and publish updated availability."""
         for dev in self.client.state.get_devices_snapshot():
             self._publish_device_availability(dev, force=False)
+
+        with self._lock:
+            running = self._running
+            mqttc = self._mqttc
+            connected = self._ha_mqtt_connected
+            disconnected_since = self._ha_disconnected_since
+            last_attempt = self._ha_last_reconnect_attempt
+            now = self._clock()
+            should_reconnect = (
+                running
+                and mqttc is not None
+                and not connected
+                and disconnected_since > 0.0
+                and (now - disconnected_since) >= 60.0
+                and (last_attempt == 0.0 or (now - last_attempt) >= 60.0)
+                and self.mqtt_config is not None
+                and bool(self.mqtt_config.host)
+            )
+            if should_reconnect:
+                self._ha_last_reconnect_attempt = now
+
+        if should_reconnect:
+            logger.warning(
+                "Home Assistant MQTT broker disconnected for %.0fs; attempting async reconnect to %s:%s",
+                now - disconnected_since,
+                self.mqtt_config.host,
+                self.mqtt_config.port,
+            )
+            try:
+                mqttc.connect_async(self.mqtt_config.host, self.mqtt_config.port)
+            except Exception as e:
+                logger.warning("Failed triggering HA MQTT async reconnect: %s", e)
 
     def start(self):
         """Connect to external Home Assistant MQTT broker and publish discovery."""
@@ -183,11 +240,18 @@ class HomeAssistantBridge:
             self._mqttc.on_disconnect = self._on_disconnect
 
             logger.info("Connecting to Home Assistant MQTT broker on %s:%d as client '%s'", self.mqtt_config.host, self.mqtt_config.port, client_id)
+            self._ha_mqtt_connected = False
+            self._ha_disconnected_since = self._clock()
             self._mqttc.loop_start()
             try:
                 self._mqttc.connect(self.mqtt_config.host, self.mqtt_config.port)
             except Exception as e:
                 logger.warning("Initial connection to Home Assistant MQTT broker failed (%s); client loop will retry", e)
+                self._ha_disconnected_since = self._clock()
+                try:
+                    self._mqttc.connect_async(self.mqtt_config.host, self.mqtt_config.port)
+                except Exception:
+                    pass
 
             # Subscribe to StateStore updates and compound view updates
             self.client.state.subscribe(self._on_field_update)
@@ -201,6 +265,7 @@ class HomeAssistantBridge:
                 self._cmd_executor.shutdown(wait=False)
                 return
             self._running = False
+            self._ha_mqtt_connected = False
             mqttc = self._mqttc
             self._mqttc = None
 
@@ -223,6 +288,9 @@ class HomeAssistantBridge:
         reason_code: ReasonCode,
         properties: Properties,
     ):
+        with self._lock:
+            self._ha_mqtt_connected = True
+            self._ha_disconnected_since = 0.0
         logger.info("Connected to Home Assistant MQTT broker: %s", reason_code)
         # Publish bridge online status and subscribe to Home Assistant birth topic
         client.publish(f"{self.base_topic}/status", "online", qos=1, retain=True)
@@ -237,6 +305,10 @@ class HomeAssistantBridge:
         reason_code: ReasonCode,
         properties: Properties,
     ):
+        with self._lock:
+            self._ha_mqtt_connected = False
+            if self._ha_disconnected_since == 0.0:
+                self._ha_disconnected_since = self._clock()
         logger.warning("Disconnected from Home Assistant MQTT broker: %s", reason_code)
 
     def reload_config_and_republish(self):
@@ -493,8 +565,12 @@ class HomeAssistantBridge:
                 ha_prefix=self.discovery_prefix,
             )
             gw_config_topic = gw_payload_info["config_topic"]
+            gw_status = "online" if self._is_device_available(gateway) else "offline"
+            gw_sn_lower = gateway.serial_number.strip().lower()
+            with self._lock:
+                self._device_online_state[gw_sn_lower] = gw_status
             self._mqttc.publish(gw_config_topic, json.dumps(gw_payload_info["payload"]), retain=True)
-            self._mqttc.publish(gw_payload_info["state_topic"], "online", retain=True)
+            self._mqttc.publish(gw_payload_info["state_topic"], gw_status, retain=True)
             current_discovery_topics.add(gw_config_topic)
             if gw_payload_info.get("state_topic"):
                 current_state_topics.add(gw_payload_info["state_topic"])

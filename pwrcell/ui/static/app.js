@@ -338,6 +338,31 @@ function updateOverviewUI(data) {
       }
     }
   }
+
+  const connText = document.getElementById('connStatusText');
+  const liveInd = document.getElementById('liveIndicator');
+  if (connText && liveInd && !data.is_mock && data.connectivity) {
+    const c = data.connectivity;
+    const offlineCount = Array.isArray(c.offline_devices) ? c.offline_devices.length : 0;
+    const tunnelDown = c.tunnel_active === false;
+    const modbusDown = c.modbus_connected === false;
+    const mqttDown = c.mqtt_healthy === false || c.mqtt_connected === false;
+    liveInd.classList.remove('live', 'degraded', 'disconnected');
+    if (tunnelDown || (modbusDown && mqttDown)) {
+      connText.textContent = 'Disconnected';
+      liveInd.classList.add('disconnected');
+    } else if (modbusDown || mqttDown || offlineCount > 0) {
+      const parts = [];
+      if (modbusDown) parts.push('Modbus Down');
+      if (mqttDown) parts.push('MQTT Down');
+      if (offlineCount > 0) parts.push(`${offlineCount} Offline`);
+      connText.textContent = parts.join(' / ');
+      liveInd.classList.add('degraded');
+    } else {
+      connText.textContent = 'Live Feed';
+      liveInd.classList.add('live');
+    }
+  }
 }
 
 // Fetch Saved HA Config
@@ -392,8 +417,9 @@ function renderDeviceSidebar() {
   }
 
   state.devices.forEach(dev => {
+    const isOffline = dev.online === false;
     const card = document.createElement('div');
-    card.className = `device-card ${state.activeDevice?.serial_number === dev.serial_number ? 'active' : ''}`;
+    card.className = `device-card ${state.activeDevice?.serial_number === dev.serial_number ? 'active' : ''}${isOffline ? ' offline' : ''}`;
     card.dataset.sn = dev.serial_number;
 
     const typeIcons = {
@@ -404,10 +430,17 @@ function renderDeviceSidebar() {
       icm: '🎛️'
     };
 
+    const offlineBadge = isOffline
+      ? `<span class="device-offline-badge" title="${escapeHtml(dev.last_error || 'Device offline')}">Offline</span>`
+      : '';
+
     card.innerHTML = `
       <div class="device-card-header">
         <span class="device-title">${typeIcons[dev.device_type] || '📦'} ${dev.model_name}</span>
-        <span class="device-type-tag">${dev.device_type.replace('_', ' ')}</span>
+        <div style="display: flex; align-items: center; gap: 4px;">
+          ${offlineBadge}
+          <span class="device-type-tag">${dev.device_type.replace('_', ' ')}</span>
+        </div>
       </div>
       <div class="device-card-body">
         <span>SN: ${dev.serial_number}</span> &bull; <span>ID: ${dev.slave_id ?? 'N/A'}</span>

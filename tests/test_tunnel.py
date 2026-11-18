@@ -268,6 +268,108 @@ class TestPwrCellTunnel(unittest.TestCase):
                 else:
                     os.environ["PWRCELL_CONFIG"] = old_env
 
+    def test_force_reconnect_tears_down_active_tunnel_invokes_callbacks_and_respects_cooldown(self):
+        """force_reconnect() rebuilds an active tunnel, notifies callbacks outside locks, and respects cooldown."""
+        tunnel = PwrCellTunnel(self.config)
+        old_server = MagicMock()
+        old_server.is_active = True
+        old_server.is_alive = True
+
+        new_server = MagicMock()
+        new_server.is_active = True
+        new_server.is_alive = True
+
+        tunnel._running = True
+        tunnel._server = old_server
+        tunnel.modbus_port = 5020
+        tunnel.mqtt_port = 18830
+
+        callback_configs = []
+        tunnel.register_reconnect_callback(lambda cfg: callback_configs.append(cfg))
+
+        with patch.object(
+            tunnel,
+            "_create_and_start_server",
+            return_value=(new_server, "127.0.0.1", 5021, 18831),
+        ) as mock_create, patch("pwrcell.tunnel.time.monotonic", side_effect=[100.0, 105.0]):
+            res1 = tunnel.force_reconnect(reason="stalled stream", min_interval_sec=15.0)
+            self.assertTrue(res1)
+            old_server.stop.assert_called_once_with(force=True)
+            mock_create.assert_called_once()
+            self.assertEqual(tunnel.modbus_port, 5021)
+            self.assertEqual(tunnel.mqtt_port, 18831)
+            self.assertEqual(len(callback_configs), 1)
+            self.assertEqual(callback_configs[0].mqtt_port, 18831)
+            self.assertEqual(tunnel.get_status()["reconnect_count"], 1)
+
+            # Second call within 15s cooldown (105.0 - 100.0 = 5.0 < 15.0) must be skipped
+            res2 = tunnel.force_reconnect(reason="too soon", min_interval_sec=15.0)
+            self.assertTrue(res2)
+            self.assertEqual(mock_create.call_count, 1)
+            self.assertEqual(len(callback_configs), 1)
+
+    def test_mqtt_client_tunnel_reconnected_callback_and_health_watchdog(self):
+        """MqttClient detects port drift, prolonged disconnect escalation, and silent zombie streams."""
+        from pwrcell.mqtt import MqttClient
+        from pwrcell.tunnel import TunnelConfig
+
+        fake_now = [1000.0]
+        current_port = [18830]
+        mock_manager = MagicMock()
+        mock_manager.ensure_active.return_value = True
+        mock_manager.force_reconnect.return_value = True
+        mock_manager.get_config.side_effect = lambda: TunnelConfig(
+            host="127.0.0.1", mqtt_port=current_port[0], modbus_port=5020, manager=mock_manager
+        )
+
+        mock_mqttc = MagicMock()
+        with patch("pwrcell.mqtt.mqtt.Client", return_value=mock_mqttc):
+            client = MqttClient(mock_manager.get_config(), clock=lambda: fake_now[0])
+            client.start()
+            try:
+                # 1. _on_tunnel_reconnected re-points Paho to new port
+                client._on_tunnel_reconnected(TunnelConfig(host="127.0.0.1", mqtt_port=18831))
+                mock_mqttc.connect_async.assert_called_with("127.0.0.1", 18831)
+                self.assertEqual(client.get_status()["reconnect_count"], 1)
+
+                # 2. Simulate healthy connection + message at t=1000, then silence > stale_timeout (120s)
+                current_port[0] = 18831
+                mock_mqttc.on_connect(mock_mqttc, None, None, 0, None)
+                self.assertTrue(client.is_connected)
+                self.assertTrue(client.is_healthy(stale_timeout=120.0))
+
+                fake_now[0] = 1130.0  # 130s silent > 120s
+                self.assertFalse(client.is_healthy(stale_timeout=120.0))
+                mock_manager.force_reconnect.reset_mock()
+                triggered = client.check_health_and_reconnect(stale_timeout=120.0, reconnect_cooldown=30.0)
+                self.assertTrue(triggered)
+                mock_manager.force_reconnect.assert_called_once()
+
+                # 3. Prolonged disconnect: 1st failure calls ensure_active, 2nd escalates to force_reconnect
+                import time as _time
+                mock_mqttc.on_disconnect(mock_mqttc, None, None, 1, None)
+                _time.sleep(0.05)  # allow MqttTunnelReconnect thread to finish before resetting mocks
+                mock_manager.ensure_active.reset_mock()
+                mock_manager.force_reconnect.reset_mock()
+                fake_now[0] = 1200.0
+                self.assertTrue(client.check_health_and_reconnect(stale_timeout=120.0, reconnect_cooldown=30.0))
+                mock_manager.ensure_active.assert_called_once()
+                mock_manager.force_reconnect.assert_not_called()
+
+                fake_now[0] = 1235.0
+                self.assertTrue(client.check_health_and_reconnect(stale_timeout=120.0, reconnect_cooldown=30.0))
+                mock_manager.force_reconnect.assert_called_once()
+
+                # 4. Port drift while connected triggers reconnect
+                mock_mqttc.on_connect(mock_mqttc, None, None, 0, None)
+                current_port[0] = 18899
+                fake_now[0] = 1270.0
+                mock_mqttc.connect_async.reset_mock()
+                self.assertTrue(client.check_health_and_reconnect(stale_timeout=120.0, reconnect_cooldown=30.0))
+                mock_mqttc.connect_async.assert_called_with("127.0.0.1", 18899)
+            finally:
+                client.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

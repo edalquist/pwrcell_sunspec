@@ -1186,6 +1186,52 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertEqual(resp_dl.mimetype, "text/yaml")
         self.assertIn("attachment; filename=groupings.yaml", resp_dl.headers.get("Content-Disposition", ""))
 
+    def test_connectivity_status_in_overview_and_device_online_fields(self):
+        """GET /api/overview exposes connectivity status and /api/devices exposes online/error state."""
+        resp_ov = self.test_client.get("/api/overview")
+        self.assertEqual(resp_ov.status_code, 200)
+        ov_data = resp_ov.get_json()
+        self.assertIn("connectivity", ov_data)
+        conn = ov_data["connectivity"]
+        for key in (
+            "tunnel_active",
+            "modbus_connected",
+            "mqtt_connected",
+            "mqtt_healthy",
+            "mqtt_last_message_age",
+            "ha_mqtt_connected",
+            "offline_devices",
+        ):
+            self.assertIn(key, conn)
+        self.assertEqual(conn["offline_devices"], [])
+
+        resp_devs = self.test_client.get("/api/devices")
+        self.assertEqual(resp_devs.status_code, 200)
+        devs = resp_devs.get_json()
+        for dev in devs:
+            self.assertIn("online", dev)
+            self.assertTrue(dev["online"])
+            self.assertIsNone(dev["last_error"])
+            self.assertEqual(dev["consecutive_errors"], 0)
+
+        try:
+            self.client.state.set_device_online(
+                "000100082128",
+                False,
+                error="Modbus exception 2",
+                consecutive_errors=3,
+            )
+            ov2 = self.test_client.get("/api/overview").get_json()
+            self.assertIn("000100082128", ov2["connectivity"]["offline_devices"])
+
+            devs2 = self.test_client.get("/api/devices").get_json()
+            bat = next(d for d in devs2 if d["serial_number"] == "000100082128")
+            self.assertFalse(bat["online"])
+            self.assertEqual(bat["last_error"], "Modbus exception 2")
+            self.assertEqual(bat["consecutive_errors"], 3)
+        finally:
+            self.client.state.set_device_online("000100082128", True)
+
 
 if __name__ == "__main__":
     unittest.main()

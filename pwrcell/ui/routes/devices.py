@@ -81,6 +81,37 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
         ha_selected = qualify_legacy_ha_config(load_ha_config(), client.state)
         from ... import __version__
 
+        tunnel_mgr = getattr(client.modbus, "tunnel", None) if client.modbus else None
+        tunnel_active = bool(tunnel_mgr.is_active) if tunnel_mgr is not None else None
+        modbus_connected = bool(client.poller.modbus_connected) if client.poller else True
+        mqtt_client = client.mqtt
+        mqtt_status = (
+            mqtt_client.get_status()
+            if (mqtt_client and callable(getattr(mqtt_client, "get_status", None)))
+            else None
+        )
+        mqtt_connected = (
+            bool(mqtt_client.is_connected)
+            if (mqtt_client and hasattr(mqtt_client, "is_connected"))
+            else (bool(mqtt_status.get("connected")) if mqtt_status else None)
+        )
+        mqtt_healthy = (
+            bool(mqtt_client.is_healthy())
+            if (mqtt_client and callable(getattr(mqtt_client, "is_healthy", None)))
+            else (bool(mqtt_status.get("healthy")) if mqtt_status else None)
+        )
+        mqtt_last_msg_age = mqtt_status.get("last_message_age_seconds") if mqtt_status else None
+        ha_mqtt_connected = (
+            bool(client.bridge.get_status().get("connected"))
+            if (client.bridge and callable(getattr(client.bridge, "get_status", None)))
+            else None
+        )
+        offline_devices = [
+            d.serial_number
+            for d in client.state.get_devices_snapshot()
+            if not getattr(d, "online", True)
+        ]
+
         return jsonify({
             "version": __version__,
             "is_mock": client.is_mock,
@@ -94,6 +125,15 @@ def create_blueprint(client: PwrcellClient) -> Blueprint:
             "battery_soc": soc,
             "battery_soh": soh,
             "system_mode": mode,
+            "connectivity": {
+                "tunnel_active": tunnel_active,
+                "modbus_connected": modbus_connected,
+                "mqtt_connected": mqtt_connected,
+                "mqtt_healthy": mqtt_healthy,
+                "mqtt_last_message_age": mqtt_last_msg_age,
+                "ha_mqtt_connected": ha_mqtt_connected,
+                "offline_devices": offline_devices,
+            },
         })
 
     @bp.route("/api/devices")

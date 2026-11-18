@@ -424,6 +424,282 @@ class TestTieredModbusPoller(unittest.TestCase):
         finally:
             poller.stop()
 
+    @staticmethod
+    def _make_mock_model(points_dict):
+        m = MagicMock()
+        pts = {}
+        for name, (raw_val, comp_val) in points_dict.items():
+            p = MagicMock()
+            p.value = raw_val
+            p.cvalue = comp_val
+            p.sf_required = False
+            pts[name] = p
+        m.points = pts
+        return m
+
+    def test_modbus_exception_2_triggers_single_rescan_and_respects_cooldown(self):
+        """Modbus exception 2 (Illegal Data Address) must trigger a rescan+retry and honor rescan_cooldown."""
+        dev = self.client.state.register_device("000100082128", 9, "battery", "Battery")
+        self.client.state.set_supported_models("000100082128", [802, 64252])
+
+        now = [1000.0]
+        poller = TieredModbusPoller(
+            client=self.client,
+            enabled=False,
+            rescan_cooldown=60.0,
+            clock=lambda: now[0],
+        )
+
+        m802 = self._make_mock_model({"SoC": (80, 80.0)})
+        m64252_new = self._make_mock_model({"MaxCellV": (3450, 3.45)})
+
+        tcp_dev_old = MagicMock()
+        tcp_dev_old.models = {802: [m802], 64252: [self._make_mock_model({"MaxCellV": (0, 0.0)})]}
+        tcp_dev_new = MagicMock()
+        tcp_dev_new.models = {802: [m802], 64252: [m64252_new]}
+
+        current_dev = [tcp_dev_old]
+        mock_mb = MagicMock()
+        mock_mb.get_or_create_device.side_effect = lambda sid: current_dev[0]
+
+        def _do_rescan(sid, full_model_read=False):
+            current_dev[0] = tcp_dev_new
+            return tcp_dev_new
+
+        mock_mb.rescan_device.side_effect = _do_rescan
+        mock_mb.read_model_block.side_effect = [
+            RuntimeError("Modbus exception 2: addr: 40316 count: 114"),
+            m64252_new,
+        ]
+        self.client.modbus = mock_mb
+
+        # 1. First Modbus exception 2 triggers rescan + retry and succeeds
+        ok = poller.poll_device_model(9, "000100082128", 64252)
+        self.assertTrue(ok)
+        mock_mb.rescan_device.assert_called_once_with(9, full_model_read=False)
+        self.assertEqual(sorted(dev.supported_models), [802, 64252])
+
+        # 2. Another Modbus exception 2 within cooldown must NOT rescan again
+        now[0] = 1015.0
+        mock_mb.read_model_block.side_effect = RuntimeError("Modbus exception 2: addr: 40316 count: 114")
+        ok2 = poller.poll_device_model(9, "000100082128", 64252)
+        self.assertFalse(ok2)
+        self.assertEqual(mock_mb.rescan_device.call_count, 1)
+
+        # 3. Advancing past rescan_cooldown allows another rescan+retry
+        now[0] = 1070.0
+        mock_mb.read_model_block.side_effect = [
+            RuntimeError("Modbus exception 2: addr: 40316 count: 114"),
+            m64252_new,
+        ]
+        ok3 = poller.poll_device_model(9, "000100082128", 64252)
+        self.assertTrue(ok3)
+        self.assertEqual(mock_mb.rescan_device.call_count, 2)
+
+    def test_rescan_serial_mismatch_triggers_full_client_rescan(self):
+        """If Model 1 serial changes after a slave rescan, _maybe_rescan_device triggers full client rescan."""
+        self.client.state.register_device("000100082128", 9, "battery", "Battery")
+        poller = TieredModbusPoller(client=self.client, enabled=False)
+
+        m1 = MagicMock()
+        sn_pt = MagicMock()
+        sn_pt.value = "DIFFERENT_SN"
+        m1.SN = sn_pt
+
+        rescanned = MagicMock()
+        rescanned.models = {1: [m1], 802: [MagicMock()]}
+        rescanned.common = [m1]
+
+        mock_mb = MagicMock()
+        mock_mb.rescan_device.return_value = rescanned
+        mock_mb.read_model_block.return_value = m1
+        self.client.modbus = mock_mb
+        self.client.rescan_devices = MagicMock()
+
+        ok = poller._maybe_rescan_device(9, "000100082128", reason="test serial mismatch")
+        self.assertFalse(ok)
+        self.client.rescan_devices.assert_called_once_with()
+
+    def test_repeated_device_failures_mark_offline_and_recovery_restores_and_rescans(self):
+        """Repeated per-device Modbus failures mark the device offline; recovery restores online and rescans."""
+        inv = self.client.state.register_device("0001000714E9", 8, "inverter", "Inverter")
+        pv = self.client.state.register_device("0001000361F4", 7, "pv_link", "PV Link")
+        self.client.state.set_supported_models("0001000714E9", [102])
+        self.client.state.set_supported_models("0001000361F4", [64207])
+
+        now = [1000.0]
+        poller = TieredModbusPoller(
+            client=self.client,
+            enabled=False,
+            fast_models={"inverter": [102], "pv_link": [64207]},
+            config_models={},
+            slow_models={},
+            offline_threshold=3,
+            rescan_cooldown=60.0,
+            clock=lambda: now[0],
+        )
+
+        m_inv = self._make_mock_model({"W": (2500, 2500.0)})
+        m_pv = self._make_mock_model({"V": (385, 385.0)})
+        tcp_inv = MagicMock()
+        tcp_inv.models = {102: [m_inv]}
+        tcp_pv = MagicMock()
+        tcp_pv.models = {64207: [m_pv]}
+
+        pv_should_fail = [True]
+        mock_mb = MagicMock()
+        mock_mb.get_or_create_device.side_effect = lambda sid: tcp_inv if sid == 8 else tcp_pv
+        mock_mb.rescan_device.return_value = tcp_pv
+
+        def _read_block(tcp_dev, mid, index=0):
+            if tcp_dev is tcp_inv:
+                return m_inv
+            if pv_should_fail[0]:
+                raise RuntimeError("Modbus exception 3: addr: 40070 count: 14")
+            return m_pv
+
+        mock_mb.read_model_block.side_effect = _read_block
+        self.client.modbus = mock_mb
+        self.client.bridge = MagicMock()
+
+        # Cycles 1 & 2: PV Link still online
+        for _ in range(2):
+            now[0] += 12.0
+            poller.poll_tier(PollingTier.FAST)
+            self.assertTrue(pv.online)
+            self.assertTrue(inv.online)
+            self.client.bridge.check_availability.assert_not_called()
+
+        # Cycle 3: reaches offline_threshold=3 -> PV Link marked offline, inverter stays online
+        now[0] += 12.0
+        poller.poll_tier(PollingTier.FAST)
+        self.assertFalse(pv.online)
+        self.assertEqual(pv.consecutive_errors, 3)
+        self.assertIn("Modbus exception 3", pv.last_error or "")
+        self.assertTrue(inv.online)
+        self.assertTrue(poller.modbus_connected)
+        self.client.bridge.check_availability.assert_called_once()
+
+        # Cycle 4: PV Link recovers -> marked online again, bridge notified, recovery rescan run
+        now[0] += 12.0
+        pv_should_fail[0] = False
+        poller.poll_tier(PollingTier.FAST)
+        self.assertTrue(pv.online)
+        self.assertEqual(pv.consecutive_errors, 0)
+        self.assertIsNone(pv.last_error)
+        self.assertEqual(self.client.bridge.check_availability.call_count, 2)
+        mock_mb.rescan_device.assert_called_once_with(7, full_model_read=False)
+
+    def test_global_modbus_failure_marks_disconnected_and_triggers_reconnect(self):
+        """When all polled devices fail across offline_threshold cycles, poller flags Modbus down and resets connection."""
+        inv = self.client.state.register_device("INV_01", 8, "inverter", "Inverter")
+        self.client.state.set_supported_models("INV_01", [102])
+
+        now = [1000.0]
+        poller = TieredModbusPoller(
+            client=self.client,
+            enabled=False,
+            fast_models={"inverter": [102]},
+            config_models={},
+            slow_models={},
+            offline_threshold=3,
+            reconnect_cooldown=30.0,
+            clock=lambda: now[0],
+        )
+
+        m_inv = self._make_mock_model({"W": (1000, 1000.0)})
+        tcp_inv = MagicMock()
+        tcp_inv.models = {102: [m_inv]}
+        should_fail = [True]
+
+        mock_mb = MagicMock()
+        mock_mb.get_or_create_device.return_value = tcp_inv
+        mock_mb.rescan_device.return_value = tcp_inv
+        mock_mb.read_model_block.side_effect = (
+            lambda tcp_dev, mid, index=0: (_ for _ in ()).throw(TimeoutError("timed out"))
+            if should_fail[0]
+            else m_inv
+        )
+        self.client.modbus = mock_mb
+        self.client.bridge = MagicMock()
+
+        # Cycles 1 & 2: not yet at offline_threshold
+        for _ in range(2):
+            now[0] += 12.0
+            poller.poll_tier(PollingTier.FAST)
+            self.assertTrue(poller.modbus_connected)
+            mock_mb.reset_connection.assert_not_called()
+
+        # Cycle 3: crosses threshold -> modbus_connected=False and reset_connection(force_tunnel=True)
+        now[0] += 12.0
+        poller.poll_tier(PollingTier.FAST)
+        self.assertFalse(poller.modbus_connected)
+        self.assertFalse(inv.online)
+        mock_mb.reset_connection.assert_called_once()
+        self.assertTrue(mock_mb.reset_connection.call_args.kwargs.get("force_tunnel"))
+        self.client.bridge.check_availability.assert_called_once()
+
+        # Cycle 4 within reconnect_cooldown: must not reset again yet
+        now[0] += 10.0
+        poller.poll_tier(PollingTier.FAST)
+        self.assertEqual(mock_mb.reset_connection.call_count, 1)
+
+        # Cycle 5 past reconnect_cooldown: resets again
+        now[0] += 25.0
+        poller.poll_tier(PollingTier.FAST)
+        self.assertEqual(mock_mb.reset_connection.call_count, 2)
+
+        # Cycle 6: Modbus recovers -> modbus_connected returns True and bridge updated
+        now[0] += 12.0
+        should_fail[0] = False
+        poller.poll_tier(PollingTier.FAST)
+        self.assertTrue(poller.modbus_connected)
+        self.assertTrue(inv.online)
+        self.assertGreaterEqual(self.client.bridge.check_availability.call_count, 2)
+
+    def test_missing_previously_supported_model_triggers_rescan_only_when_ever_supported(self):
+        """A missing previously-supported model triggers a rescan, while a never-supported model does not."""
+        self.client.state.register_device("000100082128", 9, "battery", "Battery")
+        self.client.state.set_supported_models("000100082128", [802, 64252])
+
+        now = [1000.0]
+        poller = TieredModbusPoller(
+            client=self.client,
+            enabled=False,
+            rescan_cooldown=60.0,
+            clock=lambda: now[0],
+        )
+
+        m802 = self._make_mock_model({"SoC": (75, 75.0)})
+        m64252 = self._make_mock_model({"MaxCellV": (3400, 3.4)})
+
+        tcp_dev_old = MagicMock()
+        tcp_dev_old.models = {802: [m802]}  # 64252 temporarily missing from cached map
+        tcp_dev_new = MagicMock()
+        tcp_dev_new.models = {802: [m802], 64252: [m64252]}
+
+        current_dev = [tcp_dev_old]
+        mock_mb = MagicMock()
+        mock_mb.get_or_create_device.side_effect = lambda sid: current_dev[0]
+
+        def _do_rescan(sid, full_model_read=False):
+            current_dev[0] = tcp_dev_new
+            return tcp_dev_new
+
+        mock_mb.rescan_device.side_effect = _do_rescan
+        mock_mb.read_model_block.return_value = m64252
+        self.client.modbus = mock_mb
+
+        # 1. Never-supported model 64299 must NOT trigger a rescan
+        ok_never = poller.poll_device_model(9, "000100082128", 64299)
+        self.assertFalse(ok_never)
+        mock_mb.rescan_device.assert_not_called()
+
+        # 2. Previously-supported model 64252 MUST trigger rescan and succeed on retry
+        ok_prev = poller.poll_device_model(9, "000100082128", 64252)
+        self.assertTrue(ok_prev)
+        mock_mb.rescan_device.assert_called_once_with(9, full_model_read=False)
+
 
 if __name__ == "__main__":
     unittest.main()

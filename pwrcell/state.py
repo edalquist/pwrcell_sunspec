@@ -705,6 +705,8 @@ class UnifiedDevice:
     fields: Dict[str, StateField] = field(default_factory=dict)
     online: bool = True
     last_seen: float = field(default_factory=time.time)
+    last_error: Optional[str] = None
+    consecutive_errors: int = 0
 
     def get_scale_factor_value(self, field: StateField) -> Optional[int]:
         if not field.scale_factor_point:
@@ -778,6 +780,8 @@ class UnifiedDevice:
             "version": self.version,
             "online": self.online,
             "last_seen": self.last_seen,
+            "last_error": self.last_error,
+            "consecutive_errors": self.consecutive_errors,
             "field_count": len(self.fields),
             "supported_models": self.supported_models,
             "models": models_summary,
@@ -880,6 +884,30 @@ class StateStore:
             dev = self.devices.get(serial_number)
             if dev:
                 dev.supported_models = sorted(list(set(dev.supported_models + model_ids)))
+
+    def set_device_online(
+        self,
+        serial_number: str,
+        online: bool,
+        error: Optional[str] = None,
+        consecutive_errors: Optional[int] = None,
+    ) -> bool:
+        """Update device online/error tracking and return True if online state transitioned."""
+        with self._lock:
+            dev = self.get_device(serial_number)
+            if not dev:
+                return False
+            changed = (dev.online != bool(online))
+            dev.online = bool(online)
+            if online:
+                dev.last_error = None
+                dev.consecutive_errors = 0
+            else:
+                if error is not None:
+                    dev.last_error = error
+                if consecutive_errors is not None:
+                    dev.consecutive_errors = consecutive_errors
+            return changed
 
     def update_device_metadata(
         self,

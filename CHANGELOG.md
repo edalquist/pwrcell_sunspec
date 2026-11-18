@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-11-18
+
+### Added
+- **SSH Tunnel Forced Recovery & Reconnect Listeners (`pwrcell/tunnel.py`)**:
+  - Added `PwrCellTunnel.force_reconnect()` with a 15s monotonic cooldown (`_reconnect_count` tracking) to tear down and rebuild wedged SSH tunnel forwards even when `SSHTunnelForwarder.is_active` still reports True.
+  - Added `register_reconnect_callback()` / `unregister_reconnect_callback()` and `get_status()` so downstream transports (`MqttClient`, `SerializedModbusClient`) are notified immediately after every tunnel rebuild.
+- **Internal Beacon MQTT Connectivity & Staleness Watchdog (`pwrcell/mqtt.py`)**:
+  - Added `is_connected`, `last_message_time`, `is_healthy()`, `get_status()`, and `check_health_and_reconnect()` to detect port drift, prolonged broker disconnects (escalating to `force_tunnel=True` on repeated failure), and silent zombie MQTT streams when no telemetry arrives within `mqtt_stale_timeout` (120s).
+  - Registered an automatic tunnel reconnect listener in `MqttClient.start()` (`_on_tunnel_reconnected`) to repoint and reconnect the internal MQTT subscriber whenever the SSH tunnel rebuilds.
+- **Automatic SunSpec Register-Map Rescan & Modbus Connection Recovery (`pwrcell/modbus.py`, `pwrcell/poller.py`)**:
+  - Added `parse_modbus_exception_code()`, `is_address_exception()`, and `is_device_unavailable_exception()` plus `SerializedModbusClient.invalidate_device()`, `rescan_device()`, and `reset_connection()`.
+  - Updated `TieredModbusPoller` (`_maybe_rescan_device`) to automatically invalidate, rescan, and retry once on `Modbus exception 2` (Illegal Data Address) or missing previously-supported models (gated by `rescan_cooldown=60s`), verifying Model 1 serial numbers to catch slave ID shifts via full `client.rescan_devices()`.
+- **Per-Device & Global Offline Tracking (`pwrcell/state.py`, `pwrcell/poller.py`)**:
+  - Added `UnifiedDevice.last_error`, `UnifiedDevice.consecutive_errors`, and `StateStore.set_device_online()` so devices transition to `online=False` after `offline_threshold` (3) consecutive failed poll cycles, mark `modbus_connected=False`, trigger `reset_connection(force_tunnel=True)`, and execute a post-offline recovery rescan when connectivity returns.
+  - Invoked `client.mqtt.check_health_and_reconnect()` from `TieredModbusPoller._worker_loop()` on live runs.
+- **Web Explorer Live Connectivity Diagnostics (`pwrcell/ui/routes/devices.py`, `pwrcell/ui/static/`)**:
+  - Exposed a `"connectivity"` summary (`tunnel_active`, `modbus_connected`, `mqtt_connected`, `mqtt_healthy`, `mqtt_last_message_age`, `ha_mqtt_connected`, `offline_devices`) on `GET /api/overview`, updated the header status indicator (`#liveIndicator` / `#connStatusText`) for degraded/disconnected states, and added offline badges to sidebar device cards.
+- Added unit tests covering tunnel force-reconnect, MQTT health watchdog, Modbus exception classification/rescan, poller offline/recovery flows, Home Assistant bridge availability/async reconnect, and Web Explorer connectivity endpoints in `tests/test_tunnel.py`, `tests/test_modbus.py`, `tests/test_poller.py`, `tests/test_bridge.py`, and `tests/test_ui.py`.
+
+### Fixed
+- **Home Assistant MQTT Availability & Broker Reconnect Resilience (`pwrcell/bridge.py`)**:
+  - Fixed `HomeAssistantBridge.start()` to fall back to `connect_async()` when the initial synchronous `connect()` raises, and added a 60s disconnected reconnect watchdog in `check_availability()` plus `get_status()`.
+  - Updated `_is_device_available()` so non-mock `rebus_beacon` gateways reflect simultaneous Modbus and internal MQTT loss, and fixed `publish_discovery()` to publish computed `"online"` / `"offline"` status instead of hardcoded `"online"`.
+- Synced `SerializedModbusClient._get_shared_client()` port with the active tunnel even when `_shared_client` is `None` and flagged `_socket_reset_needed` safely on tunnel rebuilds (`pwrcell/modbus.py`).
+
 ## [3.2.2] - 2026-11-15
 
 ### Fixed

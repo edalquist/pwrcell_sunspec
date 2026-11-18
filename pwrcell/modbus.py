@@ -10,6 +10,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import queue
+import re
 import socket
 import threading
 import time
@@ -49,6 +50,30 @@ def is_transport_error(exc: Exception) -> bool:
         if token in msg:
             return True
     return False
+
+
+def parse_modbus_exception_code(exc: Exception) -> Optional[int]:
+    """Extract numeric Modbus exception code from an exception instance or message, if present."""
+    code = getattr(exc, "exception_code", None)
+    if isinstance(code, int) and not isinstance(code, bool):
+        return code
+    m = re.search(r"modbus\s+exception\s+(\d+)", str(exc), re.IGNORECASE)
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            return None
+    return None
+
+
+def is_address_exception(exc: Exception) -> bool:
+    """Return True if exc is Modbus exception 2 (Illegal Data Address, e.g. shifted SunSpec map)."""
+    return parse_modbus_exception_code(exc) == 2
+
+
+def is_device_unavailable_exception(exc: Exception) -> bool:
+    """Return True if exc is a Modbus exception indicating an offline/unavailable downstream device (3, 4, 10, 11)."""
+    return parse_modbus_exception_code(exc) in (3, 4, 10, 11)
 
 
 
@@ -237,8 +262,11 @@ class SerializedModbusClient:
         self.worker = SerializedModbusWorker()
         self._devices: Dict[int, ss2_client.SunSpecModbusClientDeviceTCP] = {}
         self._shared_client: Optional[mb.ModbusClientTCP] = None
+        self._socket_reset_needed: bool = False
         self._lock = threading.RLock()
         configure_sunspec_model_paths()
+        if self.tunnel and callable(getattr(self.tunnel, "register_reconnect_callback", None)):
+            self.tunnel.register_reconnect_callback(self._on_tunnel_reconnected)
 
     def __enter__(self):
         self.worker.start()
@@ -250,6 +278,8 @@ class SerializedModbusClient:
 
     def close(self):
         """Disconnect all devices and stop worker thread."""
+        if self.tunnel and callable(getattr(self.tunnel, "unregister_reconnect_callback", None)):
+            self.tunnel.unregister_reconnect_callback(self._on_tunnel_reconnected)
         with self._lock:
             shared = self._shared_client
             self._shared_client = None
@@ -260,6 +290,35 @@ class SerializedModbusClient:
             except Exception as e:
                 logger.debug("Error closing shared Modbus client: %s", e)
         self.worker.stop()
+
+    def _on_tunnel_reconnected(self, _tunnel_cfg: Any = None) -> None:
+        """Mark the shared Modbus TCP socket for reset when the SSH tunnel rebuilds."""
+        with self._lock:
+            self._socket_reset_needed = True
+
+    def invalidate_device(self, slave_id: int) -> None:
+        """Evict a cached SunSpec device model map so the next access forces a fresh scan."""
+        with self._lock:
+            self._devices.pop(slave_id, None)
+
+    def rescan_device(
+        self,
+        slave_id: int,
+        full_model_read: bool = False,
+    ) -> Optional[ss2_client.SunSpecModbusClientDeviceTCP]:
+        """Invalidate cached SunSpec model definitions for slave_id and perform a fresh scan."""
+        self.invalidate_device(slave_id)
+        return self.scan_device(slave_id, full_model_read=full_model_read)
+
+    def reset_connection(self, force_tunnel: bool = False, reason: str = "") -> bool:
+        """Schedule a clean Modbus socket reset and ensure/force-rebuild the SSH tunnel."""
+        with self._lock:
+            self._socket_reset_needed = True
+        if force_tunnel and self.tunnel and callable(getattr(self.tunnel, "force_reconnect", None)):
+            return bool(self.tunnel.force_reconnect(reason=reason or "Modbus connectivity lost"))
+        if self.tunnel and callable(getattr(self.tunnel, "ensure_active", None)):
+            return bool(self.tunnel.ensure_active())
+        return True
 
     def clear_devices(self):
         """Clear cached SunSpecModbusClientDeviceTCP instances."""
@@ -287,6 +346,7 @@ class SerializedModbusClient:
             except Exception:
                 pass
             self._shared_client = None
+        if current_port != self.port:
             self.port = current_port
 
         if self._shared_client is None:
@@ -327,6 +387,19 @@ class SerializedModbusClient:
 
     def _ensure_device_connected(self, device: ss2_client.SunSpecModbusClientDeviceTCP):
         """Ensure SSH tunnel is healthy, point shared client to slave_id, and connect socket."""
+        with self._lock:
+            reset_needed = self._socket_reset_needed
+            if reset_needed:
+                self._socket_reset_needed = False
+                old_shared = self._shared_client
+                self._shared_client = None
+            else:
+                old_shared = None
+        if old_shared is not None:
+            try:
+                old_shared.disconnect()
+            except Exception:
+                pass
         if self.tunnel:
             self.tunnel.ensure_active()
         shared = self._get_shared_client()

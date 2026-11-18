@@ -4,7 +4,7 @@ from pathlib import Path
 import threading
 import time
 from contextlib import contextmanager
-from typing import Generator, Optional
+from typing import Any, Callable, Dict, Generator, List, Optional
 
 try:
     from sshtunnel import (
@@ -47,6 +47,9 @@ class PwrCellTunnel:
         self._running = False
         self._stop_event = threading.Event()
         self._watchdog_thread: Optional[threading.Thread] = None
+        self._reconnect_callbacks: List[Callable[[TunnelConfig], None]] = []
+        self._last_force_reconnect: float = 0.0
+        self._reconnect_count: int = 0
 
     @property
     def is_active(self) -> bool:
@@ -94,6 +97,39 @@ class PwrCellTunnel:
                 modbus_port=self.modbus_port,
                 manager=self,
             )
+
+    def get_status(self) -> Dict[str, Any]:
+        """Return a thread-safe snapshot of tunnel health and port state."""
+        with self._lock:
+            return {
+                "active": self.is_active,
+                "host": self.host,
+                "modbus_port": self.modbus_port,
+                "mqtt_port": self.mqtt_port,
+                "reconnect_count": self._reconnect_count,
+            }
+
+    def register_reconnect_callback(self, callback: Callable[[TunnelConfig], None]) -> None:
+        """Register a callback invoked outside tunnel locks after a successful tunnel rebuild."""
+        with self._lock:
+            if callback not in self._reconnect_callbacks:
+                self._reconnect_callbacks.append(callback)
+
+    def unregister_reconnect_callback(self, callback: Callable[[TunnelConfig], None]) -> None:
+        """Unregister a previously registered tunnel reconnect callback."""
+        with self._lock:
+            if callback in self._reconnect_callbacks:
+                self._reconnect_callbacks.remove(callback)
+
+    def _notify_reconnect_callbacks(self) -> None:
+        with self._lock:
+            callbacks = list(self._reconnect_callbacks)
+            cfg = self.get_config()
+        for cb in callbacks:
+            try:
+                cb(cfg)
+            except Exception as e:
+                logger.warning("Error in tunnel reconnect callback: %s", e)
 
     def _create_and_start_server(
         self,
@@ -185,6 +221,51 @@ class PwrCellTunnel:
         )
         return server, host, mod_port, mqtt_port
 
+    def _rebuild_tunnel_locked(self, reason: str, force: bool = False) -> bool:
+        """Tear down and rebuild the SSH tunnel while holding self._reconnect_lock."""
+        with self._lock:
+            if not self._running:
+                return False
+            if not force and self.is_active:
+                return True
+            old_server = self._server
+            self._server = None
+            old_mod_port = self.modbus_port
+            old_mqtt_port = self.mqtt_port
+
+        if old_server:
+            try:
+                old_server.stop(force=True)
+            except Exception as e:
+                logger.debug("Error stopping dead SSH tunnel: %s", e)
+
+        logger.warning("%s; re-establishing connection to PWRcell...", reason)
+        if self._stop_event.wait(0.5):
+            return False
+
+        for attempt in range(1, 4):
+            with self._lock:
+                if not self._running or self._stop_event.is_set():
+                    return False
+            try:
+                target_mod = old_mod_port if attempt == 1 else None
+                target_mqtt = old_mqtt_port if attempt == 1 else None
+                server, host, mod_port, mqtt_port = self._create_and_start_server(target_mod, target_mqtt)
+                with self._lock:
+                    self._server = server
+                    self.host = host
+                    self.modbus_port = mod_port
+                    self.mqtt_port = mqtt_port
+                    self._reconnect_count += 1
+                logger.info("SSH tunnel successfully reconnected (attempt %d/3)", attempt)
+                return True
+            except Exception as e:
+                logger.warning("Failed to reconnect SSH tunnel (attempt %d/3): %s", attempt, e)
+                if self._stop_event.wait(1.0 * attempt):
+                    return False
+
+        return False
+
     def ensure_active(self) -> bool:
         """Verify tunnel health and re-establish connection if dropped."""
         with self._lock:
@@ -193,48 +274,42 @@ class PwrCellTunnel:
             if self.is_active:
                 return True
 
+        did_rebuild = False
         with self._reconnect_lock:
             with self._lock:
-                if not self._running:
+                prev_count = self._reconnect_count
+            rebuilt = self._rebuild_tunnel_locked("SSH tunnel session dropped", force=False)
+            with self._lock:
+                did_rebuild = rebuilt and (self._reconnect_count > prev_count)
+
+        if did_rebuild:
+            self._notify_reconnect_callbacks()
+        return rebuilt
+
+    def force_reconnect(self, reason: str = "", min_interval_sec: float = 15.0) -> bool:
+        """Unconditionally tear down and rebuild the SSH tunnel, subject to a cooldown."""
+        did_rebuild = False
+        with self._reconnect_lock:
+            with self._lock:
+                if not self._running or self._stop_event.is_set():
                     return False
-                if self.is_active:
-                    return True
-                old_server = self._server
-                self._server = None
-                old_mod_port = self.modbus_port
-                old_mqtt_port = self.mqtt_port
+                now_mono = time.monotonic()
+                if self._last_force_reconnect > 0.0 and (now_mono - self._last_force_reconnect) < min_interval_sec:
+                    logger.debug(
+                        "Skipping forced SSH tunnel reconnect (cooldown %.1fs active)",
+                        min_interval_sec - (now_mono - self._last_force_reconnect),
+                    )
+                    return self.is_active
+                self._last_force_reconnect = now_mono
+                prev_count = self._reconnect_count
 
-            if old_server:
-                try:
-                    old_server.stop(force=True)
-                except Exception as e:
-                    logger.debug("Error stopping dead SSH tunnel: %s", e)
+            rebuilt = self._rebuild_tunnel_locked(reason or "forced tunnel reconnect", force=True)
+            with self._lock:
+                did_rebuild = rebuilt and (self._reconnect_count > prev_count)
 
-            logger.warning("SSH tunnel session dropped; re-establishing connection to PWRcell...")
-            if self._stop_event.wait(0.5):
-                return False
-
-            for attempt in range(1, 4):
-                with self._lock:
-                    if not self._running or self._stop_event.is_set():
-                        return False
-                try:
-                    target_mod = old_mod_port if attempt == 1 else None
-                    target_mqtt = old_mqtt_port if attempt == 1 else None
-                    server, host, mod_port, mqtt_port = self._create_and_start_server(target_mod, target_mqtt)
-                    with self._lock:
-                        self._server = server
-                        self.host = host
-                        self.modbus_port = mod_port
-                        self.mqtt_port = mqtt_port
-                    logger.info("SSH tunnel successfully reconnected (attempt %d/3)", attempt)
-                    return True
-                except Exception as e:
-                    logger.warning("Failed to reconnect SSH tunnel (attempt %d/3): %s", attempt, e)
-                    if self._stop_event.wait(1.0 * attempt):
-                        return False
-
-            return False
+        if did_rebuild:
+            self._notify_reconnect_callbacks()
+        return rebuilt
 
     def _watchdog_loop(self):
         """Background thread checking tunnel health every 2 seconds."""

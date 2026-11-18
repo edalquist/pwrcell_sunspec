@@ -883,6 +883,113 @@ class TestHomeAssistantBridge(unittest.TestCase):
         self.assertTrue(state_calls[-1].kwargs.get("retain") is True)
         self.assertEqual(state_calls[-1][0][1], "14.2")
 
+    def test_device_online_flag_publishes_offline_and_online_status(self):
+        """Marking a device offline/online in StateStore must publish retained offline/online status on check_availability()."""
+        inv = self.client.state.get_inverter()
+        self.assertIsNotNone(inv)
+        inv_sn = inv.serial_number
+        status_topic = f"pwrcell/{inv_sn.lower()}/status"
+
+        # Seed initial online availability state
+        self.bridge.check_availability()
+        self.mock_mqttc.reset_mock()
+
+        # Mark inverter offline -> check_availability publishes retained "offline"
+        self.client.state.set_device_online(inv_sn, False, error="Modbus exception 3")
+        self.bridge.check_availability()
+        offline_calls = [c for c in self.mock_mqttc.publish.call_args_list if c[0][0] == status_topic]
+        self.assertEqual(len(offline_calls), 1)
+        self.assertEqual(offline_calls[0][0][1], "offline")
+        self.assertTrue(offline_calls[0].kwargs.get("retain") is True)
+
+        # Restore inverter online -> check_availability publishes retained "online"
+        self.mock_mqttc.reset_mock()
+        self.client.state.set_device_online(inv_sn, True)
+        self.bridge.check_availability()
+        online_calls = [c for c in self.mock_mqttc.publish.call_args_list if c[0][0] == status_topic]
+        self.assertEqual(len(online_calls), 1)
+        self.assertEqual(online_calls[0][0][1], "online")
+        self.assertTrue(online_calls[0].kwargs.get("retain") is True)
+
+    def test_publish_discovery_respects_gateway_availability(self):
+        """publish_discovery() must publish actual gateway availability ('offline' when down), not hardcoded 'online'."""
+        beacon = self.client.state.get_beacon()
+        self.assertIsNotNone(beacon)
+        gw_status_topic = f"pwrcell/{beacon.serial_number.strip().lower()}/status"
+
+        orig_is_mock = self.client.is_mock
+        orig_mqtt = self.client.mqtt
+        orig_mb_connected = self.client.poller._modbus_connected
+        try:
+            self.client.is_mock = False
+            mock_internal_mqtt = MagicMock()
+            mock_internal_mqtt.is_healthy.return_value = False
+            self.client.mqtt = mock_internal_mqtt
+            self.client.poller._modbus_connected = False
+
+            self.bridge.selected_field_keys = [f"{beacon.serial_number}:rebus_beacon.REbus_dir.SysMd"]
+            self.bridge._selected_set = set(self.bridge.selected_field_keys)
+            self.mock_mqttc.reset_mock()
+
+            self.bridge.publish_discovery()
+            gw_calls = [c for c in self.mock_mqttc.publish.call_args_list if c[0][0] == gw_status_topic]
+            self.assertTrue(gw_calls)
+            self.assertEqual(gw_calls[-1][0][1], "offline")
+
+            # When Modbus recovers, publish_discovery reports gateway 'online'
+            self.client.poller._modbus_connected = True
+            self.mock_mqttc.reset_mock()
+            self.bridge.publish_discovery()
+            gw_calls_up = [c for c in self.mock_mqttc.publish.call_args_list if c[0][0] == gw_status_topic]
+            self.assertTrue(gw_calls_up)
+            self.assertEqual(gw_calls_up[-1][0][1], "online")
+        finally:
+            self.client.is_mock = orig_is_mock
+            self.client.mqtt = orig_mqtt
+            self.client.poller._modbus_connected = orig_mb_connected
+
+    def test_start_falls_back_to_connect_async_and_watchdog_reconnects_ha_broker(self):
+        """start() falls back to connect_async() on connect error and check_availability() retries HA broker after 60s."""
+        from pwrcell.config import MqttConfig
+
+        now = [1000.0]
+        mock_mqttc = MagicMock()
+        mock_mqttc.connect.side_effect = OSError("broker unreachable")
+
+        bridge = HomeAssistantBridge(
+            client=self.client,
+            mqtt_config=MqttConfig(host="127.0.0.1", port=1883, client_name="pwrcell_test"),
+            published_topics_path=self.topics_file,
+            clock=lambda: now[0],
+        )
+
+        with patch("pwrcell.bridge.load_ha_config", return_value=[]), patch(
+            "pwrcell.bridge.mqtt.Client", return_value=mock_mqttc
+        ):
+            bridge.start()
+            try:
+                self.assertTrue(bridge._running)
+                self.assertFalse(bridge.get_status()["connected"])
+                mock_mqttc.connect_async.assert_called_once_with("127.0.0.1", 1883)
+
+                # At +30s (< 60s): watchdog must NOT reconnect yet
+                now[0] = 1030.0
+                bridge.check_availability()
+                self.assertEqual(mock_mqttc.connect_async.call_count, 1)
+
+                # At +65s (>= 60s): watchdog triggers connect_async()
+                now[0] = 1065.0
+                bridge.check_availability()
+                self.assertEqual(mock_mqttc.connect_async.call_count, 2)
+                self.assertEqual(mock_mqttc.connect_async.call_args_list[-1][0], ("127.0.0.1", 1883))
+
+                # At +90s (only 25s after last attempt): 60s cooldown prevents spam
+                now[0] = 1090.0
+                bridge.check_availability()
+                self.assertEqual(mock_mqttc.connect_async.call_count, 2)
+            finally:
+                bridge.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

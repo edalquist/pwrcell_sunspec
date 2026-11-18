@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -105,10 +106,11 @@ SYSTEM_MODE_NAMES = PROTO_SYSTEM_MODE_NAMES
 class MqttClient:
     """Internal MQTT push client for PWRcell high-frequency telemetry."""
 
-    def __init__(self, tunnel_config: TunnelConfig):
+    def __init__(self, tunnel_config: TunnelConfig, clock: Optional[Callable[[], float]] = None):
         self.__tunnel_ip = tunnel_config.host or "127.0.0.1"
         self.__tunnel_port = tunnel_config.mqtt_port or 1883
         self.__tunnel_manager = getattr(tunnel_config, "manager", None)
+        self._clock = clock or time.time
         self.__callbacks: List[Callable[[energy_record_set_pb2.EnergyRecordSet], None]] = []
         self.__snapshot_callbacks: List[Callable[[LiveTelemetrySnapshot], None]] = []
         self.__energy_recordset_live: Optional[energy_record_set_pb2.EnergyRecordSet] = None
@@ -118,7 +120,52 @@ class MqttClient:
         self._connected_port: Optional[int] = None
         self._reconnecting: bool = False
         self._stopping: bool = False
+        self._connected: bool = False
+        self._connected_since: float = 0.0
+        self._disconnected_since: float = 0.0
+        self._started_at: float = 0.0
+        self._last_message_time: float = 0.0
+        self._last_reconnect_attempt: float = 0.0
+        self._consecutive_reconnect_failures: int = 0
+        self._reconnect_count: int = 0
         self.__lock = threading.RLock()
+
+    @property
+    def is_connected(self) -> bool:
+        with self.__lock:
+            return self._connected
+
+    @property
+    def last_message_time(self) -> float:
+        with self.__lock:
+            return self._last_message_time
+
+    def is_healthy(self, stale_timeout: float = 120.0) -> bool:
+        """Return True if connected and messages are flowing within stale_timeout."""
+        with self.__lock:
+            if not self._connected:
+                return False
+            if stale_timeout > 0:
+                ref_ts = max(self._last_message_time, self._connected_since)
+                if ref_ts > 0 and (self._clock() - ref_ts) > stale_timeout:
+                    return False
+            return True
+
+    def get_status(self, stale_timeout: float = 120.0) -> Dict[str, Any]:
+        """Return connectivity status summary for the internal PWRcell MQTT client."""
+        current_port = self.port
+        with self.__lock:
+            now = self._clock()
+            last_msg = self._last_message_time
+            age = round(max(0.0, now - last_msg), 1) if last_msg > 0.0 else None
+            return {
+                "connected": self._connected,
+                "healthy": self.is_healthy(stale_timeout=stale_timeout),
+                "last_message_time": last_msg,
+                "last_message_age_seconds": age,
+                "port": current_port,
+                "reconnect_count": self._reconnect_count,
+            }
 
     @property
     def port(self) -> int:
@@ -140,27 +187,36 @@ class MqttClient:
         return False
 
     def start(self):
+        target_port = self.port
         with self.__lock:
             if self.__mqttc is not None:
                 return
             self._stopping = False
+            now = self._clock()
+            self._started_at = now
+            self._disconnected_since = now
+            self._connected = False
             self.__mqttc = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
             self.__mqttc.on_connect = self.__mqtt_on_connect
             self.__mqttc.on_message = self.__mqtt_on_message
             self.__mqttc.on_disconnect = self.__mqtt_disconnect
 
             self.__mqttc.loop_start()
-            target_port = self.port
             self._connected_port = target_port
-            logger.info("Connecting to internal PWRcell MQTT on %s:%s", self.__tunnel_ip, target_port)
+            mqttc = self.__mqttc
+
+        if self.__tunnel_manager and callable(getattr(self.__tunnel_manager, "register_reconnect_callback", None)):
+            self.__tunnel_manager.register_reconnect_callback(self._on_tunnel_reconnected)
+
+        logger.info("Connecting to internal PWRcell MQTT on %s:%s", self.__tunnel_ip, target_port)
+        try:
+            mqttc.connect(self.__tunnel_ip, target_port)
+        except Exception as e:
+            logger.warning("Initial connection to internal PWRcell MQTT failed (%s); client loop will retry", e)
             try:
-                self.__mqttc.connect(self.__tunnel_ip, target_port)
-            except Exception as e:
-                logger.warning("Initial connection to internal PWRcell MQTT failed (%s); client loop will retry", e)
-                try:
-                    self.__mqttc.connect_async(self.__tunnel_ip, target_port)
-                except Exception:
-                    pass
+                mqttc.connect_async(self.__tunnel_ip, target_port)
+            except Exception:
+                pass
 
     def stop(self):
         with self.__lock:
@@ -169,6 +225,10 @@ class MqttClient:
             mqttc = self.__mqttc
             self.__mqttc = None
             self._stopping = True
+            self._connected = False
+
+        if self.__tunnel_manager and callable(getattr(self.__tunnel_manager, "unregister_reconnect_callback", None)):
+            self.__tunnel_manager.unregister_reconnect_callback(self._on_tunnel_reconnected)
 
         try:
             mqttc.loop_stop()
@@ -224,6 +284,14 @@ class MqttClient:
         reason_code: ReasonCode,
         properties: Properties,
     ):
+        current_port = self.port
+        with self.__lock:
+            now = self._clock()
+            self._connected = True
+            self._connected_since = now
+            self._disconnected_since = 0.0
+            self._consecutive_reconnect_failures = 0
+            self._connected_port = current_port
         logger.info("PWRcell internal MQTT connected: %s", reason_code)
         # Subscribe only to live protobuf telemetry recordset topics
         client.subscribe([("+/energy_recordset_live", 0), ("/energy_recordset_live", 0)])
@@ -237,8 +305,12 @@ class MqttClient:
         properties: Properties,
     ):
         logger.warning("PWRcell internal MQTT disconnected: %s", reason_code)
-        if getattr(self, "_stopping", False) or self.__mqttc is None:
-            return
+        with self.__lock:
+            self._connected = False
+            if self._disconnected_since == 0.0:
+                self._disconnected_since = self._clock()
+            if getattr(self, "_stopping", False) or self.__mqttc is None:
+                return
 
         if self.__tunnel_manager:
             with self.__lock:
@@ -253,7 +325,12 @@ class MqttClient:
                     if reconnected:
                         new_port = self.port
                         with self.__lock:
-                            if self.__mqttc and not getattr(self, "_stopping", False) and new_port != old_port:
+                            if (
+                                self.__mqttc
+                                and not getattr(self, "_stopping", False)
+                                and new_port != old_port
+                                and new_port != self._connected_port
+                            ):
                                 logger.info(
                                     "Tunnel port changed (%s -> %s); pointing internal MQTT client to port %s",
                                     old_port,
@@ -277,8 +354,110 @@ class MqttClient:
 
             threading.Thread(target=_reconnect_bg, daemon=True, name="MqttTunnelReconnect").start()
 
+    def _repoint_mqtt_client(self, target_port: int) -> bool:
+        """Point the Paho client at target_port and trigger an async reconnect."""
+        with self.__lock:
+            if getattr(self, "_stopping", False) or self.__mqttc is None:
+                return False
+            mqttc = self.__mqttc
+            self._connected_port = target_port
+            self._connected = False
+            self._reconnect_count += 1
+
+        try:
+            mqttc.disconnect()
+        except Exception:
+            pass
+        try:
+            if hasattr(mqttc, "_port"):
+                mqttc._port = target_port
+            mqttc.connect_async(self.__tunnel_ip, target_port)
+        except Exception as e:
+            logger.warning("Failed reconnecting internal MQTT to %s:%s: %s", self.__tunnel_ip, target_port, e)
+        return True
+
+    def _on_tunnel_reconnected(self, tunnel_cfg: TunnelConfig) -> None:
+        """Callback invoked when PwrCellTunnel rebuilds; re-point internal MQTT to the new port."""
+        new_port = getattr(tunnel_cfg, "mqtt_port", None) or self.port
+        logger.info(
+            "SSH tunnel rebuilt; re-pointing internal PWRcell MQTT client to %s:%s",
+            self.__tunnel_ip,
+            new_port,
+        )
+        self._repoint_mqtt_client(new_port)
+
+    def reconnect(self, force_tunnel: bool = False, reason: str = "") -> bool:
+        """Actively heal tunnel (optionally forced) and re-point the internal MQTT client."""
+        with self.__lock:
+            if getattr(self, "_stopping", False) or self.__mqttc is None or self._reconnecting:
+                return False
+            self._reconnecting = True
+            self._last_reconnect_attempt = self._clock()
+            prev_count = self._reconnect_count
+
+        try:
+            if force_tunnel and self.__tunnel_manager and callable(getattr(self.__tunnel_manager, "force_reconnect", None)):
+                self.__tunnel_manager.force_reconnect(
+                    reason=reason or "Internal PWRcell MQTT stalled/disconnected"
+                )
+            elif self.__tunnel_manager and callable(getattr(self.__tunnel_manager, "ensure_active", None)):
+                self.__tunnel_manager.ensure_active()
+
+            with self.__lock:
+                already_repointed = self._reconnect_count != prev_count
+            if not already_repointed:
+                self._repoint_mqtt_client(self.port)
+            return True
+        finally:
+            with self.__lock:
+                self._reconnecting = False
+
+    def check_health_and_reconnect(
+        self,
+        stale_timeout: float = 120.0,
+        reconnect_cooldown: float = 30.0,
+    ) -> bool:
+        """Detect prolonged disconnect, silent zombie stream, or port drift and recover."""
+        current_port = self.port
+        action_force = False
+        action_reason = ""
+        should_reconnect = False
+
+        with self.__lock:
+            if getattr(self, "_stopping", False) or self.__mqttc is None or self._reconnecting:
+                return False
+            now = self._clock()
+            if self._last_reconnect_attempt > 0.0 and (now - self._last_reconnect_attempt) < reconnect_cooldown:
+                return False
+
+            if self._connected_port is not None and current_port != self._connected_port:
+                should_reconnect = True
+                action_force = False
+                action_reason = f"tunnel mqtt port changed ({self._connected_port} -> {current_port})"
+            elif not self._connected:
+                down_since = self._disconnected_since or self._started_at
+                if down_since > 0.0 and (now - down_since) >= reconnect_cooldown:
+                    self._consecutive_reconnect_failures += 1
+                    action_force = self._consecutive_reconnect_failures >= 2
+                    action_reason = f"internal MQTT disconnected for {now - down_since:.0f}s"
+                    should_reconnect = True
+            else:
+                ref_ts = max(self._last_message_time, self._connected_since)
+                if ref_ts > 0.0 and stale_timeout > 0.0 and (now - ref_ts) > stale_timeout:
+                    action_force = True
+                    action_reason = f"internal MQTT silent for {now - ref_ts:.0f}s"
+                    should_reconnect = True
+
+        if not should_reconnect:
+            return False
+
+        logger.warning("Internal PWRcell MQTT health check triggered reconnect (%s)", action_reason)
+        return self.reconnect(force_tunnel=action_force, reason=action_reason)
+
     def __mqtt_on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
         logger.debug("PWRcell MQTT msg on %s (%d bytes)", msg.topic, len(msg.payload))
+        with self.__lock:
+            self._last_message_time = self._clock()
 
         if msg.topic.endswith("/energy_recordset_live"):
             try:

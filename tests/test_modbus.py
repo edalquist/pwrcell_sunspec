@@ -306,6 +306,79 @@ class TestModbusScanRange(unittest.TestCase):
         fake_client.disconnect.assert_called_once()
         fake_client.connect.assert_called_once()
 
+    def test_modbus_exception_classification(self):
+        from pwrcell.modbus import (
+            is_address_exception,
+            is_device_unavailable_exception,
+            parse_modbus_exception_code,
+        )
+
+        ex2 = RuntimeError("Modbus exception 2: addr: 40316 count: 114")
+        self.assertEqual(parse_modbus_exception_code(ex2), 2)
+        self.assertTrue(is_address_exception(ex2))
+        self.assertFalse(is_device_unavailable_exception(ex2))
+
+        for code in (3, 4, 10, 11):
+            ex = RuntimeError(f"Modbus exception {code}: addr: 40070 count: 14")
+            self.assertEqual(parse_modbus_exception_code(ex), code)
+            self.assertFalse(is_address_exception(ex))
+            self.assertTrue(is_device_unavailable_exception(ex))
+
+        class AttrExc(Exception):
+            exception_code = 2
+
+        self.assertTrue(is_address_exception(AttrExc("opaque")))
+        self.assertIsNone(parse_modbus_exception_code(TimeoutError("timed out")))
+
+    def test_invalidate_rescan_and_reset_connection(self):
+        from unittest.mock import MagicMock, patch
+        from pwrcell.modbus import SerializedModbusClient
+
+        mock_tunnel = MagicMock()
+        mock_tunnel.get_config.return_value = MagicMock(modbus_port=5020)
+        mock_tunnel.force_reconnect.return_value = True
+        mgr = SerializedModbusClient(host="localhost", port=5020, tunnel=mock_tunnel)
+
+        # Populate cached device and fake shared client
+        dev9 = mgr.get_or_create_device(9)
+        old_shared = MagicMock()
+        old_shared.ipport = 5020
+        old_shared.is_connected.return_value = True
+        mgr._shared_client = old_shared
+        self.assertIn(9, mgr._devices)
+
+        # invalidate_device removes device without dropping shared socket
+        mgr.invalidate_device(9)
+        self.assertNotIn(9, mgr._devices)
+        old_shared.disconnect.assert_not_called()
+
+        # rescan_device invalidates and triggers scan_device
+        mgr.get_or_create_device(9)
+        with patch.object(mgr, "scan_device", return_value=dev9) as mock_scan:
+            res = mgr.rescan_device(9)
+            self.assertIs(res, dev9)
+            self.assertNotIn(9, mgr._devices)
+            mock_scan.assert_called_once_with(9, full_model_read=False)
+
+        # reset_connection(force_tunnel=True) invokes tunnel.force_reconnect and resets socket on next _ensure_device_connected
+        mock_tunnel.get_config.return_value = MagicMock(modbus_port=5025)
+        self.assertTrue(mgr.reset_connection(force_tunnel=True, reason="lost comms"))
+        mock_tunnel.force_reconnect.assert_called_once_with(reason="lost comms")
+        self.assertTrue(mgr._socket_reset_needed)
+
+        with patch("pwrcell.modbus.mb.ModbusClientTCP") as mock_tcp_cls:
+            new_shared = MagicMock()
+            new_shared.ipport = 5025
+            new_shared.is_connected.return_value = False
+            mock_tcp_cls.return_value = new_shared
+            mgr._ensure_device_connected(dev9)
+
+        old_shared.disconnect.assert_called_once()
+        mock_tcp_cls.assert_called_once_with(slave_id=1, ipaddr="localhost", ipport=5025, timeout=5)
+        new_shared.connect.assert_called_once()
+        self.assertEqual(mgr.port, 5025)
+        mgr.close()
+
 
 if __name__ == "__main__":
     unittest.main()
