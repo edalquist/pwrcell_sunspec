@@ -1,8 +1,8 @@
-name: "Generac PWRcell"
-version: "3.3.1"
-slug: "pwrcell"
-description: "Generac PWRcell SunSpec Gateway, Home Assistant MQTT Bridge & Web Explorer"
-url: "https://github.com/edalquist/pwrcell_sunspec"
+name: Generac PWRcell
+version: 3.4.0
+slug: pwrcell
+description: Generac PWRcell SunSpec Gateway, Home Assistant MQTT Bridge & Web Explorer
+url: https://github.com/edalquist/pwrcell_sunspec
 init: false
 arch:
   - aarch64
@@ -11,18 +11,15 @@ startup: services
 boot: auto
 ingress: true
 ingress_port: 5555
-panel_icon: "mdi:solar-power"
+panel_icon: mdi:solar-power
 stage: stable
-
 ports:
   5555/tcp: 5555
 ports_description:
-  5555/tcp: "Web Explorer direct HTTP port (optional when Ingress is used)"
-
+  5555/tcp: Web Explorer direct HTTP port (optional when Ingress is used)
 map:
-  - "share:rw"
-  - "config:rw"
-
+  - share:rw
+  - config:rw
 schema:
   beacon_host: str
   beacon_port: int?
@@ -43,24 +40,23 @@ schema:
   include_bulk_table_groups: bool?
   log_level: list(DEBUG|INFO|WARNING|ERROR)?
   mock_mode: bool?
-
 options:
-  beacon_host: "192.168.0.73"
+  beacon_host: 192.168.0.73
   beacon_port: 22
-  beacon_user: "root"
-  beacon_password: ""
-  ssh_key_file: "/share/pwrcell_ssh_key"
-  ssh_key: ""
-  ssh_key_passphrase: ""
-  mqtt_host: "core-mosquitto"
+  beacon_user: root
+  beacon_password: ''
+  ssh_key_file: /share/pwrcell_ssh_key
+  ssh_key: ''
+  ssh_key_passphrase: ''
+  mqtt_host: core-mosquitto
   mqtt_port: 1883
-  mqtt_username: ""
-  mqtt_password: ""
-  mqtt_client_name: ""
+  mqtt_username: ''
+  mqtt_password: ''
+  mqtt_client_name: ''
   poll_rate: 12
   config_poll_interval: 45
   slow_poll_interval: 300
   enable_web_explorer: true
   include_bulk_table_groups: false
-  log_level: "INFO"
+  log_level: INFO
   mock_mode: false
