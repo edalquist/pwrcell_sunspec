@@ -247,8 +247,8 @@ console.log('NODE_JS_TESTS_OK');
         """Freshly registered devices with zero polled fields still preview all default entities including inverter_state and battery_soc."""
         cold_client = PwrcellClient(is_mock=False)
         cold_client.state = StateStore()
-        inv = cold_client.state.register_device("0001000714E9", slave_id=8, device_type="inverter", model_name="PWRcell Inverter")
-        bat = cold_client.state.register_device("000100082128", slave_id=9, device_type="battery", model_name="PWRcell Battery")
+        inv = cold_client.state.register_device("000100070008", slave_id=8, device_type="inverter", model_name="PWRcell Inverter")
+        bat = cold_client.state.register_device("000100080009", slave_id=9, device_type="battery", model_name="PWRcell Battery")
         cold_client.state.register_device("BEACON01", slave_id=1, device_type="rebus_beacon", model_name="REbus Beacon")
 
         self.assertEqual(len(inv.fields), 0)
@@ -260,25 +260,25 @@ console.log('NODE_JS_TESTS_OK');
         preview = cold_test_client.get("/api/ha/preview").get_json()
         by_key = {(item["device_serial"].upper(), item["field_key"]): item for item in preview}
 
-        self.assertIn(("0001000714E9", "inverter.compound.inverter_state"), by_key)
-        inv_state_payload = by_key[("0001000714E9", "inverter.compound.inverter_state")]["payload"]
+        self.assertIn(("000100070008", "inverter.compound.inverter_state"), by_key)
+        inv_state_payload = by_key[("000100070008", "inverter.compound.inverter_state")]["payload"]
         self.assertEqual(inv_state_payload.get("device_class"), "enum")
         self.assertTrue(inv_state_payload.get("options"))
         self.assertIn("GRID_CONNECTED", inv_state_payload["options"])
 
-        self.assertIn(("000100082128", "battery.compound.battery_soc"), by_key)
-        bat_soc_payload = by_key[("000100082128", "battery.compound.battery_soc")]["payload"]
+        self.assertIn(("000100080009", "battery.compound.battery_soc"), by_key)
+        bat_soc_payload = by_key[("000100080009", "battery.compound.battery_soc")]["payload"]
         self.assertEqual(bat_soc_payload.get("unit_of_measurement"), "%")
         self.assertEqual(bat_soc_payload.get("device_class"), "battery")
 
         # Also check pre-populated conditional live sensor metadata
-        self.assertIn(("0001000714E9", "inverter.live.inverter_max_power_w"), by_key)
-        self.assertEqual(by_key[("0001000714E9", "inverter.live.inverter_max_power_w")]["payload"].get("unit_of_measurement"), "W")
+        self.assertIn(("000100070008", "inverter.live.inverter_max_power_w"), by_key)
+        self.assertEqual(by_key[("000100070008", "inverter.live.inverter_max_power_w")]["payload"].get("unit_of_measurement"), "W")
 
     def test_modbus_only_inverter_state_preserves_enum_device_class(self):
         """inverter_state compound view keeps ha_device_class='enum' even when only Model 64207 St is populated."""
         store = StateStore()
-        inv = store.register_device("0001000714E9", slave_id=8, device_type="inverter", model_name="PWRcell Inverter")
+        inv = store.register_device("000100070008", slave_id=8, device_type="inverter", model_name="PWRcell Inverter")
         store.ensure_field_definition(inv.serial_number, "inverter.model_64207.St")
 
         c_view = store.get_compound_view("inverter_state", device_sn=inv.serial_number)
@@ -410,8 +410,8 @@ console.log('NODE_JS_TESTS_OK');
         """Repairs .standalone. and bogus .compound. keys created by v3.1.6-v3.1.14 and drops unresolvable ones."""
         cold_client = PwrcellClient(is_mock=False)
         cold_client.state = StateStore()
-        inv_sn = "0001000714E9"
-        bat_sn = "000100082128"
+        inv_sn = "000100070008"
+        bat_sn = "000100080009"
         cold_client.state.register_device(inv_sn, slave_id=8, device_type="inverter", model_name="PWRcell Inverter")
         cold_client.state.register_device(bat_sn, slave_id=9, device_type="battery", model_name="PWRcell Battery")
 
@@ -554,7 +554,7 @@ console.log('NODE_JS_TESTS_OK');
             store.register_device("000100010001", slave_id=1, device_type="rebus_beacon", model_name="REbus Beacon")
             bat = store.register_device("00010008B447", slave_id=2, device_type="battery", model_name="PWRcell Battery")
             store.register_device("000100090001", slave_id=3, device_type="pv_link", model_name="PV Link")
-            store.register_device("0001000714E9", slave_id=8, device_type="inverter", model_name="XVT076A03")
+            store.register_device("000100070008", slave_id=8, device_type="inverter", model_name="XVT076A03")
 
             if warm:
                 store.set_field("00010008B447", "SoC", "State of Charge", "", 85.0, 85.0, "%", FieldSource.MODBUS_POLL, sub_group="battery", model_id=802, model_name="battery")
@@ -679,10 +679,10 @@ console.log('NODE_JS_TESTS_OK');
         import yaml
 
         store = StateStore(catalog=ModelCatalog())
-        inv = store.register_device("0001000714E9", slave_id=8, device_type="inverter", model_name="XVT076A03")
-        store.set_field("0001000714E9", "St", "State (M64207)", "", "GRID_CONNECTED", 2080, None, FieldSource.MODBUS_POLL, sub_group="REbus_status", model_id=64207, model_name="REbus_status")
-        store.set_field("0001000714E9", "St", "Operating State (M102)", "", "MPPT", 4, None, FieldSource.MODBUS_POLL, sub_group="inverter", model_id=102, model_name="inverter")
-        store.set_field("0001000714E9", "InvSt", "Inverter State (M701)", "", "RUNNING", 3, None, FieldSource.MODBUS_POLL, sub_group="DERMeasureAC", model_id=701, model_name="DERMeasureAC")
+        inv = store.register_device("000100070008", slave_id=8, device_type="inverter", model_name="XVT076A03")
+        store.set_field("000100070008", "St", "State (M64207)", "", "GRID_CONNECTED", 2080, None, FieldSource.MODBUS_POLL, sub_group="REbus_status", model_id=64207, model_name="REbus_status")
+        store.set_field("000100070008", "St", "Operating State (M102)", "", "MPPT", 4, None, FieldSource.MODBUS_POLL, sub_group="inverter", model_id=102, model_name="inverter")
+        store.set_field("000100070008", "InvSt", "Inverter State (M701)", "", "RUNNING", 3, None, FieldSource.MODBUS_POLL, sub_group="DERMeasureAC", model_id=701, model_name="DERMeasureAC")
 
         # 1. Packaged groupings.yaml resolves all 3 variants into inverter.compound.inverter_state
         raw_map = mapping_module.MappingRegistry.get_instance().get_raw_to_compound_map()

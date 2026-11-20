@@ -20,7 +20,7 @@ class TestMockFixtures(unittest.TestCase):
         inverter = self.loader.devices_by_slave_id[8]
         self.assertEqual(inverter.device_type, "inverter")
         self.assertEqual(inverter.manufacturer, "Generac")
-        self.assertEqual(inverter.serial_number, "0001000714E9")
+        self.assertEqual(inverter.serial_number, "000100070008")
         
         # Test scale factor calculation
         v_pt = inverter.get_point_value(64207, "V")
@@ -33,13 +33,13 @@ class TestMockFixtures(unittest.TestCase):
     def test_battery_device_loaded(self):
         battery = self.loader.devices_by_slave_id[9]
         self.assertEqual(battery.device_type, "battery")
-        self.assertEqual(battery.serial_number, "000100082128")
+        self.assertEqual(battery.serial_number, "000100080009")
 
     def test_telemetry_generator(self):
         gen = MockTelemetryGenerator()
         rec_set = gen.tick(2.0)
         self.assertIsNotNone(rec_set)
-        self.assertEqual(rec_set.inverterId, "0001000714E9")
+        self.assertEqual(rec_set.inverterId, "000100070008")
         self.assertEqual(len(rec_set.energyRecord), 1)
 
         rec = rec_set.energyRecord[0]

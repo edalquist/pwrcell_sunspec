@@ -14,13 +14,13 @@ class TestConfigurableMappingsAndCompoundViews(unittest.TestCase):
     def setUp(self):
         self.state = StateStore()
         self.inv = self.state.register_device(
-            serial_number="0001000714E9",
+            serial_number="000100070008",
             slave_id=8,
             device_type="inverter",
             model_name="PWRcell Inverter",
         )
         self.bat = self.state.register_device(
-            serial_number="000100082128",
+            serial_number="000100080009",
             slave_id=9,
             device_type="battery",
             model_name="PWRcell Battery",
@@ -216,7 +216,7 @@ class TestConfigurableMappingsAndCompoundViews(unittest.TestCase):
             test_client = app.test_client()
 
             # 1. Device details includes compound_fields
-            resp = test_client.get("/api/devices/0001000714E9")
+            resp = test_client.get("/api/devices/000100070008")
             self.assertEqual(resp.status_code, 200)
             data = resp.get_json()
             self.assertIn("compound_fields", data)

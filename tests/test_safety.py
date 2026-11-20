@@ -63,7 +63,7 @@ class TestSafetyBlockedFields(unittest.TestCase):
         self.assertTrue(is_mutation_blocked("inverter.model_64208.ZExpLim", config_path=self.config_path))
 
         # Serial number prefix stripping
-        self.assertTrue(is_mutation_blocked("0001000714E9:inverter.inverter.VNom", config_path=self.config_path))
+        self.assertTrue(is_mutation_blocked("000100070008:inverter.inverter.VNom", config_path=self.config_path))
 
         # Safe writable fields should NOT be blocked
         self.assertFalse(is_mutation_blocked("SysMd", config_path=self.config_path))
@@ -79,7 +79,7 @@ class TestSafetyBlockedFields(unittest.TestCase):
             value=1,
             raw_value=1,
             key="inverter.EIconfig.IslandEna",
-            device_sn="0001000714E9",
+            device_sn="000100070008",
             device_type="inverter",
             model_name="EIconfig",
             access="RW",
@@ -95,7 +95,7 @@ class TestSafetyBlockedFields(unittest.TestCase):
             value=100,
             raw_value=100,
             key="battery.battery.SoCMax",
-            device_sn="0001000714E9",
+            device_sn="000100070008",
             device_type="battery",
             model_name="battery",
             access="RW",
@@ -107,10 +107,10 @@ class TestSafetyBlockedFields(unittest.TestCase):
     def test_controls_write_field_rejection(self):
         catalog = get_catalog()
         state = StateStore(catalog=catalog)
-        dev = state.register_device(serial_number="0001000714E9", slave_id=8, device_type="inverter", model_name="Inverter")
+        dev = state.register_device(serial_number="000100070008", slave_id=8, device_type="inverter", model_name="Inverter")
 
         state.set_field(
-            device_sn="0001000714E9",
+            device_sn="000100070008",
             name="IslandEna",
             label="Enable Islanding",
             description="",
@@ -136,7 +136,7 @@ class TestSafetyBlockedFields(unittest.TestCase):
             value=1,
             raw_value=1,
             key="inverter.EIconfig.IslandEna",
-            device_sn="0001000714E9",
+            device_sn="000100070008",
             device_type="inverter",
             model_name="EIconfig",
             access="RW",
@@ -146,9 +146,9 @@ class TestSafetyBlockedFields(unittest.TestCase):
     def test_get_blocked_mutation_fields_audit(self):
         catalog = get_catalog()
         state = StateStore(catalog=catalog)
-        state.register_device(serial_number="0001000714E9", slave_id=8, device_type="inverter", model_name="Inverter")
+        state.register_device(serial_number="000100070008", slave_id=8, device_type="inverter", model_name="Inverter")
         state.set_field(
-            device_sn="0001000714E9",
+            device_sn="000100070008",
             name="IslandEna",
             label="Enable Islanding",
             description="",
@@ -158,7 +158,7 @@ class TestSafetyBlockedFields(unittest.TestCase):
             sub_group="EIconfig",
         )
         state.set_field(
-            device_sn="0001000714E9",
+            device_sn="000100070008",
             name="W",
             label="Active Power",
             description="",

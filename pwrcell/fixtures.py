@@ -100,7 +100,11 @@ class MockFixtureLoader:
         include_bulk_table_groups: bool = False,
     ):
         repo_root = Path(__file__).resolve().parent.parent
-        self.dump_dir = Path(dump_dir) if dump_dir else (repo_root / "model_dump")
+        if dump_dir:
+            self.dump_dir = Path(dump_dir)
+        else:
+            sanitized_dir = repo_root / "tests" / "fixtures" / "model_dump"
+            self.dump_dir = sanitized_dir if sanitized_dir.exists() else (repo_root / "model_dump")
         self.catalog = catalog or get_catalog()
         self.include_bulk_table_groups = include_bulk_table_groups
         self.devices: Dict[str, MockDevice] = {}  # serial_number -> MockDevice
@@ -340,7 +344,7 @@ class MockFixtureLoader:
 class MockTelemetryGenerator:
     """Generates synthetic, physically plausible EnergyRecordSet protobuf telemetry."""
 
-    def __init__(self, inverter_id: str = "0001000714E9"):
+    def __init__(self, inverter_id: str = "000100070008"):
         self.inverter_id = inverter_id
         self.sim_time = time.time()
         self.soc: float = 78.5  # Battery SoC percent
@@ -397,7 +401,7 @@ class MockTelemetryGenerator:
         record_set.inverterId = self.inverter_id
         record_set.isHighFrequency = True
         record_set.systemFamily = energy_record_set_pb2.SYSTEM_FAMILY_PWRCELL_R1
-        record_set.gatewayInfo.gateway_id = "0001001206E8"
+        record_set.gatewayInfo.gateway_id = "000100120001"
         record_set.gatewayInfo.gateway_type = energy_record_set_pb2.GATEWAY_TYPE_BEACON
 
         record = record_set.energyRecord.add()
@@ -440,7 +444,7 @@ class MockTelemetryGenerator:
         ch_bat.channel = 4
         ch_bat.channelType = energy_record_set_pb2.STORAGE
         ch_bat.deviceType = energy_record_set_pb2.BATTERY
-        ch_bat.deviceId = "000100082128"
+        ch_bat.deviceId = "000100080009"
         ch_bat.realPower_W = int(storage_w)
         ch_bat.realPower_Wf = float(storage_w)
         ch_bat.soc = round(self.soc, 1)

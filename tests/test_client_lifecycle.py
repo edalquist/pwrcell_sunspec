@@ -158,7 +158,7 @@ class TestClientLifecycle(unittest.TestCase):
                 )
 
             discovered = {
-                1: _make_dev("0001000714E9", "REbus Gateway", [1, 64200, 64260]),
+                1: _make_dev("000100070008", "REbus Gateway", [1, 64200, 64260]),
                 8: _make_dev("00010007901A", "Generac PV Hybrid X7602", [1, 102, 64208]),
                 9: _make_dev("000100083F22", "Generac Storage Pack", [1, 802, 64252]),
                 10: _make_dev("00010009ABCD", "S2502 Combiner", [1, 404, 64251]),
@@ -166,7 +166,7 @@ class TestClientLifecycle(unittest.TestCase):
             client._save_scanned_devices(discovered)
             mock_write.assert_called_once()
 
-            self.assertEqual(client.state.devices["0001000714E9"].device_type, "rebus_beacon")
+            self.assertEqual(client.state.devices["000100070008"].device_type, "rebus_beacon")
             self.assertEqual(client.state.devices["00010007901A"].device_type, "inverter")
             self.assertEqual(client.state.devices["000100083F22"].device_type, "battery")
             self.assertEqual(client.state.devices["00010009ABCD"].device_type, "pv_link")
@@ -255,7 +255,7 @@ class TestClientLifecycle(unittest.TestCase):
         # 3. _poll_device_models_live reuses existing tcp_dev.models from get_or_create_device instead of re-scanning
         live_client = PwrcellClient(is_mock=False)
         live_client._running = True
-        live_client.state.register_device("0001000714E9", 8, "inverter", "Inverter")
+        live_client.state.register_device("000100070008", 8, "inverter", "Inverter")
         fake_tcp_dev = SimpleNamespace(
             models={1: [object()], 102: [object()]},
             common=[SimpleNamespace(Md=SimpleNamespace(value="X7602"), Vr=SimpleNamespace(value="1.2"))],
@@ -360,19 +360,19 @@ class TestClientLifecycle(unittest.TestCase):
                 self.assertEqual(_resolve_mappings_path(), tmp_path / "groupings.yaml")
 
                 # 1. DeviceConfig.write() writes to tmp_path / devices.yaml even when it did not exist beforehand
-                dev_cfg = DeviceConfig(inverter={"0001000714E9": 8})
+                dev_cfg = DeviceConfig(inverter={"000100070008": 8})
                 dev_cfg.write()
                 self.assertTrue((tmp_path / "devices.yaml").exists())
                 loaded_dev = DeviceConfig.read()
                 self.assertIsNotNone(loaded_dev)
-                self.assertEqual(loaded_dev.inverter.get("0001000714E9"), 8)
+                self.assertEqual(loaded_dev.inverter.get("000100070008"), 8)
 
                 # 2. save_ha_config writes to tmp_path / ha_config.yaml
-                save_ha_config(["0001000714E9:inverter.live.grid_power_w"])
+                save_ha_config(["000100070008:inverter.live.grid_power_w"])
                 self.assertTrue((tmp_path / "ha_config.yaml").exists())
 
                 # 3. save_custom_groupings writes to tmp_path / custom_groupings.yaml
-                save_custom_groupings({"field_overrides": {"0001000714E9:inverter.inverter.W": "inverter_output_power"}})
+                save_custom_groupings({"field_overrides": {"000100070008:inverter.inverter.W": "inverter_output_power"}})
                 self.assertTrue((tmp_path / "custom_groupings.yaml").exists())
 
                 # 4. save_mappings writes to tmp_path / groupings.yaml (not package pwrcell/data/)

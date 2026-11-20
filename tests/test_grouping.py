@@ -155,7 +155,7 @@ class TestGroupingOverrides(unittest.TestCase):
         """Grouping fields across different device types is strictly rejected."""
         with self.assertRaises(ValueError) as ctx:
             set_field_grouping_override(
-                device_sn="000100034AC7",
+                device_sn="000100030003",
                 field_key="pv_link.model_64207.P",
                 target_concept="inverter_output_power",
                 config_path=self.config_path,
@@ -441,7 +441,7 @@ class TestGroupingOverrides(unittest.TestCase):
     def test_manual_grouping_merges_standalone_fields(self):
         """When grouping a field with an existing standalone concept, both fields merge into one group."""
         pv_dev = UnifiedDevice(
-            serial_number="000100034AC7",
+            serial_number="000100030003",
             slave_id=1,
             device_type="pv_link",
             model_name="pv_link",

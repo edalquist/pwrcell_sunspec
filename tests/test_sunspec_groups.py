@@ -160,7 +160,7 @@ class TestMockFixturesAndStateStoreGroups(unittest.TestCase):
 
     def test_battery_dump_ingests_all_six_modules_and_modbus_details(self):
         _, store = self._ingest_fixtures(include_bulk=False)
-        bat = store.get_device("000100082128")
+        bat = store.get_device("000100080009")
         self.assertIsNotNone(bat)
 
         # Model 804: 6 modules
@@ -204,7 +204,7 @@ class TestMockFixturesAndStateStoreGroups(unittest.TestCase):
         self.assertGreater(m2_soc.offset, m1_soc.offset)
 
         # get_field_modbus_details resolves group metadata & parent scale factors
-        details = store.get_field_modbus_details("000100082128", m1_soc.key)
+        details = store.get_field_modbus_details("000100080009", m1_soc.key)
         self.assertIsNotNone(details)
         self.assertEqual(details["group"]["index"], 1)
         self.assertEqual(details["group"]["label"], "Module 1")
@@ -216,8 +216,8 @@ class TestMockFixturesAndStateStoreGroups(unittest.TestCase):
 
     def test_raw_buffers_excluded_and_bulk_tables_opt_in(self):
         _, store_default = self._ingest_fixtures(include_bulk=False)
-        beacon_default = store_default.get_device("0001001206E8")
-        pv_default = store_default.get_device("000100034AC7")
+        beacon_default = store_default.get_device("000100120001")
+        pv_default = store_default.get_device("000100030003")
         self.assertIsNotNone(beacon_default)
         self.assertIsNotNone(pv_default)
 
@@ -227,8 +227,8 @@ class TestMockFixturesAndStateStoreGroups(unittest.TestCase):
         self.assertFalse(any(k.startswith("pv_link.flash_reader.sector.") for k in pv_default.fields))
 
         _, store_bulk = self._ingest_fixtures(include_bulk=True)
-        beacon_bulk = store_bulk.get_device("0001001206E8")
-        pv_bulk = store_bulk.get_device("000100034AC7")
+        beacon_bulk = store_bulk.get_device("000100120001")
+        pv_bulk = store_bulk.get_device("000100030003")
         self.assertTrue(any(k.startswith("rebus_beacon.schedule.repeating.1.") for k in beacon_bulk.fields))
         # Model 64258 raw flash buffer stays excluded even when include_bulk_table_groups=True
         self.assertFalse(any(k.startswith("pv_link.flash_reader.sector.") for k in pv_bulk.fields))
@@ -448,10 +448,10 @@ class TestCatalogWildcardHelpers(unittest.TestCase):
         wk_804 = wildcardize_group_field_key("battery.lithium_ion_string.lithium_ion_string_module.1.ModSoC")
         self.assertEqual(wk_804, "battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC")
         self.assertTrue(is_group_wildcard_key(wk_804))
-        self.assertTrue(is_group_wildcard_key(f"000100082128:{wk_804}"))
+        self.assertTrue(is_group_wildcard_key(f"000100080009:{wk_804}"))
 
-        wk_dcb = wildcardize_group_field_key("000100082128:battery.DCB105_warranty.DCB105_module.6.SOC")
-        self.assertEqual(wk_dcb, "000100082128:battery.DCB105_warranty.DCB105_module.*.SOC")
+        wk_dcb = wildcardize_group_field_key("000100080009:battery.DCB105_warranty.DCB105_module.6.SOC")
+        self.assertEqual(wk_dcb, "000100080009:battery.DCB105_warranty.DCB105_module.*.SOC")
 
         # Nested group (M705 Crv.1.Pt.2) full and partial wildcards
         self.assertEqual(
@@ -1122,16 +1122,16 @@ class TestDefaultConfigsAndExporters(unittest.TestCase):
         # repairs unambiguous bare <pt>_<model> slugs, and drops unknown/.standalone./ambiguous slugs
         save_ha_config(
             [
-                "000100082128:battery.live.state_of_charge",
-                "000100082128:battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC",
-                "000100082128:battery.lithium_ion_string.lithium_ion_string_module.2.ModSoC",
-                "0001000714E9:inverter.compound.local_custom_only",
-                "000100082128:battery.standalone.socmin_802",
+                "000100080009:battery.live.state_of_charge",
+                "000100080009:battery.lithium_ion_string.lithium_ion_string_module.*.ModSoC",
+                "000100080009:battery.lithium_ion_string.lithium_ion_string_module.2.ModSoC",
+                "000100070008:inverter.compound.local_custom_only",
+                "000100080009:battery.standalone.socmin_802",
             ],
             config_path=self.ha_config_path,
             category_overrides={
-                "000100082128:battery.standalone.does_not_exist": "primary",
-                "000100082128:battery.REbus_status.V": "primary",
+                "000100080009:battery.standalone.does_not_exist": "primary",
+                "000100080009:battery.REbus_status.V": "primary",
                 "tmpot_102": "primary",
                 "v_64207": "primary",
             },

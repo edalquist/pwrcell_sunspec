@@ -29,19 +29,19 @@ class TestCorrelator(unittest.TestCase):
 
         # Register mock inverter and battery
         self.inv = self.state.register_device(
-            serial_number="0001000714E9",
+            serial_number="000100070008",
             slave_id=8,
             device_type="inverter",
             model_name="PWRcell Inverter",
         )
         self.bat = self.state.register_device(
-            serial_number="000100082128",
+            serial_number="000100080009",
             slave_id=9,
             device_type="battery",
             model_name="PWRcell Battery",
         )
         self.beacon = self.state.register_device(
-            serial_number="0001001206E8",
+            serial_number="000100120001",
             slave_id=1,
             device_type="rebus_beacon",
             model_name="REbus Beacon",
@@ -52,13 +52,13 @@ class TestCorrelator(unittest.TestCase):
         clear_custom_groupings_cache()
         self.tmp_dir.cleanup()
         self.bat = self.state.register_device(
-            serial_number="000100082128",
+            serial_number="000100080009",
             slave_id=9,
             device_type="battery",
             model_name="PWRcell Battery",
         )
         self.beacon = self.state.register_device(
-            serial_number="0001001206E8",
+            serial_number="000100120001",
             slave_id=1,
             device_type="rebus_beacon",
             model_name="REbus Beacon",
@@ -165,7 +165,7 @@ class TestCorrelator(unittest.TestCase):
 
         # Register 5 PV Link devices with individual powers summing to 978.0 W
         pv_powers = [201.0, 195.0, 200.0, 192.0, 190.0]  # Sum = 978.0
-        pv_sns = ["000100034AC7", "000100034E68", "000100034FAC", "0001000361C7", "0001000361F4"]
+        pv_sns = ["000100030003", "000100030004", "000100030005", "000100030006", "000100030007"]
 
         for sn, pwr in zip(pv_sns, pv_powers):
             pv_dev = self.state.register_device(
@@ -358,21 +358,21 @@ class TestCorrelator(unittest.TestCase):
         from pwrcell.grouping import is_field_excluded_from_mapping
         overrides = {
             "field_overrides": {
-                "000100082128:battery.live.battery_voltage_v": None,
-                "000100082128:battery.REbus_status.V": None,
-                "0001000714E9:inverter.inverter_status.CTPow": "inverter_output_power",
+                "000100080009:battery.live.battery_voltage_v": None,
+                "000100080009:battery.REbus_status.V": None,
+                "000100070008:inverter.inverter_status.CTPow": "inverter_output_power",
             }
         }
         # Ungrouped via exact match
-        self.assertTrue(is_field_excluded_from_mapping("000100082128", "battery.live.battery_voltage_v", "battery_voltage", overrides))
+        self.assertTrue(is_field_excluded_from_mapping("000100080009", "battery.live.battery_voltage_v", "battery_voltage", overrides))
         # Ungrouped via model suffix fallback (REbus_status.V matching model_64252.V)
-        self.assertTrue(is_field_excluded_from_mapping("000100082128", "battery.model_64252.V", "battery_voltage", overrides))
+        self.assertTrue(is_field_excluded_from_mapping("000100080009", "battery.model_64252.V", "battery_voltage", overrides))
         # Reassigned away from grid_power
-        self.assertTrue(is_field_excluded_from_mapping("0001000714E9", "inverter.inverter_status.CTPow", "grid_power", overrides))
+        self.assertTrue(is_field_excluded_from_mapping("000100070008", "inverter.inverter_status.CTPow", "grid_power", overrides))
         # Not excluded from the reassigned concept
-        self.assertFalse(is_field_excluded_from_mapping("0001000714E9", "inverter.inverter_status.CTPow", "inverter_output_power", overrides))
+        self.assertFalse(is_field_excluded_from_mapping("000100070008", "inverter.inverter_status.CTPow", "inverter_output_power", overrides))
         # Unaffected field
-        self.assertFalse(is_field_excluded_from_mapping("0001000714E9", "inverter.model_102.W", "inverter_output_power", overrides))
+        self.assertFalse(is_field_excluded_from_mapping("000100070008", "inverter.model_102.W", "inverter_output_power", overrides))
 
     def test_ungrouped_field_excluded_from_baseline_telemetry_comparison(self):
         """Ungrouping a field prevents it from being grouped with baseline Modbus candidates."""

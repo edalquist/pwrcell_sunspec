@@ -75,24 +75,24 @@ class TestHomeAssistantBridge(unittest.TestCase):
 
         # Clean published topics
         self.bridge._published_discovery_topics.clear()
-        self.bridge.selected_field_keys = ["0001000714E9:inverter.inverter.A"]
+        self.bridge.selected_field_keys = ["000100070008:inverter.inverter.A"]
 
         # Update field in state
         field = self.client.state.set_field(
-            device_sn="0001000714E9",
+            device_sn="000100070008",
             name="A",
             sub_group="inverter",
             value=12.5,
             label="Inverter Current",
         )
 
-        expected_config_topic = "homeassistant/sensor/pwrcell_0001000714e9/inverter_a/config"
+        expected_config_topic = "homeassistant/sensor/pwrcell_000100070008/inverter_a/config"
         self.assertIn(expected_config_topic, self.bridge._published_discovery_topics)
 
         # Both discovery config and state should have been published
         topics_published = [call[0][0] for call in self.mock_mqttc.publish.call_args_list]
         self.assertIn(expected_config_topic, topics_published)
-        self.assertIn("pwrcell/0001000714e9/inverter_a/state", topics_published)
+        self.assertIn("pwrcell/000100070008/inverter_a/state", topics_published)
 
     def test_deduplication_suppresses_raw_field_discovery(self):
         """Verify that when a compound field is active, the backing raw live field is suppressed and cleared."""
@@ -144,7 +144,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
 
     def test_persistent_startup_cleanup(self):
         """Verify that discovery topics from a previous process run are purged if no longer selected."""
-        orphaned_topic = "homeassistant/sensor/pwrcell_0001000714e9/old_deprecated_field/config"
+        orphaned_topic = "homeassistant/sensor/pwrcell_000100070008/old_deprecated_field/config"
         # Pre-seed persisted topics file representing previous run
         with open(self.topics_file, "w", encoding="utf-8") as f:
             json.dump([orphaned_topic], f)
@@ -153,7 +153,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
         new_bridge = HomeAssistantBridge(client=self.client, published_topics_path=self.topics_file)
         mock_mqttc = MagicMock()
         new_bridge._mqttc = mock_mqttc
-        new_bridge.selected_field_keys = ["0001000714E9:inverter.inverter.A"]
+        new_bridge.selected_field_keys = ["000100070008:inverter.inverter.A"]
 
         # Run discovery
         new_bridge.publish_discovery()
@@ -167,7 +167,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
         with open(self.topics_file, "r", encoding="utf-8") as f:
             persisted = json.load(f)
         self.assertNotIn(orphaned_topic, persisted)
-        self.assertIn("homeassistant/sensor/pwrcell_0001000714e9/inverter_a/config", persisted)
+        self.assertIn("homeassistant/sensor/pwrcell_000100070008/inverter_a/config", persisted)
 
     def test_compound_write_command_execution(self):
         """Verify that incoming MQTT commands on compound command topics execute writes."""
@@ -508,7 +508,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
             return orig_replace(path_self, target)
 
         with patch.object(Path, "replace", autospec=True, side_effect=tracking_replace):
-            save_ha_config(["0001000714E9:inverter.live.grid_power_w"], config_path=cfg_file)
+            save_ha_config(["000100070008:inverter.live.grid_power_w"], config_path=cfg_file)
             export_default_config(source_path=cfg_file, target_path=seed_file)
 
         self.assertIn(cfg_file, replaced_targets)
@@ -603,7 +603,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
                 self.bridge._execute_command_async,
                 "inverter.compound.system_mode",
                 "SELF_SUPPLY",
-                "0001000714E9",
+                "000100070008",
             )
 
         # Wait briefly for single-worker executor
@@ -865,10 +865,10 @@ class TestHomeAssistantBridge(unittest.TestCase):
     def test_on_field_update_retains_state_to_prevent_stale_broker_values(self):
         """Live raw field updates must publish with retain=True so HA reconnects never read stale broker values."""
         self.client.state.subscribe(self.bridge._on_field_update)
-        self.bridge.selected_field_keys = ["0001000714E9:inverter.inverter.A"]
+        self.bridge.selected_field_keys = ["000100070008:inverter.inverter.A"]
 
         self.client.state.set_field(
-            device_sn="0001000714E9",
+            device_sn="000100070008",
             name="A",
             sub_group="inverter",
             value=14.2,
@@ -877,7 +877,7 @@ class TestHomeAssistantBridge(unittest.TestCase):
 
         state_calls = [
             call for call in self.mock_mqttc.publish.call_args_list
-            if call[0][0] == "pwrcell/0001000714e9/inverter_a/state"
+            if call[0][0] == "pwrcell/000100070008/inverter_a/state"
         ]
         self.assertTrue(len(state_calls) >= 1)
         self.assertTrue(state_calls[-1].kwargs.get("retain") is True)

@@ -30,13 +30,13 @@ class TestCustomBounds(unittest.TestCase):
         self.catalog = get_catalog()
         self.state = StateStore()
         self.bat = self.state.register_device(
-            serial_number="000100082128",
+            serial_number="000100080009",
             slave_id=9,
             device_type="battery",
             model_name="PWRcell Battery",
         )
         self.state.set_field(
-            device_sn="000100082128",
+            device_sn="000100080009",
             name="AMax_SF",
             value=-2,
             raw_value=-2,
@@ -45,7 +45,7 @@ class TestCustomBounds(unittest.TestCase):
             model_id=802,
         )
         self.state.set_field(
-            device_sn="000100082128",
+            device_sn="000100080009",
             name="AChaMax",
             value=25.0,
             raw_value=2500,
@@ -91,7 +91,7 @@ class TestCustomBounds(unittest.TestCase):
     def test_get_custom_bounds_matching(self):
         test_bounds = {
             "battery.battery.AChaMax": {"min_value": 0.0, "max_value": 35.0, "step": None},
-            "000100082128:SoCMax": {"min_value": 50.0, "max_value": 90.0, "step": 1.0},
+            "000100080009:SoCMax": {"min_value": 50.0, "max_value": 90.0, "step": 1.0},
         }
 
         # Exact match
@@ -101,7 +101,7 @@ class TestCustomBounds(unittest.TestCase):
         self.assertEqual(res["max_value"], 35.0)
 
         # Serial-specific match
-        res_soc = get_custom_bounds("battery.battery.SoCMax", device_sn="000100082128", point_name="SoCMax", custom_bounds_dict=test_bounds)
+        res_soc = get_custom_bounds("battery.battery.SoCMax", device_sn="000100080009", point_name="SoCMax", custom_bounds_dict=test_bounds)
         self.assertIsNotNone(res_soc)
         self.assertEqual(res_soc["min_value"], 50.0)
         self.assertEqual(res_soc["max_value"], 90.0)
@@ -155,7 +155,7 @@ class TestCustomBounds(unittest.TestCase):
         cv = CompoundFieldView(
             id="battery_charge_limit",
             concept_key="battery_charge_limit",
-            device_sn="000100082128",
+            device_sn="000100080009",
             device_type="battery",
             name="battery_charge_limit",
             label="Charge Limit",

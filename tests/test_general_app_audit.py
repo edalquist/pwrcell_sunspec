@@ -30,19 +30,19 @@ class TestGeneralAppAuditFixes(unittest.TestCase):
         """A2: Verify get_blocked_mutation_fields inspects compound views via get_compound_views()."""
         # Register inverter and battery
         self.state.register_device(
-            serial_number="0001000714E9",
+            serial_number="000100070008",
             slave_id=8,
             device_type="inverter",
             model_name="PWRcell Inverter",
         )
         self.state.register_device(
-            serial_number="0001001206E8",
+            serial_number="000100120001",
             slave_id=1,
             device_type="rebus_beacon",
             model_name="REbus Beacon",
         )
         self.state.set_field(
-            device_sn="0001001206E8",
+            device_sn="000100120001",
             name="SysMd",
             label="System Operating Mode",
             value=1,
@@ -83,7 +83,7 @@ class TestGeneralAppAuditFixes(unittest.TestCase):
 
     def test_w1_write_field_scoped_to_device_sn(self):
         """W1: Verify write_field scopes device lookup to device_sn on multi-device systems."""
-        sn1 = "000100082128"
+        sn1 = "000100080009"
         sn2 = "000100082129"
 
         dev1 = self.state.register_device(serial_number=sn1, slave_id=9, device_type="battery", model_name="PWRcell Battery 1")
@@ -122,8 +122,8 @@ class TestGeneralAppAuditFixes(unittest.TestCase):
 
     def test_w2_unscoped_category_override_isolation(self):
         """W2: Verify model-point suffixes without device type do not cross-pollinate across devices."""
-        inv = self.state.register_device(serial_number="0001000714E9", slave_id=8, device_type="inverter", model_name="PWRcell Inverter")
-        bat = self.state.register_device(serial_number="000100082128", slave_id=9, device_type="battery", model_name="PWRcell Battery")
+        inv = self.state.register_device(serial_number="000100070008", slave_id=8, device_type="inverter", model_name="PWRcell Inverter")
+        bat = self.state.register_device(serial_number="000100080009", slave_id=9, device_type="battery", model_name="PWRcell Battery")
 
         self.state.set_field(
             device_sn=bat.serial_number,
@@ -159,7 +159,7 @@ class TestGeneralAppAuditFixes(unittest.TestCase):
     def test_combined_sensor_ignores_modbus_when_mqtt_selected(self):
         """Verify that when MQTT is selected on a combined sensor, Modbus updates are ignored."""
         inv = self.state.register_device(
-            serial_number="0001000714E9",
+            serial_number="000100070008",
             slave_id=8,
             device_type="inverter",
             model_name="PWRcell Inverter",

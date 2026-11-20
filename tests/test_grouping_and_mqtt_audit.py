@@ -30,8 +30,8 @@ class TestGroupingAndMqttAuditFixes(unittest.TestCase):
 
     def test_multi_device_compound_view_secondary_devices(self):
         """Bug H1: Verify secondary PV Links get compound views with their own device-scoped data."""
-        sn1 = "000100034AC7"
-        sn2 = "000100034E68"
+        sn1 = "000100030003"
+        sn2 = "000100030004"
 
         self.state.register_device(serial_number=sn1, slave_id=1, device_type="pv_link", model_name="PV Link 1")
         self.state.register_device(serial_number=sn2, slave_id=2, device_type="pv_link", model_name="PV Link 2")
@@ -76,7 +76,7 @@ class TestGroupingAndMqttAuditFixes(unittest.TestCase):
     def test_null_modbus_does_not_overwrite_valid_mqtt(self):
         """Bug H5: Polling an unimplemented/sentinel Modbus register (None) must not overwrite valid MQTT telemetry."""
         inv = self.state.register_device(
-            serial_number="0001000714E9",
+            serial_number="000100070008",
             slave_id=8,
             device_type="inverter",
             model_name="PWRcell Inverter",
@@ -114,7 +114,7 @@ class TestGroupingAndMqttAuditFixes(unittest.TestCase):
 
     def test_qualify_legacy_ha_config_remaps_concept_to_compound(self):
         """Bug D2: qualify_legacy_ha_config must remap known .concept. keys to .compound. instead of dropping them."""
-        sn = "0001000714E9"
+        sn = "000100070008"
         self.state.register_device(serial_number=sn, slave_id=8, device_type="inverter", model_name="Inverter")
 
         input_keys = [
@@ -131,7 +131,7 @@ class TestGroupingAndMqttAuditFixes(unittest.TestCase):
     def test_unreachable_dead_code_ha_category_fixed(self):
         """Bug H7: Verify c_view.ha_category is assigned rather than returning early with None."""
         inv = self.state.register_device(
-            serial_number="0001000714E9",
+            serial_number="000100070008",
             slave_id=8,
             device_type="inverter",
             model_name="PWRcell Inverter",
@@ -154,7 +154,7 @@ class TestGroupingAndMqttAuditFixes(unittest.TestCase):
     def test_state_store_refresh_compound_links(self):
         """Bug H2: Verify refresh_compound_links updates StateField compound_key."""
         inv = self.state.register_device(
-            serial_number="0001000714E9",
+            serial_number="000100070008",
             slave_id=8,
             device_type="inverter",
             model_name="PWRcell Inverter",
@@ -174,7 +174,7 @@ class TestGroupingAndMqttAuditFixes(unittest.TestCase):
     def test_rebus_exp_whin_mapped_to_grid_imported_energy(self):
         """Verify inverter.REbus_exp.Whin and model_64204.Whin map to grid_imported_energy."""
         inv = self.state.register_device(
-            serial_number="0001000714E9",
+            serial_number="000100070008",
             slave_id=8,
             device_type="inverter",
             model_name="PWRcell Inverter",
@@ -195,7 +195,7 @@ class TestGroupingAndMqttAuditFixes(unittest.TestCase):
     def test_standalone_field_no_none_suffix(self):
         """Verify unmapped push telemetry fields (model_id=None) do not append '_None' suffix."""
         inv = self.state.register_device(
-            serial_number="0001000714E9",
+            serial_number="000100070008",
             slave_id=8,
             device_type="inverter",
             model_name="PWRcell Inverter",

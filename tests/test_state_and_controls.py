@@ -18,19 +18,19 @@ class TestStateAndControls(unittest.TestCase):
 
         # Register mock inverter and battery
         self.inv = self.state.register_device(
-            serial_number="0001000714E9",
+            serial_number="000100070008",
             slave_id=8,
             device_type="inverter",
             model_name="PWRcell X7602 Inverter",
         )
         self.bat = self.state.register_device(
-            serial_number="000100082128",
+            serial_number="000100080009",
             slave_id=9,
             device_type="battery",
             model_name="PWRcell Battery",
         )
         self.beacon = self.state.register_device(
-            serial_number="0001001206E8",
+            serial_number="000100120001",
             slave_id=1,
             device_type="rebus_beacon",
             model_name="REbus Beacon",
@@ -477,7 +477,7 @@ class TestStateAndControls(unittest.TestCase):
         from pwrcell.catalog import HomeAssistantHint
 
         pv_link = self.state.register_device(
-            serial_number="000100034AC7",
+            serial_number="000100030003",
             slave_id=3,
             device_type="pv_link",
             model_name="PV Link",
@@ -582,7 +582,7 @@ class TestStateAndControls(unittest.TestCase):
             offset_file = Path(tmpdir) / ".monotonic_offsets.json"
             store = StateStore(catalog=self.catalog, offset_file=offset_file)
             pv_link = store.register_device(
-                serial_number="0001000361C7",
+                serial_number="000100030006",
                 slave_id=4,
                 device_type="pv_link",
                 model_name="PV Link",
@@ -663,7 +663,7 @@ class TestStateAndControls(unittest.TestCase):
             # A new StateStore instance with the same offset_file should reload offset = 206 Wh.
             store2 = StateStore(catalog=self.catalog, offset_file=offset_file)
             pv_link2 = store2.register_device(
-                serial_number="0001000361C7",
+                serial_number="000100030006",
                 slave_id=4,
                 device_type="pv_link",
                 model_name="PV Link",
@@ -943,9 +943,9 @@ class TestStateAndControls(unittest.TestCase):
             system_mode_name="SELF_SUPPLY",
             inverter_state=2,
             inverter_state_name="GRID_TIED",
-            inverter_id="0001000714E9",
+            inverter_id="000100070008",
             system_family="TYPE_2",
-            gateway_id="0001001206E8",
+            gateway_id="000100120001",
             gateway_type="BEACON_V1",
             battery_soc=78.46,
             battery_soh=98.2,
@@ -1015,7 +1015,7 @@ class TestStateAndControls(unittest.TestCase):
             "inverter.live.system_mode": ("SELF_SUPPLY", 2, None, "enum", None),
             "inverter.live.inverter_state": (2, 2, None, None, None),
             "inverter.live.inverter_state_name": ("GRID_TIED", 2, None, "enum", None),
-            "inverter.live.inverter_id": ("0001000714E9", "0001000714E9", None, None, None),
+            "inverter.live.inverter_id": ("000100070008", "000100070008", None, None, None),
             "inverter.live.system_family": ("TYPE_2", "TYPE_2", None, None, None),
             "inverter.live.grid_voltage_v": (241.2, 241.23, "V", "voltage", "measurement"),
             "inverter.live.grid_imported_energy_wh": (10000.0, 36000000, "Wh", "energy", "total_increasing"),
@@ -1058,7 +1058,7 @@ class TestStateAndControls(unittest.TestCase):
             self.assertEqual(f.ha_hint.state_class, exp_sc, f"Mismatch on {key}.state_class")
 
         expected_beacon = {
-            "rebus_beacon.live.gateway_id": ("0001001206E8", "0001001206E8"),
+            "rebus_beacon.live.gateway_id": ("000100120001", "000100120001"),
             "rebus_beacon.live.gateway_type": ("BEACON_V1", "BEACON_V1"),
         }
         for key, (exp_val, exp_raw) in expected_beacon.items():
@@ -1070,7 +1070,7 @@ class TestStateAndControls(unittest.TestCase):
     def test_rebus_status_substate_handling(self):
         """PV Link REbus_status.St reporting substate 12546 (0x3102) must resolve to LOW_SUN with substate 2."""
         pv = self.state.register_device(
-            serial_number="000100034AC7",
+            serial_number="000100030003",
             slave_id=3,
             device_type="pv_link",
             model_name="PWRcell PV Link",
@@ -1078,7 +1078,7 @@ class TestStateAndControls(unittest.TestCase):
 
         # 1. Test update_from_modbus_points with raw 12546
         self.state.update_from_modbus_points(
-            serial_number="000100034AC7",
+            serial_number="000100030003",
             model_id=64207,
             raw_values={"St": 12546, "V": 3800, "VT_sf": -1},
             computed_values={"V": 380.0},
@@ -1095,7 +1095,7 @@ class TestStateAndControls(unittest.TestCase):
 
         # 2. Test set_field directly with integer value
         f_direct = self.state.set_field(
-            device_sn="000100034AC7",
+            device_sn="000100030003",
             name="St",
             value=12546,
             raw_value=12546,

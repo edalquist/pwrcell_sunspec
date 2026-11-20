@@ -16,7 +16,7 @@ class TestBitfieldSupport(unittest.TestCase):
 
         # Register a mock battery device
         self.battery = self.state.register_device(
-            serial_number="000100082128",
+            serial_number="000100080009",
             slave_id=9,
             device_type="battery",
             model_name="PWRcell Battery",

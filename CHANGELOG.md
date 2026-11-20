@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.2] - 2026-11-19
+
+### Fixed
+- **Sanitized CI & Mock-Mode Test Fixtures (`tests/fixtures/model_dump/`, `pwrcell/fixtures.py`, `.gitignore`)**: Added sanitized SunSpec device dump fixtures (with synthetic serial numbers, fake MAC/UUIDs, and documentation IPs) so GitHub Actions CI unit tests and Home Assistant `mock_mode` work out of the box without committing real hardware identifiers.
+- **Release Please `config.yaml` Formatting & Version Check (`release-please-config.json`, `config.yaml`, `.github/workflows/ci.yml`)**: Switched `config.yaml` from Release Please's `yaml` updater (which stripped quotes and blank lines) to the `generic` updater with `# x-release-please-version`, and relaxed the CI version check to accept quoted or unquoted YAML version values.
+
 ## [3.3.1] - 2026-11-19
 
 ### Added

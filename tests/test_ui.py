@@ -87,11 +87,11 @@ class TestWebExplorerApi(unittest.TestCase):
         devices = resp.get_json()
         self.assertEqual(len(devices), 9)
         serials = [d["serial_number"] for d in devices]
-        self.assertIn("0001000714E9", serials)  # Inverter
-        self.assertIn("000100082128", serials)  # Battery
+        self.assertIn("000100070008", serials)  # Inverter
+        self.assertIn("000100080009", serials)  # Battery
 
     def test_device_details_endpoint(self):
-        resp = self.test_client.get("/api/devices/0001000714E9")
+        resp = self.test_client.get("/api/devices/000100070008")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertEqual(data["device_type"], "inverter")
@@ -144,7 +144,7 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertTrue(data["success"])
 
     def test_device_details_enum_metadata(self):
-        resp = self.test_client.get("/api/devices/0001001206E8")
+        resp = self.test_client.get("/api/devices/000100120001")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         fields = data.get("fields", {})
@@ -267,14 +267,14 @@ class TestWebExplorerApi(unittest.TestCase):
         resp = self.test_client.get("/api/devices")
         self.assertEqual(resp.status_code, 200)
         devices = resp.get_json()
-        inv = next(d for d in devices if d["serial_number"] == "0001000714E9")
+        inv = next(d for d in devices if d["serial_number"] == "000100070008")
         self.assertIn("supported_models", inv)
         self.assertIn("models", inv)
         self.assertEqual(len(inv["supported_models"]), 24)
         self.assertEqual(inv["model_count"], 24)
 
         # 2. Check /api/devices/<serial_number> detailed response
-        resp_detail = self.test_client.get("/api/devices/0001000714E9")
+        resp_detail = self.test_client.get("/api/devices/000100070008")
         self.assertEqual(resp_detail.status_code, 200)
         detail = resp_detail.get_json()
         self.assertEqual(len(detail["supported_models"]), 24)
@@ -295,7 +295,7 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertEqual(f_wrtg["model_label"], "Nameplate")
 
     def test_poll_all_device_models_endpoint(self):
-        resp = self.test_client.post("/api/devices/0001000714E9/poll_all")
+        resp = self.test_client.post("/api/devices/000100070008/poll_all")
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertTrue(data["success"])
@@ -375,8 +375,8 @@ class TestWebExplorerApi(unittest.TestCase):
 
     def test_multi_device_ha_config_isolation(self):
         """Verify that device-scoped selections prevent multiple devices of the same type from overwriting each other."""
-        sn1 = "000100034AC7"
-        sn2 = "000100034E68"
+        sn1 = "000100030003"
+        sn2 = "000100030004"
 
         # Select DCW for PV Link 1, and REbus_status.P for PV Link 2
         selected = [
@@ -430,7 +430,7 @@ class TestWebExplorerApi(unittest.TestCase):
 
     def test_ha_recommended_with_device_filter(self):
         """Verify that recommended fields can be filtered to a specific device serial number."""
-        sn = "000100034AC7"
+        sn = "000100030003"
         resp = self.test_client.get(f"/api/ha/recommended?serial_number={sn}")
         self.assertEqual(resp.status_code, 200)
         rec = resp.get_json().get("recommended_fields", [])
@@ -463,8 +463,8 @@ class TestWebExplorerApi(unittest.TestCase):
 
     def test_copy_device_selections_api(self):
         """Verify copying field selections across devices of the same type."""
-        # Source PV Link: 000100034AC7
-        source_sn = "000100034AC7"
+        # Source PV Link: 000100030003
+        source_sn = "000100030003"
         inv_sn = self.client.state.get_inverter().serial_number
 
         initial_selected = [
@@ -505,8 +505,8 @@ class TestWebExplorerApi(unittest.TestCase):
 
     def test_ha_config_device_merge(self):
         """Verify saving with device_serial and merge=True retains settings from other devices."""
-        sn1 = "000100034AC7"
-        sn2 = "000100034E68"
+        sn1 = "000100030003"
+        sn2 = "000100030004"
 
         # Initially save both devices
         self.test_client.post(
@@ -546,8 +546,8 @@ class TestWebExplorerApi(unittest.TestCase):
 
     def test_ha_config_multi_device_serials_merge(self):
         """Verify saving with device_serials list updates targets while retaining other devices."""
-        sn1 = "000100034AC7"
-        sn2 = "000100034E68"
+        sn1 = "000100030003"
+        sn2 = "000100030004"
         inv_sn = self.client.state.get_inverter().serial_number.strip().upper()
 
         # Initial state on disk
@@ -639,9 +639,9 @@ class TestWebExplorerApi(unittest.TestCase):
         from pwrcell.ha import unqualify_ha_config
 
         sample_qualified = [
-            "000100034AC7:pv_link.string_combiner.DCW",
-            "000100034E68:pv_link.string_combiner.DCW",
-            "0001000714E9:inverter.live.grid_power_w",
+            "000100030003:pv_link.string_combiner.DCW",
+            "000100030004:pv_link.string_combiner.DCW",
+            "000100070008:inverter.live.grid_power_w",
         ]
         unqualified = unqualify_ha_config(sample_qualified)
         self.assertEqual(unqualified, [
@@ -927,7 +927,7 @@ class TestWebExplorerApi(unittest.TestCase):
 
     def test_unified_fields_and_optimize_polling_endpoints(self):
         """Test unified field grouping and minimal model set solver endpoints."""
-        inv_sn = "0001000714E9"
+        inv_sn = "000100070008"
 
         # 1. Test /api/devices/<serial_number>/unified_fields
         resp = self.test_client.get(f"/api/devices/{inv_sn}/unified_fields")
@@ -1050,8 +1050,8 @@ class TestWebExplorerApi(unittest.TestCase):
 
     def test_pvlink_polling_optimizer_does_not_leak_peer_device_fields(self):
         """Verify optimize_polling for PV Link does not select Model 404 when Model 64207 satisfies all fields."""
-        pv_sn = "000100034E68"
-        # Simulate HA config that has keys from peer devices (like string_combiner.DCA on 0001000361F4)
+        pv_sn = "000100030004"
+        # Simulate HA config that has keys from peer devices (like string_combiner.DCA on 000100030007)
         mock_ha_keys = [
             f"{pv_sn}:pv_link.REbus_status.E",
             f"{pv_sn}:pv_link.REbus_status.I",
@@ -1059,7 +1059,7 @@ class TestWebExplorerApi(unittest.TestCase):
             f"{pv_sn}:pv_link.REbus_status.St",
             f"{pv_sn}:pv_link.REbus_status.T",
             f"{pv_sn}:pv_link.REbus_status.V",
-            "0001000361F4:pv_link.string_combiner.DCA",  # Peer device field on Model 404
+            "000100030007:pv_link.string_combiner.DCA",  # Peer device field on Model 404
         ]
         resp = self.test_client.post(
             f"/api/devices/{pv_sn}/optimize_polling",
@@ -1076,7 +1076,7 @@ class TestWebExplorerApi(unittest.TestCase):
 
     def test_ha_category_override_endpoints(self):
         """Verify POST /api/ha/category_override and GET /api/ha/config category overrides."""
-        inv_sn = "0001000714E9"
+        inv_sn = "000100070008"
 
         # Check GET /api/ha/config returns category_overrides dictionary
         cfg_resp = self.test_client.get("/api/ha/config")
@@ -1216,21 +1216,21 @@ class TestWebExplorerApi(unittest.TestCase):
 
         try:
             self.client.state.set_device_online(
-                "000100082128",
+                "000100080009",
                 False,
                 error="Modbus exception 2",
                 consecutive_errors=3,
             )
             ov2 = self.test_client.get("/api/overview").get_json()
-            self.assertIn("000100082128", ov2["connectivity"]["offline_devices"])
+            self.assertIn("000100080009", ov2["connectivity"]["offline_devices"])
 
             devs2 = self.test_client.get("/api/devices").get_json()
-            bat = next(d for d in devs2 if d["serial_number"] == "000100082128")
+            bat = next(d for d in devs2 if d["serial_number"] == "000100080009")
             self.assertFalse(bat["online"])
             self.assertEqual(bat["last_error"], "Modbus exception 2")
             self.assertEqual(bat["consecutive_errors"], 3)
         finally:
-            self.client.state.set_device_online("000100082128", True)
+            self.client.state.set_device_online("000100080009", True)
 
 
 if __name__ == "__main__":

@@ -30,13 +30,13 @@ class TestGoldenGrouping(unittest.TestCase):
 
         self.state = StateStore()
         self.inv = self.state.register_device(
-            serial_number="0001000714E9",
+            serial_number="000100070008",
             slave_id=8,
             device_type="inverter",
             model_name="PWRcell 2P Inverter",
         )
         self.bat = self.state.register_device(
-            serial_number="000100082128",
+            serial_number="000100080009",
             slave_id=9,
             device_type="battery",
             model_name="PWRcell Battery",

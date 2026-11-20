@@ -22,32 +22,32 @@ class TestHaDiscoveryAudit(unittest.TestCase):
         self.state = StateStore(catalog=self.catalog)
 
         self.inv = self.state.register_device(
-            serial_number="0001000714E9",
+            serial_number="000100070008",
             slave_id=8,
             device_type="inverter",
             model_name="PWRcell Inverter",
         )
         self.bat = self.state.register_device(
-            serial_number="000100082128",
+            serial_number="000100080009",
             slave_id=9,
             device_type="battery",
             model_name="PWRcell Battery",
         )
         self.beacon = self.state.register_device(
-            serial_number="0001001206E8",
+            serial_number="000100120001",
             slave_id=1,
             device_type="rebus_beacon",
             model_name="PWRcell Beacon",
         )
         self.pv = self.state.register_device(
-            serial_number="000100034AC7",
+            serial_number="000100030003",
             slave_id=3,
             device_type="pv_link",
             model_name="PWRcell PV Link",
         )
 
         # Ingest telemetry snapshot to populate live telemetry fields
-        gen = MockTelemetryGenerator(inverter_id="0001000714E9")
+        gen = MockTelemetryGenerator(inverter_id="000100070008")
         rec = gen.tick(2.0)
         snap = MqttClient._parse_snapshot(rec)
         if snap:
@@ -55,7 +55,7 @@ class TestHaDiscoveryAudit(unittest.TestCase):
 
         # Populate SunSpec Modbus points on inverter
         self.state.update_from_modbus_points(
-            serial_number="0001000714E9",
+            serial_number="000100070008",
             model_id=102,
             raw_values={
                 "W": 5000, "W_SF": 0,
@@ -78,7 +78,7 @@ class TestHaDiscoveryAudit(unittest.TestCase):
             },
         )
         self.state.update_from_modbus_points(
-            serial_number="0001000714E9",
+            serial_number="000100070008",
             model_id=64207,
             raw_values={"V": 3800, "VT_sf": -1, "T": 420, "St": 2080, "I": 100, "I_sf": -1},
             computed_values={"V": 380.0, "T": 42.0, "St": 2080, "I": 10.0},
@@ -86,7 +86,7 @@ class TestHaDiscoveryAudit(unittest.TestCase):
 
         # Populate SunSpec Modbus points on battery
         self.state.update_from_modbus_points(
-            serial_number="000100082128",
+            serial_number="000100080009",
             model_id=802,
             raw_values={
                 "SoC": 850, "SoC_SF": -1,
@@ -102,13 +102,13 @@ class TestHaDiscoveryAudit(unittest.TestCase):
 
         # Populate SunSpec Modbus points on PV link
         self.state.update_from_modbus_points(
-            serial_number="000100034AC7",
+            serial_number="000100030003",
             model_id=64207,
             raw_values={"P": 1500, "E": 120000, "V": 3800, "VT_sf": -1, "T": 380, "St": 8192, "I": 50, "I_sf": -1},
             computed_values={"P": 1500.0, "E": 120000, "V": 380.0, "T": 38.0, "St": 8192, "I": 5.0},
         )
         self.state.update_from_modbus_points(
-            serial_number="000100034AC7",
+            serial_number="000100030003",
             model_id=404,
             raw_values={"DCA": 85, "DCA_SF": -1},
             computed_values={"DCA": 8.5},

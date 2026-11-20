@@ -112,7 +112,7 @@ class TestTieredModbusPoller(unittest.TestCase):
             "inverter.inverter",
             "inverter.REbus_status",
             "pv_link.string_combiner.DCW",
-            "000100034AC7:pv_link.REbus_status.P",
+            "000100030003:pv_link.REbus_status.P",
             "battery.model_64252.W",
             "battery.compound.battery_power",
             "rebus_beacon.REbus_dir.SysMd",
@@ -197,7 +197,7 @@ class TestTieredModbusPoller(unittest.TestCase):
         poller.slow_models["pv_link"] = []
 
         # Sync an HA entity that uses pv_link Model 404
-        poller.sync_ha_selected_fields(["000100034AC7:pv_link.string_combiner.DCW"])
+        poller.sync_ha_selected_fields(["000100030003:pv_link.string_combiner.DCW"])
 
         # Model 404 should now be auto-registered in slow_models
         self.assertIn(404, poller.slow_models["pv_link"])
@@ -264,7 +264,7 @@ class TestTieredModbusPoller(unittest.TestCase):
     def test_model_64207_sentinel_scale_factors_in_state(self):
         """Verify model 64207 points with cvalue from safe_point_cvalue (or raw fallback without home-grown scaling) are handled safely in StateStore."""
         state = self.client.state
-        dev = state.register_device("000100034AC7", 3, "pv_link", "PV Link")
+        dev = state.register_device("000100030003", 3, "pv_link", "PV Link")
 
         # Simulate polling Model 64207 where safe_point_cvalue returned None for V and T (due to invalid VT_sf=32767)
         # and 0.0 for I (due to valid I_sf=-2)
@@ -293,7 +293,7 @@ class TestTieredModbusPoller(unittest.TestCase):
             "I_sf": -2,
         }
         state.update_from_modbus_points(
-            "000100034AC7",
+            "000100030003",
             64207,
             raw_values=raw_values,
             computed_values=computed_values,
@@ -311,7 +311,7 @@ class TestTieredModbusPoller(unittest.TestCase):
 
         # Verify that without computed_values, update_from_modbus_points does NOT re-implement home-grown SF scaling
         state.update_from_modbus_points(
-            "000100034AC7",
+            "000100030003",
             64207,
             raw_values={"V": 380, "VT_sf": -1},
         )
@@ -350,7 +350,7 @@ class TestTieredModbusPoller(unittest.TestCase):
     def test_poll_device_model_reads_multiple_instances(self):
         """Verify poll_device_model reads all instances of a repeating SunSpec model without key collisions."""
         state = self.client.state
-        dev = state.register_device("000100034AC7", 3, "pv_link", "PV Link")
+        dev = state.register_device("000100030003", 3, "pv_link", "PV Link")
 
         m_inst0 = MagicMock()
         p0 = MagicMock()
@@ -374,7 +374,7 @@ class TestTieredModbusPoller(unittest.TestCase):
         mock_mb.read_model_block.side_effect = lambda d, mid, index=0: d.models[mid][index]
         self.client.modbus = mock_mb
 
-        ok = self.client.poller.poll_device_model(3, "000100034AC7", 404)
+        ok = self.client.poller.poll_device_model(3, "000100030003", 404)
         self.assertTrue(ok)
         self.assertIn("pv_link.string_combiner.DCW", dev.fields)
         self.assertIn("pv_link.string_combiner_1.DCW", dev.fields)
@@ -439,8 +439,8 @@ class TestTieredModbusPoller(unittest.TestCase):
 
     def test_modbus_exception_2_triggers_single_rescan_and_respects_cooldown(self):
         """Modbus exception 2 (Illegal Data Address) must trigger a rescan+retry and honor rescan_cooldown."""
-        dev = self.client.state.register_device("000100082128", 9, "battery", "Battery")
-        self.client.state.set_supported_models("000100082128", [802, 64252])
+        dev = self.client.state.register_device("000100080009", 9, "battery", "Battery")
+        self.client.state.set_supported_models("000100080009", [802, 64252])
 
         now = [1000.0]
         poller = TieredModbusPoller(
@@ -474,7 +474,7 @@ class TestTieredModbusPoller(unittest.TestCase):
         self.client.modbus = mock_mb
 
         # 1. First Modbus exception 2 triggers rescan + retry and succeeds
-        ok = poller.poll_device_model(9, "000100082128", 64252)
+        ok = poller.poll_device_model(9, "000100080009", 64252)
         self.assertTrue(ok)
         mock_mb.rescan_device.assert_called_once_with(9, full_model_read=False)
         self.assertEqual(sorted(dev.supported_models), [802, 64252])
@@ -482,7 +482,7 @@ class TestTieredModbusPoller(unittest.TestCase):
         # 2. Another Modbus exception 2 within cooldown must NOT rescan again
         now[0] = 1015.0
         mock_mb.read_model_block.side_effect = RuntimeError("Modbus exception 2: addr: 40316 count: 114")
-        ok2 = poller.poll_device_model(9, "000100082128", 64252)
+        ok2 = poller.poll_device_model(9, "000100080009", 64252)
         self.assertFalse(ok2)
         self.assertEqual(mock_mb.rescan_device.call_count, 1)
 
@@ -492,13 +492,13 @@ class TestTieredModbusPoller(unittest.TestCase):
             RuntimeError("Modbus exception 2: addr: 40316 count: 114"),
             m64252_new,
         ]
-        ok3 = poller.poll_device_model(9, "000100082128", 64252)
+        ok3 = poller.poll_device_model(9, "000100080009", 64252)
         self.assertTrue(ok3)
         self.assertEqual(mock_mb.rescan_device.call_count, 2)
 
     def test_rescan_serial_mismatch_triggers_full_client_rescan(self):
         """If Model 1 serial changes after a slave rescan, _maybe_rescan_device triggers full client rescan."""
-        self.client.state.register_device("000100082128", 9, "battery", "Battery")
+        self.client.state.register_device("000100080009", 9, "battery", "Battery")
         poller = TieredModbusPoller(client=self.client, enabled=False)
 
         m1 = MagicMock()
@@ -516,16 +516,16 @@ class TestTieredModbusPoller(unittest.TestCase):
         self.client.modbus = mock_mb
         self.client.rescan_devices = MagicMock()
 
-        ok = poller._maybe_rescan_device(9, "000100082128", reason="test serial mismatch")
+        ok = poller._maybe_rescan_device(9, "000100080009", reason="test serial mismatch")
         self.assertFalse(ok)
         self.client.rescan_devices.assert_called_once_with()
 
     def test_repeated_device_failures_mark_offline_and_recovery_restores_and_rescans(self):
         """Repeated per-device Modbus failures mark the device offline; recovery restores online and rescans."""
-        inv = self.client.state.register_device("0001000714E9", 8, "inverter", "Inverter")
-        pv = self.client.state.register_device("0001000361F4", 7, "pv_link", "PV Link")
-        self.client.state.set_supported_models("0001000714E9", [102])
-        self.client.state.set_supported_models("0001000361F4", [64207])
+        inv = self.client.state.register_device("000100070008", 8, "inverter", "Inverter")
+        pv = self.client.state.register_device("000100030007", 7, "pv_link", "PV Link")
+        self.client.state.set_supported_models("000100070008", [102])
+        self.client.state.set_supported_models("000100030007", [64207])
 
         now = [1000.0]
         poller = TieredModbusPoller(
@@ -659,8 +659,8 @@ class TestTieredModbusPoller(unittest.TestCase):
 
     def test_missing_previously_supported_model_triggers_rescan_only_when_ever_supported(self):
         """A missing previously-supported model triggers a rescan, while a never-supported model does not."""
-        self.client.state.register_device("000100082128", 9, "battery", "Battery")
-        self.client.state.set_supported_models("000100082128", [802, 64252])
+        self.client.state.register_device("000100080009", 9, "battery", "Battery")
+        self.client.state.set_supported_models("000100080009", [802, 64252])
 
         now = [1000.0]
         poller = TieredModbusPoller(
@@ -691,12 +691,12 @@ class TestTieredModbusPoller(unittest.TestCase):
         self.client.modbus = mock_mb
 
         # 1. Never-supported model 64299 must NOT trigger a rescan
-        ok_never = poller.poll_device_model(9, "000100082128", 64299)
+        ok_never = poller.poll_device_model(9, "000100080009", 64299)
         self.assertFalse(ok_never)
         mock_mb.rescan_device.assert_not_called()
 
         # 2. Previously-supported model 64252 MUST trigger rescan and succeed on retry
-        ok_prev = poller.poll_device_model(9, "000100082128", 64252)
+        ok_prev = poller.poll_device_model(9, "000100080009", 64252)
         self.assertTrue(ok_prev)
         mock_mb.rescan_device.assert_called_once_with(9, full_model_read=False)
 

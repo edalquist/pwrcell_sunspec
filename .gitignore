@@ -12,8 +12,8 @@ config/custom_groupings.yaml
 config/.ha_published_topics.json
 known_hosts
 *.tmp
-model_dump/
-model_dump_2/
+/model_dump/
+/model_dump_2/
 sunspec-models/
 scan.json
 

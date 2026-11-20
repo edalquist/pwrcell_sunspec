@@ -67,7 +67,7 @@ jobs:
               pathlib.Path(".release-please-manifest.json").read_text(encoding="utf-8")
           )
 
-          config_match = re.search(r'^version:\s*"([^"]+)"', config_text, re.MULTILINE)
+          config_match = re.search(r'^version:\s*"?([^"\s#]+)"?', config_text, re.MULTILINE)
           init_match = re.search(r'^__version__\s*=\s*"([^"]+)"', init_text, re.MULTILINE)
 
           if not config_match:

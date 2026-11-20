@@ -19,9 +19,8 @@
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         {
-          "type": "yaml",
-          "path": "config.yaml",
-          "jsonpath": "$.version"
+          "type": "generic",
+          "path": "config.yaml"
         },
         {
           "type": "generic",

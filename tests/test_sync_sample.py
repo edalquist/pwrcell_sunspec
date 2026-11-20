@@ -23,7 +23,7 @@ class TestSyncSampling(unittest.TestCase):
         """Verify client.sync_sample_fields retrieves and updates values with minimal skew."""
         res = self.client.sync_sample_fields(
             field_keys=["inverter.live.solar_power_w", "inverter.102.W"],
-            device_sn="0001000714E9",
+            device_sn="000100070008",
         )
         self.assertEqual(res["status"], "ok")
         self.assertIn("skew_seconds", res)
@@ -41,7 +41,7 @@ class TestSyncSampling(unittest.TestCase):
         resp = self.http.post(
             "/api/compare/sync_sample",
             json={
-                "device_sn": "0001000714E9",
+                "device_sn": "000100070008",
                 "field_keys": ["inverter.live.solar_power_w", "inverter.102.W"],
             },
         )
@@ -56,7 +56,7 @@ class TestSyncSampling(unittest.TestCase):
         resp = self.http.post(
             "/api/compare/sync_sample",
             json={
-                "device_sn": "0001000714E9",
+                "device_sn": "000100070008",
                 "concept_key": "solar_power",
             },
         )
