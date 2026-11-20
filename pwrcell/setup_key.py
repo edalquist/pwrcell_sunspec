@@ -86,14 +86,23 @@ def generate_config_from_options(
     if ssh_key_file == "null":
         ssh_key_file = ""
 
+    def _safe_exists(path_str: str, require_nonempty: bool = False) -> bool:
+        try:
+            kp = Path(path_str)
+            if not kp.exists():
+                return False
+            return (kp.stat().st_size > 0) if require_nonempty else True
+        except OSError:
+            return False
+
     id_file = ""
-    if saved_key and Path(saved_key).exists() and Path(saved_key).stat().st_size > 0:
+    if saved_key and _safe_exists(saved_key, require_nonempty=True):
         id_file = saved_key
-    elif Path(target_key_path).exists() and Path(target_key_path).stat().st_size > 0:
+    elif _safe_exists(target_key_path, require_nonempty=True):
         id_file = target_key_path
-    elif ssh_key_file and Path(ssh_key_file).exists():
+    elif ssh_key_file and _safe_exists(ssh_key_file):
         id_file = ssh_key_file
-    elif Path("/share/pwrcell_ssh_key").exists():
+    elif _safe_exists("/share/pwrcell_ssh_key"):
         id_file = "/share/pwrcell_ssh_key"
 
     client_name = opts.get("mqtt_client_name") or ""

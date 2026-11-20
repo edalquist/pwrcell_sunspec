@@ -240,7 +240,11 @@ class TestPwrCellTunnel(unittest.TestCase):
             }
             opts_path.write_text(json.dumps(opts), encoding="utf-8")
 
-            generate_config_from_options(str(opts_path), str(cfg_path))
+            generate_config_from_options(
+                str(opts_path),
+                str(cfg_path),
+                target_key_path=str(Path(tmp) / "id_rsa_pwrcell"),
+            )
 
             self.assertTrue(cfg_path.exists())
             self.assertEqual(stat.S_IMODE(cfg_path.stat().st_mode), 0o600)
