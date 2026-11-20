@@ -1,4 +1,4 @@
-dataconf==3.7.1
+dataconf==4.0.0
 Flask==3.1.3
 paho-mqtt==2.2.0
 paramiko==5.1.0
