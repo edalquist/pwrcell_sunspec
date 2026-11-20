@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.4](https://github.com/edalquist/pwrcell_sunspec/compare/v3.3.3...v3.3.4) (2026-11-20)
+
+
+### Fixed
+
+* **deps:** update dependency dataconf to v4 ([d67f222](https://github.com/edalquist/pwrcell_sunspec/commit/d67f222c388c115ef38cdca6d40ba1eecd1a6808))
+* **deps:** update dependency dataconf to v4 ([b204d7a](https://github.com/edalquist/pwrcell_sunspec/commit/b204d7a0cd4d8040d4d0fb3c93fd1916e12e4178))
+* **deps:** update dependency flask to v3.1.3 [security] ([#28](https://github.com/edalquist/pwrcell_sunspec/issues/28)) ([aa749ef](https://github.com/edalquist/pwrcell_sunspec/commit/aa749efbc3ed4d6471f29b8b404827a2da604182))
+* **deps:** update ghcr.io/home-assistant/base-python docker tag to v3.15 ([#24](https://github.com/edalquist/pwrcell_sunspec/issues/24)) ([cc4ad84](https://github.com/edalquist/pwrcell_sunspec/commit/cc4ad847af86c9899d1d57972bc99e2faf5934c7))
+* **deps:** update python non-major dependencies ([#22](https://github.com/edalquist/pwrcell_sunspec/issues/22)) ([503091d](https://github.com/edalquist/pwrcell_sunspec/commit/503091dac192ffceaf8688e8086c390a94ce3de0))
+
 ## [3.3.3] - 2026-11-19
 
 ### Fixed
