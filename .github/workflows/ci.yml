@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Unit Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.14"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+  version-check:
+    name: Version & Changelog Sync
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Verify config.yaml, __init__.py, release-please manifest, and CHANGELOG.md match
+        run: |
+          python - <<'EOF'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          config_text = pathlib.Path("config.yaml").read_text(encoding="utf-8")
+          init_text = pathlib.Path("pwrcell/__init__.py").read_text(encoding="utf-8")
+          changelog_text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          manifest = json.loads(
+              pathlib.Path(".release-please-manifest.json").read_text(encoding="utf-8")
+          )
+
+          config_match = re.search(r'^version:\s*"([^"]+)"', config_text, re.MULTILINE)
+          init_match = re.search(r'^__version__\s*=\s*"([^"]+)"', init_text, re.MULTILINE)
+
+          if not config_match:
+              sys.exit("ERROR: Could not find version in config.yaml")
+          if not init_match:
+              sys.exit("ERROR: Could not find __version__ in pwrcell/__init__.py")
+
+          config_version = config_match.group(1)
+          init_version = init_match.group(1)
+          manifest_version = manifest.get(".")
+
+          print(f"config.yaml:                 {config_version}")
+          print(f"pwrcell/__init__.py:         {init_version}")
+          print(f".release-please-manifest:    {manifest_version}")
+
+          if not (config_version == init_version == manifest_version):
+              sys.exit("ERROR: Version mismatch across config.yaml, pwrcell/__init__.py, and .release-please-manifest.json")
+
+          escaped = re.escape(config_version)
+          if not re.search(rf"^##\s+\[?{escaped}\]?", changelog_text, re.MULTILINE):
+              sys.exit(f"ERROR: CHANGELOG.md is missing an entry for version {config_version}")
+
+          print(f"OK: All version files and CHANGELOG.md are in sync at {config_version}")
+          EOF
+
+  docker-build:
+    name: Docker Build Smoke Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build add-on container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

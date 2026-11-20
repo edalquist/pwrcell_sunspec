@@ -1,0 +1,71 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "schedule": [
+    "before 6am on Monday"
+  ],
+  "labels": [
+    "dependencies"
+  ],
+  "semanticCommits": "enabled",
+  "packageRules": [
+    {
+      "description": "Tag runtime Python and Docker dependency updates as fix(deps) so Release Please cuts a patch release",
+      "matchManagers": [
+        "pip_requirements",
+        "dockerfile"
+      ],
+      "semanticCommitType": "fix",
+      "semanticCommitScope": "deps"
+    },
+    {
+      "description": "Group non-major Python dependency updates into a single weekly PR and automerge when CI passes",
+      "matchManagers": [
+        "pip_requirements"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "python non-major dependencies",
+      "automerge": true
+    },
+    {
+      "description": "Keep protobuf on major version 7 until pwrcell/protos/energy_record_set_pb2.py is regenerated",
+      "matchDatasources": [
+        "pypi"
+      ],
+      "matchPackageNames": [
+        "protobuf"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "enabled": false
+    },
+    {
+      "description": "Automerge non-major Dockerfile base image updates when CI and Docker build pass",
+      "matchManagers": [
+        "dockerfile"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "digest"
+      ],
+      "automerge": true
+    },
+    {
+      "description": "Group GitHub Actions updates as chore(ci) so they do not trigger add-on releases",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "ci",
+      "groupName": "github actions",
+      "automerge": true
+    }
+  ]
+}

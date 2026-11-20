@@ -1,0 +1,25 @@
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run release-please
+        uses: googleapis/release-please-action@v4
+        with:
+          # Note: Using GITHUB_TOKEN works out of the box, but PRs opened by
+          # GITHUB_TOKEN will not trigger the CI workflow automatically unless
+          # you either close/reopen the Release PR or configure a repository
+          # secret (e.g. RELEASE_PLEASE_TOKEN) with a PAT / GitHub App token.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

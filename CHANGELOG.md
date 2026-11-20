@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.1] - 2026-11-19
+
+### Added
+- **GitHub Actions CI (`.github/workflows/ci.yml`)**: Runs the `unittest` suite on Python 3.13 and 3.14, verifies version/changelog synchronization across `config.yaml`, `pwrcell/__init__.py`, `.release-please-manifest.json`, and `CHANGELOG.md`, and performs a Docker build smoke test on PRs and pushes to `main`.
+- **Automated Dependency Updates (`renovate.json`)**: Configured Renovate to open weekly grouped PRs for Python, Dockerfile, and GitHub Actions updates, keeping `protobuf` on major version 7 to match the generated protobuf code, tagging runtime dependency updates as `fix(deps)` and CI updates as `chore(ci)`.
+- **Automated Releases via Release Please (`release-please-config.json`, `.release-please-manifest.json`, `.github/workflows/release-please.yml`)**: Automatically generates Release PRs, updates `CHANGELOG.md`, keeps `config.yaml` and `pwrcell/__init__.py` versions in sync, and publishes `vX.Y.Z` tags and GitHub Releases from Conventional Commits.
+
+### Changed
+- **Cleaned Up `requirements.txt`**: Removed 19 unused/transitive dependency pins (`absl-py`, `bcrypt`, `cffi`, `cryptography`, `dataclasses-json`, `isodate`, `marshmallow`, `mypy-extensions`, `packaging`, `pycparser`, `pyhocon`, `PyNaCl`, `pyparsing`, `pyserial`, `python-dateutil`, `six`, `typing-inspect`, `typing_extensions`, `Werkzeug`), retaining only the 9 direct runtime dependencies pinned with exact versions (`dataconf`, `Flask`, `paho-mqtt`, `paramiko`, `protobuf`, `pysunspec2`, `PyYAML`, `scp`, `sshtunnel`).
+
 ## [3.3.0] - 2026-11-18
 
 ### Added
