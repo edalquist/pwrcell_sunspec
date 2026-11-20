@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Run release-please
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@v5
         with:
           # Note: Using GITHUB_TOKEN works out of the box, but PRs opened by
           # GITHUB_TOKEN will not trigger the CI workflow automatically unless
