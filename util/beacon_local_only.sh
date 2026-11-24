@@ -19,20 +19,26 @@ DISABLE_NTP=0
 KEEP_CLOUD_BRIDGES=0
 KEEP_CLOUD_SERVICES=0
 KEEP_BINARY_LOG=0
+KEEP_POLLER_DB=0
 ROOT=""
 DRY_RUN=0
 
 WORK_DIR=""
 STAGED_FILES=""
+NEW_FILES_LIST=""
+HELPER_BACKUP_LIST=""
 
 ANY_MONIT_CHANGED=0
 MOSQUITTO_CONF_CHANGED=0
 UPDATE_MGR_CHANGED=0
 NTPDATE_CHANGED=0
 LOGROTATE_CHANGED=0
+HELPER_SCRIPTS_CHANGED=0
+STATUSPUSHER_RESTARTED=0
 
 MONIT_BACKUP_LIST=""
 MOSQUITTO_PRE_SNAPSHOT=""
+LAST_MQTT_PROBE_BYTES=0
 
 log() {
     printf '[beacon-local] %s\n' "$*"
@@ -90,14 +96,20 @@ Options:
   --keep-cloud-bridges  Leave Mosquitto AWS bridges and mosquitto.db untouched
   --keep-cloud-services Leave autossh and update_manager monit rules untouched
   --keep-binary-log     Leave lcm_core binary_log and logrotate untouched
+  --keep-poller-db      Leave sd_poller.db and hourly cloud-queue pruning untouched
   --root <dir>          Operate against an alternate root directory (for testing)
 
 Environment overrides (primarily for testing):
   MONIT_BIN                 Monit binary name/path (default: monit)
   MOSQUITTO_INIT            Mosquitto init script (default: <root>/etc/init.d/mosquitto)
+  STATUSPUSHER_INIT         S58statuspusher init (default: <root>/opt/pika/etc/init.d/S58statuspusher)
+  STATUSPOLLER_INIT         S57statuspoller init (default: <root>/opt/pika/etc/init.d/S57statuspoller)
   NTPDATE_SYNC_BIN          ntpdate-sync path (default: <root>/usr/bin/ntpdate-sync)
   UPDATE_MGR_INIT           update_manager init (default: <root>/opt/pika/etc/init.d/S90update_manager)
+  MOSQUITTO_SUB_BIN         mosquitto_sub binary (default: mosquitto_sub when --root unset; skipped when --root set)
+  SQLITE3_BIN               sqlite3 binary name/path (default: sqlite3)
   BINARY_LOG_TRUNCATE_BYTES Truncate binary_log threshold in bytes (default: 104857600)
+  SD_POLLER_DB_VACUUM_BYTES Compact sd_poller.db threshold in bytes (default: 52428800)
 
 Examples:
   sh util/beacon_local_only.sh --status
@@ -177,6 +189,10 @@ while [ $# -gt 0 ]; do
             KEEP_BINARY_LOG=1
             shift
             ;;
+        --keep-poller-db)
+            KEEP_POLLER_DB=1
+            shift
+            ;;
         --root)
             [ $# -ge 2 ] || die "--root requires a directory argument"
             ROOT="$2"
@@ -225,13 +241,24 @@ BINARY_LOG_LOGROTATE="${LOGROTATE_DIR}/lcm_binary_log"
 BINARY_LOG="${ROOT}/var/log/lcm_core/binary_log"
 BINARY_LOG_TRUNCATE_BYTES="${BINARY_LOG_TRUNCATE_BYTES:-104857600}"
 UPDATE_MGR_PID="${ROOT}/var/run/update_manager.pid"
+LOCAL_MQTT_CHECK_SCRIPT="${ROOT}/opt/pika/bin/check_local_mqtt_live.sh"
+CRON_HOURLY_DIR="${ROOT}/etc/cron.hourly"
+POLLER_DB_PRUNE_SCRIPT="${CRON_HOURLY_DIR}/prune_sd_poller_cloud_queue"
+SD_POLLER_DB="${ROOT}/opt/pika/var/lib/sd_poller.db"
+SD_POLLER_PID="${ROOT}/var/run/sd_poller.pid"
+MQTT_PID="${ROOT}/var/run/mqtt.pid"
+SD_POLLER_DB_VACUUM_BYTES="${SD_POLLER_DB_VACUUM_BYTES:-52428800}"
 
 BACKUP_DIR="${ROOT}/opt/pika/var/lib/beacon_local_only_backups"
 
 MONIT_BIN="${MONIT_BIN:-monit}"
 MOSQUITTO_INIT="${MOSQUITTO_INIT:-${ROOT}/etc/init.d/mosquitto}"
+STATUSPUSHER_INIT="${STATUSPUSHER_INIT:-${ROOT}/opt/pika/etc/init.d/S58statuspusher}"
+STATUSPOLLER_INIT="${STATUSPOLLER_INIT:-${ROOT}/opt/pika/etc/init.d/S57statuspoller}"
 NTPDATE_SYNC_BIN="${NTPDATE_SYNC_BIN:-${ROOT}/usr/bin/ntpdate-sync}"
 UPDATE_MGR_INIT="${UPDATE_MGR_INIT:-${ROOT}/opt/pika/etc/init.d/S90update_manager}"
+MOSQUITTO_SUB_BIN="${MOSQUITTO_SUB_BIN:-}"
+SQLITE3_BIN="${SQLITE3_BIN:-sqlite3}"
 
 MANAGED_RELPATHS="opt/pika/etc/monit.d/mqtt_client.cfg
 opt/pika/etc/monit.d/check_internet.cfg
@@ -241,7 +268,13 @@ opt/pika/etc/monit.d/update_manager.cfg
 opt/pika/etc/monit.cfg
 etc/mosquitto/mosquitto.conf
 etc/default/ntpdate
-etc/logrotate.d/lcm_binary_log"
+etc/logrotate.d/lcm_binary_log
+opt/pika/bin/check_local_mqtt_live.sh
+etc/cron.hourly/prune_sd_poller_cloud_queue"
+
+MANAGED_CREATED_RELPATHS="etc/logrotate.d/lcm_binary_log
+opt/pika/bin/check_local_mqtt_live.sh
+etc/cron.hourly/prune_sd_poller_cloud_queue"
 
 init_workdir() {
     if [ -z "$WORK_DIR" ]; then
@@ -319,6 +352,88 @@ report_rule_status() {
     fi
 }
 
+effective_mosquitto_sub_bin() {
+    if [ -n "$MOSQUITTO_SUB_BIN" ]; then
+        printf '%s\n' "$MOSQUITTO_SUB_BIN"
+    elif [ -z "$ROOT" ]; then
+        printf '%s\n' "mosquitto_sub"
+    else
+        printf '%s\n' ""
+    fi
+}
+
+can_probe_local_mqtt() {
+    sub_bin="$(effective_mosquitto_sub_bin)"
+    [ -n "$sub_bin" ] || return 1
+    command -v "$sub_bin" >/dev/null 2>&1
+}
+
+probe_local_mqtt_live() {
+    timeout_s="${1:-8}"
+    LAST_MQTT_PROBE_BYTES=0
+    sub_bin="$(effective_mosquitto_sub_bin)"
+    [ -n "$sub_bin" ] || return 1
+    command -v "$sub_bin" >/dev/null 2>&1 || return 1
+    LAST_MQTT_PROBE_BYTES="$("$sub_bin" -h 127.0.0.1 -p 1883 -t 'local/energy_recordset_live' -C 1 -W "$timeout_s" 2>/dev/null | wc -c | tr -d ' \t\r\n' || echo 0)"
+    case "$LAST_MQTT_PROBE_BYTES" in
+        ''|*[!0-9]*)
+            LAST_MQTT_PROBE_BYTES=0
+            return 1
+            ;;
+    esac
+    [ "$LAST_MQTT_PROBE_BYTES" -gt 0 ]
+}
+
+count_unsent_web_packages() {
+    [ -f "$SD_POLLER_DB" ] || { printf '0\n'; return 0; }
+    command -v "$SQLITE3_BIN" >/dev/null 2>&1 || { printf '0\n'; return 0; }
+    raw="$("$SQLITE3_BIN" "$SD_POLLER_DB" "PRAGMA busy_timeout=5000; SELECT 'CNT=' || count(*) FROM web_packages WHERE sent_to_server=0;" 2>/dev/null)" || { printf '0\n'; return 0; }
+    cnt="$(printf '%s\n' "$raw" | awk '/^CNT=[0-9]+$/ { sub(/^CNT=/, ""); val=$0 } END { print (val != "" ? val : 0) }')"
+    printf '%s\n' "$cnt"
+}
+
+stop_service_and_wait() {
+    init_script="$1"
+    pidfile="$2"
+    pid=""
+    if [ -f "$pidfile" ]; then
+        pid="$(tr -d ' \t\r\n' < "$pidfile" 2>/dev/null || true)"
+    fi
+    "$init_script" stop || warn "$init_script stop returned non-zero"
+    if [ -z "$ROOT" ] && [ -n "$pid" ]; then
+        case "$pid" in
+            *[!0-9]*) pid="" ;;
+        esac
+        if [ -n "$pid" ]; then
+            wait_i=0
+            while [ "$wait_i" -lt 10 ] && kill -0 "$pid" 2>/dev/null; do
+                sleep 1
+                wait_i=$((wait_i + 1))
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+                warn "Process $pid did not exit within 10s after $init_script stop; sending SIGKILL"
+                kill -9 "$pid" 2>/dev/null || true
+                sleep 1
+                rm -f "$pidfile" 2>/dev/null || true
+            fi
+        fi
+    fi
+}
+
+restart_statuspusher() {
+    log "Restarting S58statuspusher ($STATUSPUSHER_INIT)..."
+    "$MONIT_BIN" unmonitor mqtt_client >/dev/null 2>&1 || true
+    [ -z "$ROOT" ] && sleep 1
+    stop_service_and_wait "$STATUSPUSHER_INIT" "$MQTT_PID"
+    if ! "$STATUSPUSHER_INIT" start; then
+        "$MONIT_BIN" monitor mqtt_client >/dev/null 2>&1 || true
+        "$MONIT_BIN" monitor local_mqtt_live >/dev/null 2>&1 || true
+        die "$STATUSPUSHER_INIT start failed"
+    fi
+    "$MONIT_BIN" monitor mqtt_client >/dev/null 2>&1 || true
+    "$MONIT_BIN" monitor local_mqtt_live >/dev/null 2>&1 || true
+}
+
 run_status() {
     log "Audit target: ${ROOT:-/}"
     if [ -z "$ROOT" ]; then
@@ -339,6 +454,7 @@ run_status() {
 
     printf '\nEssential local Monit services (must stay ACTIVE):\n'
     report_rule_status "mqtt_client" "$MQTT_CLIENT_CFG" "mqtt_client"
+    report_rule_status "local_mqtt_live" "$MQTT_CLIENT_CFG" "local_mqtt_live"
     report_rule_status "lcm_core" "$LCM_CORE_CFG" "lcm_core"
     report_rule_status "mosquitto" "$MOSQUITTO_CFG_REF" "mosquitto"
 
@@ -370,6 +486,14 @@ run_status() {
         fi
     else
         printf '  %-24s %s\n' "mosquitto.db:" "not present"
+    fi
+
+    if can_probe_local_mqtt; then
+        if probe_local_mqtt_live 7; then
+            printf '  %-24s %s\n' "local/energy_recordset_live:" "LIVE (${LAST_MQTT_PROBE_BYTES} bytes)"
+        else
+            printf '  %-24s %s\n' "local/energy_recordset_live:" "SILENT (no message within 7s — run --apply to recover S58statuspusher)"
+        fi
     fi
 
     printf '\nNTP configuration:\n'
@@ -411,6 +535,39 @@ run_status() {
         fi
     else
         printf '  %-24s %s\n' "binary_log:" "not present"
+    fi
+
+    if [ -f "$POLLER_DB_PRUNE_SCRIPT" ]; then
+        if grep -q '^# Managed by beacon_local_only\.sh' "$POLLER_DB_PRUNE_SCRIPT"; then
+            printf '  %-24s %s\n' "sd_poller.db cron prune:" "managed ($POLLER_DB_PRUNE_SCRIPT)"
+        else
+            printf '  %-24s %s\n' "sd_poller.db cron prune:" "custom ($POLLER_DB_PRUNE_SCRIPT)"
+        fi
+    else
+        printf '  %-24s %s\n' "sd_poller.db cron prune:" "not configured"
+    fi
+    if [ -e "$SD_POLLER_DB" ]; then
+        poller_bytes="$(file_size_bytes "$SD_POLLER_DB")"
+        poller_mb=$((poller_bytes / 1048576))
+        vacuum_mb=$((SD_POLLER_DB_VACUUM_BYTES / 1048576))
+        if command -v "$SQLITE3_BIN" >/dev/null 2>&1; then
+            unsent_pkgs="$(count_unsent_web_packages)"
+            if [ "$poller_bytes" -ge "$SD_POLLER_DB_VACUUM_BYTES" ] && [ "$unsent_pkgs" -gt 0 ]; then
+                printf '  %-24s %s\n' "sd_poller.db:" "${poller_mb} MiB (WARNING: >= ${vacuum_mb} MiB with ${unsent_pkgs} unsent web_packages; --apply will prune and VACUUM)"
+            elif [ "$poller_bytes" -ge "$SD_POLLER_DB_VACUUM_BYTES" ]; then
+                printf '  %-24s %s\n' "sd_poller.db:" "${poller_mb} MiB (${unsent_pkgs} unsent web_packages; WARNING: >= ${vacuum_mb} MiB)"
+            else
+                printf '  %-24s %s\n' "sd_poller.db:" "${poller_mb} MiB (${unsent_pkgs} unsent web_packages)"
+            fi
+        else
+            if [ "$poller_bytes" -ge "$SD_POLLER_DB_VACUUM_BYTES" ]; then
+                printf '  %-24s %s\n' "sd_poller.db:" "${poller_mb} MiB (WARNING: >= ${vacuum_mb} MiB)"
+            else
+                printf '  %-24s %s\n' "sd_poller.db:" "${poller_mb} MiB"
+            fi
+        fi
+    else
+        printf '  %-24s %s\n' "sd_poller.db:" "not present"
     fi
 
     if [ -d "$BACKUP_DIR" ]; then
@@ -528,6 +685,49 @@ strip_managed_block_and_comment_keys() {
     ' "$src" > "$out"
 }
 
+upsert_managed_block() {
+    src="$1"
+    out="$2"
+    block_tag="$3"
+    block_file="$4"
+    awk -v tag="$block_tag" -v bfile="$block_file" '
+        BEGIN {
+            begin_marker = "# BEGIN beacon_local_only " tag
+            end_marker = "# END beacon_local_only " tag
+            in_managed = 0
+            count = 0
+        }
+        {
+            if ($0 == begin_marker) {
+                in_managed = 1
+                next
+            }
+            if (in_managed) {
+                if ($0 == end_marker) {
+                    in_managed = 0
+                }
+                next
+            }
+            lines[++count] = $0
+        }
+        END {
+            while (count > 0 && lines[count] ~ /^[ \t]*$/) {
+                count--
+            }
+            for (i = 1; i <= count; i++) {
+                print lines[i]
+            }
+            if (count > 0) {
+                print ""
+            }
+            while ((getline bline < bfile) > 0) {
+                print bline
+            }
+            close(bfile)
+        }
+    ' "$src" > "$out"
+}
+
 revert_file_by_unmarking() {
     src="$1"
     out="$2"
@@ -620,8 +820,48 @@ ${relpath}"
     ANY_MONIT_CHANGED=1
 }
 
+track_helper_backup() {
+    relpath="$1"
+    case "
+$HELPER_BACKUP_LIST
+" in
+        *"
+$relpath
+"*) ;;
+        *)
+            if [ -z "$HELPER_BACKUP_LIST" ]; then
+                HELPER_BACKUP_LIST="$relpath"
+            else
+                HELPER_BACKUP_LIST="${HELPER_BACKUP_LIST}
+${relpath}"
+            fi
+            ;;
+    esac
+}
+
+track_new_file() {
+    relpath="$1"
+    case "
+$NEW_FILES_LIST
+" in
+        *"
+$relpath
+"*) ;;
+        *)
+            if [ -z "$NEW_FILES_LIST" ]; then
+                NEW_FILES_LIST="$relpath"
+            else
+                NEW_FILES_LIST="${NEW_FILES_LIST}
+${relpath}"
+            fi
+            ;;
+    esac
+}
+
 rollback_monit_changes() {
-    [ -n "$MONIT_BACKUP_LIST" ] || return 0
+    if [ -z "$MONIT_BACKUP_LIST" ] && [ -z "$HELPER_BACKUP_LIST" ] && [ -z "$NEW_FILES_LIST" ]; then
+        return 0
+    fi
     err "Rolling back modified monit configuration files..."
     OLD_IFS="$IFS"
     IFS='
@@ -638,18 +878,69 @@ ${staged}"
             mv "$staged" "$target"
         fi
     done
+    for relpath in $HELPER_BACKUP_LIST; do
+        [ -n "$relpath" ] || continue
+        snap_path="${WORK_DIR}/rollback/${relpath}"
+        target="${ROOT}/${relpath}"
+        if [ -f "$snap_path" ]; then
+            staged="${target}.beacon_tmp.$$"
+            STAGED_FILES="${STAGED_FILES}
+${staged}"
+            cp -p "$snap_path" "$staged"
+            mv "$staged" "$target"
+        fi
+    done
+    for relpath in $NEW_FILES_LIST; do
+        [ -n "$relpath" ] || continue
+        rm -f "${ROOT}/${relpath}"
+    done
     IFS="$OLD_IFS"
+}
+
+record_change_kind() {
+    kind="$1"
+    relpath="$2"
+    if [ "$kind" = "monit" ]; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+            ANY_MONIT_CHANGED=1
+        else
+            track_monit_change "$relpath"
+        fi
+    elif [ "$kind" = "mosquitto" ]; then
+        MOSQUITTO_CONF_CHANGED=1
+    elif [ "$kind" = "ntpdate" ]; then
+        NTPDATE_CHANGED=1
+    elif [ "$kind" = "logrotate" ]; then
+        LOGROTATE_CHANGED=1
+    elif [ "$kind" = "helper" ]; then
+        HELPER_SCRIPTS_CHANGED=1
+    fi
 }
 
 # Apply candidate file atomically while preserving permissions. Sets LAST_CHANGED=0|1.
 apply_staged_candidate() {
     relpath="$1"
     cand="$2"
-    kind="$3" # monit | mosquitto | ntpdate | other
+    kind="$3" # monit | mosquitto | ntpdate | logrotate | helper | other
+    mode="${4:-644}"
     target="${ROOT}/${relpath}"
 
     LAST_CHANGED=0
     if [ -f "$target" ] && cmp -s "$target" "$cand"; then
+        if [ "$mode" = "755" ] && [ ! -x "$target" ]; then
+            if [ "$DRY_RUN" -eq 1 ]; then
+                log "[dry-run] Would chmod 755 $target"
+            else
+                snapshot_for_rollback "$relpath"
+                chmod 755 "$target"
+                if [ "$kind" = "helper" ]; then
+                    track_helper_backup "$relpath"
+                fi
+                log "Updated permissions (0755) on $target"
+            fi
+            record_change_kind "$kind" "$relpath"
+            LAST_CHANGED=1
+        fi
         return 0
     fi
 
@@ -665,9 +956,13 @@ apply_staged_candidate() {
                 diff -u /dev/null "$cand" || true
             fi
         fi
+        record_change_kind "$kind" "$relpath"
         LAST_CHANGED=1
         return 0
     fi
+
+    target_existed=0
+    [ -f "$target" ] && target_existed=1
 
     backup_original_if_needed "$relpath"
     snapshot_for_rollback "$relpath"
@@ -675,25 +970,28 @@ apply_staged_candidate() {
     staged="${target}.beacon_tmp.$$"
     STAGED_FILES="${STAGED_FILES}
 ${staged}"
-    if [ -f "$target" ]; then
+    if [ "$target_existed" -eq 1 ]; then
         cp -p "$target" "$staged"
     else
         mkdir -p "$(dirname "$target")"
         : > "$staged"
-        chmod 644 "$staged"
+        chmod "$mode" "$staged"
     fi
     cat "$cand" > "$staged"
+    if [ "$target_existed" -eq 1 ] && [ "$mode" = "755" ]; then
+        chmod 755 "$staged"
+    fi
     mv "$staged" "$target"
 
-    if [ "$kind" = "monit" ]; then
-        track_monit_change "$relpath"
-    elif [ "$kind" = "mosquitto" ]; then
-        MOSQUITTO_CONF_CHANGED=1
-    elif [ "$kind" = "ntpdate" ]; then
-        NTPDATE_CHANGED=1
-    elif [ "$kind" = "logrotate" ]; then
-        LOGROTATE_CHANGED=1
+    if [ "$kind" = "helper" ]; then
+        if [ "$target_existed" -eq 0 ]; then
+            track_new_file "$relpath"
+        else
+            track_helper_backup "$relpath"
+        fi
     fi
+
+    record_change_kind "$kind" "$relpath"
 
     log "Updated $target"
     LAST_CHANGED=1
@@ -731,11 +1029,56 @@ process_monit_uncomment_file() {
 run_apply_or_dryrun() {
     init_workdir
 
-    # 1. Disable cloud-only checks while keeping mqtt_client and lcm_core intact.
-    process_monit_comment_file \
-        "opt/pika/etc/monit.d/mqtt_client.cfg" \
-        '^check[ \t]+program[ \t]+(mqtt_reboot|mqtt_active|ipv6_monitor)([ \t]|$)' \
-        1
+    # 1. Install local MQTT liveness watchdog script before modifying mqtt_client.cfg
+    # so `monit -t` validates an existing executable check script.
+    cand_mqtt_check="${WORK_DIR}/cand_check_local_mqtt_live"
+    cat > "$cand_mqtt_check" <<'EOF'
+#!/bin/sh
+# Managed by beacon_local_only.sh (local-only mode)
+# Verify sd_pusher is actively publishing to local/energy_recordset_live on 127.0.0.1:1883.
+# Recovers from sd_pusher's upstream autopush_lock self-deadlock without relying on AWS cloud.
+timeout_s="${1:-15}"
+topic="${2:-local/energy_recordset_live}"
+mosq_sub="${MOSQUITTO_SUB_BIN:-mosquitto_sub}"
+if ! command -v "$mosq_sub" >/dev/null 2>&1; then
+    echo "mosquitto_sub not found ($mosq_sub); skipping local MQTT live check"
+    exit 0
+fi
+bytes="$("$mosq_sub" -h 127.0.0.1 -p 1883 -t "$topic" -C 1 -W "$timeout_s" 2>/dev/null | wc -c | tr -d ' \t')"
+if [ "${bytes:-0}" -gt 0 ]; then
+    exit 0
+fi
+echo "No local MQTT payload received on ${topic} within ${timeout_s}s"
+exit 1
+EOF
+    apply_staged_candidate "opt/pika/bin/check_local_mqtt_live.sh" "$cand_mqtt_check" "helper" "755"
+
+    # Disable cloud-only checks in mqtt_client.cfg and add local_mqtt_live watchdog
+    # while keeping mqtt_client and lcm_core intact.
+    if [ ! -f "$MQTT_CLIENT_CFG" ]; then
+        die "Required monit config missing: $MQTT_CLIENT_CFG"
+    fi
+    cand_mqtt_1="${WORK_DIR}/cand_mqtt_client_step1"
+    cand_mqtt_2="${WORK_DIR}/cand_mqtt_client_step2"
+    local_mqtt_block="${WORK_DIR}/local_mqtt_block"
+    cat > "$local_mqtt_block" <<'EOF'
+# BEGIN beacon_local_only local_mqtt_watchdog
+check program local_mqtt_live with path "/opt/pika/bin/check_local_mqtt_live.sh 15" timeout 30 seconds every 12 cycles
+    if status != 0 for 2 cycles then exec "/opt/pika/etc/init.d/S58statuspusher stop"
+    repeat every 2 cycles
+    depends on mqtt_client
+# END beacon_local_only local_mqtt_watchdog
+EOF
+    comment_monit_blocks \
+        "$MQTT_CLIENT_CFG" \
+        "$cand_mqtt_1" \
+        '^check[ \t]+program[ \t]+(mqtt_reboot|mqtt_active|ipv6_monitor)([ \t]|$)'
+    upsert_managed_block \
+        "$cand_mqtt_1" \
+        "$cand_mqtt_2" \
+        "local_mqtt_watchdog" \
+        "$local_mqtt_block"
+    apply_staged_candidate "opt/pika/etc/monit.d/mqtt_client.cfg" "$cand_mqtt_2" "monit"
 
     process_monit_comment_file \
         "opt/pika/etc/monit.d/check_internet.cfg" \
@@ -867,6 +1210,39 @@ EOF
         fi
     fi
 
+    # 5b. Prune & compact offline sd_poller.db cloud upload queue (web_packages)
+    need_poller_db_compact=0
+    poller_db_bytes=0
+    unsent_web_packages=0
+    if [ "$KEEP_POLLER_DB" -eq 0 ]; then
+        if [ -d "$CRON_HOURLY_DIR" ]; then
+            cand_prune="${WORK_DIR}/cand_prune_sd_poller_cloud_queue"
+            cat > "$cand_prune" <<'EOF'
+#!/bin/sh
+# Managed by beacon_local_only.sh (local-only mode)
+# Prunes unsent AWS cloud upload bundles (web_packages) from sd_poller.db
+# so offline SQLite bloat cannot trigger PRAGMA integrity_check lockouts.
+DB_FILE="/opt/pika/var/lib/sd_poller.db"
+[ -f "$DB_FILE" ] || exit 0
+command -v sqlite3 >/dev/null 2>&1 || exit 0
+sqlite3 "$DB_FILE" "PRAGMA busy_timeout=10000; DELETE FROM web_packages WHERE sent_to_server=0;" >/dev/null 2>&1 || true
+EOF
+            apply_staged_candidate "etc/cron.hourly/prune_sd_poller_cloud_queue" "$cand_prune" "helper" "755"
+        else
+            warn "Missing $CRON_HOURLY_DIR; skipping sd_poller.db cron prune configuration"
+        fi
+
+        if [ -f "$SD_POLLER_DB" ] && command -v "$SQLITE3_BIN" >/dev/null 2>&1; then
+            poller_db_bytes="$(file_size_bytes "$SD_POLLER_DB")"
+            if [ "$poller_db_bytes" -ge "$SD_POLLER_DB_VACUUM_BYTES" ]; then
+                unsent_web_packages="$(count_unsent_web_packages)"
+                if [ "$unsent_web_packages" -gt 0 ]; then
+                    need_poller_db_compact=1
+                fi
+            fi
+        fi
+    fi
+
     # Determine post-config service actions
     need_update_mgr_stop=0
     if [ "$KEEP_CLOUD_SERVICES" -eq 0 ] && [ -x "$UPDATE_MGR_INIT" ]; then
@@ -889,6 +1265,23 @@ EOF
         fi
     fi
 
+    need_statuspusher_restart=0
+    statuspusher_restart_reason=""
+    if [ -x "$STATUSPUSHER_INIT" ]; then
+        if [ "$need_poller_db_compact" -eq 1 ]; then
+            need_statuspusher_restart=0
+        elif [ "$need_mosq_restart" -eq 1 ]; then
+            need_statuspusher_restart=1
+            statuspusher_restart_reason="mosquitto was restarted"
+        elif can_probe_local_mqtt; then
+            if ! probe_local_mqtt_live 8; then
+                warn "No live message on local/energy_recordset_live within 8s; S58statuspusher needs restart"
+                need_statuspusher_restart=1
+                statuspusher_restart_reason="local/energy_recordset_live is silent"
+            fi
+        fi
+    fi
+
     if [ "$DRY_RUN" -eq 1 ]; then
         if [ "$ANY_MONIT_CHANGED" -eq 1 ]; then
             log "[dry-run] Would run: $MONIT_BIN -t && $MONIT_BIN reload"
@@ -899,13 +1292,19 @@ EOF
         if [ "$need_mosq_restart" -eq 1 ]; then
             log "[dry-run] Would stop mosquitto, remove mosquitto.db*, and start mosquitto"
         fi
+        if [ "$need_poller_db_compact" -eq 1 ]; then
+            log "[dry-run] Would stop sd_poller & S58statuspusher, prune ${unsent_web_packages} unsent web_packages, VACUUM $SD_POLLER_DB ($((poller_db_bytes / 1048576)) MiB), and restart services"
+        fi
+        if [ "$need_statuspusher_restart" -eq 1 ]; then
+            log "[dry-run] Would restart S58statuspusher (${statuspusher_restart_reason})"
+        fi
         if [ "$need_ntp_sync" -eq 1 ]; then
             log "[dry-run] Would run: $NTPDATE_SYNC_BIN foreground"
         fi
         if [ "$need_binary_log_truncate" -eq 1 ]; then
             log "[dry-run] Would truncate $BINARY_LOG in place ($((bin_bytes / 1048576)) MiB -> 0 MiB)"
         fi
-        if [ "$ANY_MONIT_CHANGED" -eq 0 ] && [ "$MOSQUITTO_CONF_CHANGED" -eq 0 ] && [ "$mosq_db_exists" -eq 0 ] && [ "$NTPDATE_CHANGED" -eq 0 ] && [ "$LOGROTATE_CHANGED" -eq 0 ] && [ "$need_update_mgr_stop" -eq 0 ] && [ "$need_ntp_sync" -eq 0 ] && [ "$need_binary_log_truncate" -eq 0 ]; then
+        if [ "$ANY_MONIT_CHANGED" -eq 0 ] && [ "$MOSQUITTO_CONF_CHANGED" -eq 0 ] && [ "$mosq_db_exists" -eq 0 ] && [ "$NTPDATE_CHANGED" -eq 0 ] && [ "$LOGROTATE_CHANGED" -eq 0 ] && [ "$HELPER_SCRIPTS_CHANGED" -eq 0 ] && [ "$need_update_mgr_stop" -eq 0 ] && [ "$need_poller_db_compact" -eq 0 ] && [ "$need_statuspusher_restart" -eq 0 ] && [ "$need_ntp_sync" -eq 0 ] && [ "$need_binary_log_truncate" -eq 0 ]; then
             log "[dry-run] Already configured; no changes required."
         fi
         return 0
@@ -930,6 +1329,7 @@ EOF
 
     # 7. Restart Mosquitto cleanly & delete bloated mosquitto.db while stopped.
     if [ "$need_mosq_restart" -eq 1 ]; then
+        "$MONIT_BIN" unmonitor mosquitto >/dev/null 2>&1 || true
         log "Stopping mosquitto ($MOSQUITTO_INIT stop)..."
         if ! "$MOSQUITTO_INIT" stop; then
             if [ "$MOSQUITTO_CONF_CHANGED" -eq 1 ] && [ -n "$MOSQUITTO_PRE_SNAPSHOT" ] && [ -f "$MOSQUITTO_PRE_SNAPSHOT" ]; then
@@ -939,6 +1339,7 @@ ${staged}"
                 cp -p "$MOSQUITTO_PRE_SNAPSHOT" "$staged"
                 mv "$staged" "$MOSQUITTO_CONF"
             fi
+            "$MONIT_BIN" monitor mosquitto >/dev/null 2>&1 || true
             die "$MOSQUITTO_INIT stop failed"
         fi
         rm -f "$MOSQUITTO_DB" "$MOSQUITTO_DB_NEW"
@@ -953,11 +1354,72 @@ ${staged}"
                 mv "$staged" "$MOSQUITTO_CONF"
                 "$MOSQUITTO_INIT" start || true
             fi
+            "$MONIT_BIN" monitor mosquitto >/dev/null 2>&1 || true
             die "$MOSQUITTO_INIT start failed"
+        fi
+        "$MONIT_BIN" monitor mosquitto >/dev/null 2>&1 || true
+    fi
+
+    # 8. Prune & VACUUM oversized sd_poller.db offline cloud queue
+    if [ "$need_poller_db_compact" -eq 1 ]; then
+        poller_mb=$((poller_db_bytes / 1048576))
+        log "Compacting $SD_POLLER_DB (${poller_mb} MiB, ${unsent_web_packages} unsent web_packages)..."
+        "$MONIT_BIN" unmonitor sd_poller >/dev/null 2>&1 || true
+        "$MONIT_BIN" unmonitor mqtt_client >/dev/null 2>&1 || true
+        [ -z "$ROOT" ] && sleep 1
+        if [ -x "$STATUSPUSHER_INIT" ]; then
+            stop_service_and_wait "$STATUSPUSHER_INIT" "$MQTT_PID"
+        fi
+        if [ -x "$STATUSPOLLER_INIT" ]; then
+            stop_service_and_wait "$STATUSPOLLER_INIT" "$SD_POLLER_PID"
+        fi
+        if "$SQLITE3_BIN" "$SD_POLLER_DB" "PRAGMA busy_timeout=15000; DELETE FROM web_packages WHERE sent_to_server=0; VACUUM;" >/dev/null; then
+            new_poller_bytes="$(file_size_bytes "$SD_POLLER_DB")"
+            new_poller_mb=$((new_poller_bytes / 1048576))
+            log "Compacted $SD_POLLER_DB (${poller_mb} MiB -> ${new_poller_mb} MiB)"
+        else
+            warn "sqlite3 prune/VACUUM failed on $SD_POLLER_DB; restarting services anyway"
+        fi
+        if [ -x "$STATUSPOLLER_INIT" ]; then
+            "$STATUSPOLLER_INIT" start || warn "$STATUSPOLLER_INIT start returned non-zero"
+            if [ -z "$ROOT" ]; then
+                sleep 2
+            fi
+        fi
+        if [ -x "$STATUSPUSHER_INIT" ]; then
+            "$STATUSPUSHER_INIT" start || warn "$STATUSPUSHER_INIT start returned non-zero"
+            STATUSPUSHER_RESTARTED=1
+        fi
+        "$MONIT_BIN" monitor sd_poller >/dev/null 2>&1 || true
+        "$MONIT_BIN" monitor mqtt_client >/dev/null 2>&1 || true
+        "$MONIT_BIN" monitor local_mqtt_live >/dev/null 2>&1 || true
+    fi
+
+    # 9. Recover silent/stalled S58statuspusher if not already restarted above
+    if [ "$STATUSPUSHER_RESTARTED" -eq 0 ] && [ "$need_statuspusher_restart" -eq 1 ]; then
+        restart_statuspusher
+        STATUSPUSHER_RESTARTED=1
+    fi
+
+    # 10. Verify local/energy_recordset_live resumes emitting on live Beacon after restart
+    if [ "$STATUSPUSHER_RESTARTED" -eq 1 ] && [ -z "$ROOT" ] && can_probe_local_mqtt; then
+        log "Verifying live local/energy_recordset_live telemetry..."
+        mqtt_live_ok=0
+        probe_attempt=1
+        while [ "$probe_attempt" -le 7 ]; do
+            if probe_local_mqtt_live 10; then
+                log "Verified local/energy_recordset_live is LIVE (${LAST_MQTT_PROBE_BYTES} bytes on attempt ${probe_attempt}/7)"
+                mqtt_live_ok=1
+                break
+            fi
+            probe_attempt=$((probe_attempt + 1))
+        done
+        if [ "$mqtt_live_ok" -eq 0 ]; then
+            warn "local/energy_recordset_live did not emit within 70s after S58statuspusher restart (check /var/log/mqtt.log)"
         fi
     fi
 
-    # 8. Trigger an immediate NTP sync if ntpdate config changed or timestamp missing.
+    # 11. Trigger an immediate NTP sync if ntpdate config changed or timestamp missing.
     if [ "$need_ntp_sync" -eq 1 ]; then
         if [ -x "$NTPDATE_SYNC_BIN" ]; then
             log "Running $NTPDATE_SYNC_BIN foreground..."
@@ -969,14 +1431,14 @@ ${staged}"
         fi
     fi
 
-    # 9. Safely truncate oversized binary_log in place (opened O_APPEND; keeps lcm_core running)
+    # 12. Safely truncate oversized binary_log in place (opened O_APPEND; keeps lcm_core running)
     if [ "$need_binary_log_truncate" -eq 1 ]; then
         bin_mb=$((bin_bytes / 1048576))
         log "Truncating $BINARY_LOG in place (${bin_mb} MiB -> 0 MiB)..."
         : > "$BINARY_LOG"
     fi
 
-    if [ "$ANY_MONIT_CHANGED" -eq 0 ] && [ "$MOSQUITTO_CONF_CHANGED" -eq 0 ] && [ "$mosq_db_exists" -eq 0 ] && [ "$NTPDATE_CHANGED" -eq 0 ] && [ "$LOGROTATE_CHANGED" -eq 0 ] && [ "$need_update_mgr_stop" -eq 0 ] && [ "$need_ntp_sync" -eq 0 ] && [ "$need_binary_log_truncate" -eq 0 ]; then
+    if [ "$ANY_MONIT_CHANGED" -eq 0 ] && [ "$MOSQUITTO_CONF_CHANGED" -eq 0 ] && [ "$mosq_db_exists" -eq 0 ] && [ "$NTPDATE_CHANGED" -eq 0 ] && [ "$LOGROTATE_CHANGED" -eq 0 ] && [ "$HELPER_SCRIPTS_CHANGED" -eq 0 ] && [ "$need_update_mgr_stop" -eq 0 ] && [ "$need_poller_db_compact" -eq 0 ] && [ "$need_statuspusher_restart" -eq 0 ] && [ "$need_ntp_sync" -eq 0 ] && [ "$need_binary_log_truncate" -eq 0 ]; then
         log "Already in desired local-only state; no changes needed."
     else
         log "Local-only configuration applied successfully."
@@ -1004,18 +1466,25 @@ run_revert() {
             have_candidate=1
             RESTORED_BACKUPS="${RESTORED_BACKUPS}
 ${bpath}"
-        elif [ "$relpath" = "etc/logrotate.d/lcm_binary_log" ] && [ -f "$target" ] && grep -q '^# Managed by beacon_local_only\.sh' "$target"; then
-            rm -f "$target"
-            reverted_any=1
-            log "Removed $target"
-            continue
-        elif file_has_markers "$target"; then
-            if [ -f "$ropath" ]; then
-                cp -p "$ropath" "$cand"
-            else
-                revert_file_by_unmarking "$target" "$cand"
+        else
+            is_created_relpath=0
+            for cpath in $MANAGED_CREATED_RELPATHS; do
+                if [ "$relpath" = "$cpath" ]; then
+                    is_created_relpath=1
+                    break
+                fi
+            done
+            if [ "$is_created_relpath" -eq 1 ]; then
+                continue
             fi
-            have_candidate=1
+            if file_has_markers "$target"; then
+                if [ -f "$ropath" ]; then
+                    cp -p "$ropath" "$cand"
+                else
+                    revert_file_by_unmarking "$target" "$cand"
+                fi
+                have_candidate=1
+            fi
         fi
 
         if [ "$have_candidate" -eq 1 ]; then
@@ -1064,6 +1533,7 @@ ${staged}"
     fi
 
     if [ "$MOSQUITTO_CONF_CHANGED" -eq 1 ]; then
+        "$MONIT_BIN" unmonitor mosquitto >/dev/null 2>&1 || true
         log "Restarting mosquitto ($MOSQUITTO_INIT restart)..."
         if ! "$MOSQUITTO_INIT" restart; then
             if [ -n "$MOSQUITTO_PRE_SNAPSHOT" ] && [ -f "$MOSQUITTO_PRE_SNAPSHOT" ]; then
@@ -1074,9 +1544,28 @@ ${staged}"
                 mv "$staged" "$MOSQUITTO_CONF"
                 "$MOSQUITTO_INIT" restart || true
             fi
+            "$MONIT_BIN" monitor mosquitto >/dev/null 2>&1 || true
             die "$MOSQUITTO_INIT restart failed during revert"
         fi
+        "$MONIT_BIN" monitor mosquitto >/dev/null 2>&1 || true
     fi
+
+    # Remove script-created helper/cron/logrotate files only AFTER monit reload
+    # so monit never sees a missing check script while running old config.
+    OLD_IFS="$IFS"
+    IFS='
+'
+    for relpath in $MANAGED_CREATED_RELPATHS; do
+        [ -n "$relpath" ] || continue
+        target="${ROOT}/${relpath}"
+        bpath="${BACKUP_DIR}/${relpath}"
+        if [ ! -f "$bpath" ] && [ -f "$target" ] && grep -q '^# Managed by beacon_local_only\.sh' "$target"; then
+            rm -f "$target"
+            reverted_any=1
+            log "Removed $target"
+        fi
+    done
+    IFS="$OLD_IFS"
 
     # Only remove backup files once validation and service reloads succeed.
     if [ -n "$RESTORED_BACKUPS" ]; then

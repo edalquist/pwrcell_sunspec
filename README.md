@@ -222,8 +222,9 @@ If you block outbound internet access on your Generac REbus Beacon to prevent re
 - **~10-minute `eth0` bounces (`check_internet`)**: Repeated failed IPv6/internet probes reset the Ethernet interface and drop local SSH/Modbus/MQTT tunnels.
 - **Mosquitto database bloat (`mosquitto.db`)**: QoS-1 AWS IoT bridges queue undelivered cloud messages until `mosquitto.db` exceeds `200 kB`, causing `monit` to restart Mosquitto every 5 minutes and stalling SD card I/O.
 - **Unrotated `lcm_core` binary log (`/var/log/lcm_core/binary_log`)**: Without cloud upload rotation, `binary_log` grows unchecked up to the 2 GiB (`INT32_MAX`) limit on `/rw`.
+- **Offline `sd_poller.db` cloud-queue bloat & `sd_pusher` deadlock**: Unsent cloud bundles (`web_packages`) bloat `/opt/pika/var/lib/sd_poller.db`, causing 5-minute `PRAGMA integrity_check` SQLite lockouts that trigger a self-deadlock in `sd_pusher` and silence `local/energy_recordset_live`.
 
-A reusable, idempotent POSIX shell script, [`util/beacon_local_only.sh`](util/beacon_local_only.sh), disables those cloud-only loops, installs an hourly `copytruncate` `logrotate` rule (`/etc/logrotate.d/lcm_binary_log`, `size 10M`, `rotate 5`) plus safe in-place `O_APPEND` truncation if `binary_log` is `>= 100 MiB`, and configures local LAN NTP while leaving essential local services (`lcm_core`, local Modbus TCP, local Mosquitto on port `1883`, `S58statuspusher`, and `sshd`) untouched:
+A reusable, idempotent POSIX shell script, [`util/beacon_local_only.sh`](util/beacon_local_only.sh), disables those cloud-only loops, replaces `mqtt_active` with a local `local_mqtt_live` watchdog (`/opt/pika/bin/check_local_mqtt_live.sh`) that restarts `S58statuspusher` if `local/energy_recordset_live` goes silent, prunes/compacts unsent `web_packages` in `sd_poller.db` (plus hourly cron cleanup), installs an hourly `copytruncate` `logrotate` rule (`/etc/logrotate.d/lcm_binary_log`, `size 10M`, `rotate 5`) with safe in-place `O_APPEND` truncation if `binary_log` is `>= 100 MiB`, and configures local LAN NTP while leaving essential local services (`lcm_core`, local Modbus TCP, local Mosquitto on port `1883`, `S58statuspusher`, and `sshd`) intact:
 
 ```bash
 # 1. Read-only audit of current Beacon state
@@ -239,7 +240,7 @@ ssh root@192.168.0.73 'sh -s -- --apply --ntp-server 192.168.0.2' < util/beacon_
 ssh root@192.168.0.73 'sh -s -- --revert' < util/beacon_local_only.sh
 ```
 
-Use `--disable-ntp` instead of `--ntp-server <lan-ntp-ip>` if you do not run a local NTP server, and run `sh util/beacon_local_only.sh --help` for all flags (`--keep-cloud-bridges`, `--keep-cloud-services`, `--keep-binary-log`).
+Use `--disable-ntp` instead of `--ntp-server <lan-ntp-ip>` if you do not run a local NTP server, and run `sh util/beacon_local_only.sh --help` for all flags (`--keep-cloud-bridges`, `--keep-cloud-services`, `--keep-binary-log`, `--keep-poller-db`).
 
 ### Offline SD-Card / Image Provisioning (Docker on macOS or Linux)
 

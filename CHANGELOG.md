@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.1] - 2026-11-24
+
+### Fixed
+- **Local Beacon MQTT Telemetry Feed Stall (`util/beacon_local_only.sh`, `tests/test_beacon_local_only.py`)**:
+  - Replaced cloud-dependent `mqtt_active` monitoring with an active local MQTT liveness watchdog (`local_mqtt_live` via `/opt/pika/bin/check_local_mqtt_live.sh`) that verifies `sd_pusher` is actively emitting on `127.0.0.1:1883` (`local/energy_recordset_live`) and restarts `S58statuspusher` if Generac's `sd_pusher.pyc` hits its upstream `autopush_lock` self-deadlock on `SDDatabaseException("database is locked")`.
+  - Added offline `sd_poller.db` cloud upload queue pruning (`/etc/cron.hourly/prune_sd_poller_cloud_queue`, deleting `web_packages WHERE sent_to_server=0`, plus an initial stopped-service `DELETE` + `VACUUM` when `sd_poller.db` is `>= 50 MiB`; opt out via `--keep-poller-db`) to eliminate 10–20s `PRAGMA integrity_check` SQLite lockouts that crashed `sd_poller` and deadlocked `sd_pusher`.
+  - Added post-apply `S58statuspusher` recovery/verification whenever Mosquitto is restarted or `local/energy_recordset_live` is silent, and wrapped `mosquitto` restarts in `monit unmonitor/monitor mosquitto` so `monit` does not race and double-restart Mosquitto and `system_controller`.
+  - Added `--status` checks for `local_mqtt_live`, `local/energy_recordset_live` (`LIVE` vs `SILENT`), and `sd_poller.db` size / unsent `web_packages` / hourly cron prune status, and ordered `--revert` to remove managed scripts only after `monit reload`.
+
 ## [3.6.0] - 2026-11-23
 
 ### Added
