@@ -234,3 +234,26 @@ flowchart LR
 1. **Dual Ingestion**: High-frequency proprietary MQTT push streams combined with typed SunSpec Modbus TCP register polling.
 2. **Unified StateStore**: Coordinates scale conversions, enum translations, and concept grouping.
 3. **Reactive UI**: Real-time browser updates driven entirely via Server-Sent Events (SSE).
+
+---
+
+## 11. Mobile & Home Assistant Companion App Layout
+
+The Web Explorer adapts dynamically across desktop, tablet (`<= 1024px`), and mobile (`<= 768px`) viewports—including the narrow WebView used inside the Home Assistant mobile app Ingress panel (`360px`–`430px` wide) with `viewport-fit=cover` safe-area support:
+
+- **Off-Canvas Device Drawer (`<= 1024px`)**: The device sidebar collapses into a slide-over drawer triggered from **☰ Devices** in the top header or **Devices ▾** in the device banner, and closes automatically after selecting a device.
+- **Compact Header & Telemetry Grid (`<= 768px`)**: Live power metrics arrange into a 2-column grid with full-width **Mode** control, while global tools (**Compare Telemetry**, **Suggestions**, **Safety Policy**, **Sync Config**) tuck under **⚙️ Tools** with a connection dot and suggestions indicator.
+- **Mobile Field Cards & Controls**: Data table rows stack into touch-friendly cards with horizontally scrollable filter pills, collapsible display **Options**, a **Sort** selector synced with the sort status bar, and non-clipping card action menus.
+- **Sticky Compact Footer**: Keeps the selected entity counter and **Save to ha_config.yaml** anchored at the bottom while secondary actions (**Preview MQTT Discovery**, **Export Defaults**, **Clean Stale MQTT**, **Reset to Defaults**) expand upward via **More ▴**.
+- **Responsive Modals**: Comparison, Modbus Details, Write Value, Bounds, Grouping, Safety Policy, Re-scan, and Export modals automatically resize to the viewport with single-column grids and stacked cards.
+
+### Running Browser UI Tests Locally
+
+Install the optional Playwright dev dependencies and run the desktop/tablet/mobile UI suite against the mock server:
+
+```bash
+.venv/bin/python3 -m pip install -r requirements-dev.txt
+.venv/bin/python3 -m playwright install chromium
+PWRCELL_REQUIRE_BROWSER_TESTS=1 .venv/bin/python3 -m unittest tests/test_ui_browser.py -v
+```
+

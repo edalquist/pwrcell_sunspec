@@ -50,6 +50,21 @@ const state = {
 // DOM Elements
 const el = {
   appVersionBadge: document.getElementById('appVersionBadge'),
+  deviceSidebar: document.getElementById('deviceSidebar'),
+  sidebarBackdrop: document.getElementById('sidebarBackdrop'),
+  btnMobileDevices: document.getElementById('btnMobileDevices'),
+  btnCloseSidebar: document.getElementById('btnCloseSidebar'),
+  btnSwitchDeviceBanner: document.getElementById('btnSwitchDeviceBanner'),
+  mobileDeviceCountBadge: document.getElementById('mobileDeviceCountBadge'),
+  btnMobileHeaderMenu: document.getElementById('btnMobileHeaderMenu'),
+  headerStatusPanel: document.getElementById('headerStatusPanel'),
+  mobileLiveDot: document.getElementById('mobileLiveDot'),
+  mobileSuggestionsDot: document.getElementById('mobileSuggestionsDot'),
+  btnToggleMobileFilters: document.getElementById('btnToggleMobileFilters'),
+  toolbarOptionsPanel: document.getElementById('toolbarOptionsPanel'),
+  mobileSortSelect: document.getElementById('mobileSortSelect'),
+  appFooter: document.getElementById('appFooter'),
+  btnMobileFooterMenu: document.getElementById('btnMobileFooterMenu'),
   deviceList: document.getElementById('deviceList'),
   deviceCountBadge: document.getElementById('deviceCountBadge'),
   activeDeviceName: document.getElementById('activeDeviceName'),
@@ -254,6 +269,90 @@ const el = {
   }
 };
 
+// Responsive Viewport & Mobile Menu Helpers
+function isCompactViewport() {
+  return window.matchMedia('(max-width: 1024px)').matches;
+}
+
+function setMobileHeaderMenu(open) {
+  const isOpen = Boolean(open);
+  if (el.headerStatusPanel) {
+    el.headerStatusPanel.classList.toggle('mobile-open', isOpen);
+  }
+  if (el.btnMobileHeaderMenu) {
+    el.btnMobileHeaderMenu.setAttribute('aria-expanded', String(isOpen));
+  }
+}
+
+function setMobileFooterMenu(open) {
+  const isOpen = Boolean(open);
+  if (el.appFooter) {
+    el.appFooter.classList.toggle('mobile-footer-open', isOpen);
+  }
+  if (el.btnMobileFooterMenu) {
+    el.btnMobileFooterMenu.setAttribute('aria-expanded', String(isOpen));
+    el.btnMobileFooterMenu.textContent = isOpen ? 'Less ▾' : 'More ▴';
+  }
+}
+
+function setMobileFiltersOpen(open) {
+  const isOpen = Boolean(open);
+  if (el.toolbarOptionsPanel) {
+    el.toolbarOptionsPanel.classList.toggle('mobile-open', isOpen);
+  }
+  if (el.btnToggleMobileFilters) {
+    el.btnToggleMobileFilters.setAttribute('aria-expanded', String(isOpen));
+  }
+}
+
+function openMobileSidebar() {
+  if (!el.deviceSidebar) return;
+  setMobileHeaderMenu(false);
+  setMobileFooterMenu(false);
+  el.deviceSidebar.classList.add('open');
+  if (el.sidebarBackdrop) {
+    el.sidebarBackdrop.classList.add('open');
+    el.sidebarBackdrop.setAttribute('aria-hidden', 'false');
+  }
+  if (el.btnMobileDevices) {
+    el.btnMobileDevices.setAttribute('aria-expanded', 'true');
+  }
+  document.body.classList.add('drawer-open');
+}
+
+function closeMobileSidebar() {
+  if (el.deviceSidebar) {
+    el.deviceSidebar.classList.remove('open');
+  }
+  if (el.sidebarBackdrop) {
+    el.sidebarBackdrop.classList.remove('open');
+    el.sidebarBackdrop.setAttribute('aria-hidden', 'true');
+  }
+  if (el.btnMobileDevices) {
+    el.btnMobileDevices.setAttribute('aria-expanded', 'false');
+  }
+  document.body.classList.remove('drawer-open');
+}
+
+function toggleRowActionMenu(moreBtn, dropdownMenu) {
+  if (!moreBtn || !dropdownMenu) return;
+  document.querySelectorAll('.action-dropdown-menu.show').forEach(m => {
+    if (m !== dropdownMenu) m.classList.remove('show', 'open-up');
+  });
+  const willShow = !dropdownMenu.classList.contains('show');
+  dropdownMenu.classList.remove('open-up');
+  dropdownMenu.classList.toggle('show', willShow);
+  if (willShow) {
+    const btnRect = moreBtn.getBoundingClientRect();
+    const menuHeight = dropdownMenu.offsetHeight || 220;
+    const spaceBelow = window.innerHeight - btnRect.bottom;
+    const spaceAbove = btnRect.top;
+    if (spaceBelow < menuHeight + 16 && spaceAbove > spaceBelow) {
+      dropdownMenu.classList.add('open-up');
+    }
+  }
+}
+
 // Initialize Application
 async function initApp() {
   setupEventListeners();
@@ -278,6 +377,9 @@ async function fetchGroupingSuggestions() {
     if (el.cntCmpSuggestions) el.cntCmpSuggestions.textContent = count;
     if (el.btnOpenSuggestions) {
       el.btnOpenSuggestions.style.display = count > 0 ? 'inline-flex' : 'none';
+    }
+    if (el.mobileSuggestionsDot) {
+      el.mobileSuggestionsDot.style.display = count > 0 ? 'inline-block' : 'none';
     }
     if (compareState.activeTab === 'suggestions') {
       renderCompareSuggestions(compareState.suggestions);
@@ -348,20 +450,38 @@ function updateOverviewUI(data) {
     const modbusDown = c.modbus_connected === false;
     const mqttDown = c.mqtt_healthy === false || c.mqtt_connected === false;
     liveInd.classList.remove('live', 'degraded', 'disconnected');
+    if (el.mobileLiveDot) el.mobileLiveDot.classList.remove('live', 'degraded', 'disconnected');
     if (tunnelDown || (modbusDown && mqttDown)) {
       connText.textContent = 'Disconnected';
       liveInd.classList.add('disconnected');
+      if (el.mobileLiveDot) {
+        el.mobileLiveDot.classList.add('disconnected');
+        el.mobileLiveDot.title = 'Disconnected';
+      }
     } else if (modbusDown || mqttDown || offlineCount > 0) {
       const parts = [];
       if (modbusDown) parts.push('Modbus Down');
       if (mqttDown) parts.push('MQTT Down');
       if (offlineCount > 0) parts.push(`${offlineCount} Offline`);
-      connText.textContent = parts.join(' / ');
+      const degradedText = parts.join(' / ');
+      connText.textContent = degradedText;
       liveInd.classList.add('degraded');
+      if (el.mobileLiveDot) {
+        el.mobileLiveDot.classList.add('degraded');
+        el.mobileLiveDot.title = degradedText;
+      }
     } else {
       connText.textContent = 'Live Feed';
       liveInd.classList.add('live');
+      if (el.mobileLiveDot) {
+        el.mobileLiveDot.classList.add('live');
+        el.mobileLiveDot.title = 'Live Feed';
+      }
     }
+  } else if (el.mobileLiveDot && data.is_mock) {
+    el.mobileLiveDot.classList.remove('degraded', 'disconnected');
+    el.mobileLiveDot.classList.add('live');
+    el.mobileLiveDot.title = 'Live Feed (Simulator)';
   }
 }
 
@@ -400,6 +520,9 @@ async function fetchDevices() {
 // Render Device Sidebar
 function renderDeviceSidebar() {
   el.deviceCountBadge.textContent = state.devices.length;
+  if (el.mobileDeviceCountBadge) {
+    el.mobileDeviceCountBadge.textContent = state.devices.length;
+  }
   el.deviceList.innerHTML = '';
 
   if (state.devices.length === 0) {
@@ -478,6 +601,9 @@ async function selectDevice(serialNumber) {
 
   state.activeDevice = dev;
   renderDeviceSidebar();
+  if (isCompactViewport()) {
+    closeMobileSidebar();
+  }
 
   el.activeDeviceName.textContent = dev.model_name;
   el.activeDeviceSerial.textContent = dev.serial_number;
@@ -1679,6 +1805,16 @@ function updateSortUI() {
       });
     }
   }
+
+  if (el.mobileSortSelect) {
+    if (state.sortCriteria.length > 0) {
+      const primary = `${state.sortCriteria[0].column}:${state.sortCriteria[0].dir}`;
+      const hasOption = Array.from(el.mobileSortSelect.options).some(o => o.value === primary);
+      el.mobileSortSelect.value = hasOption ? primary : '';
+    } else {
+      el.mobileSortSelect.value = '';
+    }
+  }
 }
 
 // SunSpec Bounds Helpers
@@ -2431,15 +2567,15 @@ function renderRollupRow(rollup, isUnified) {
     : (sel.isIndeterminate ? `${sel.selectedCount}/${sel.totalCount} selected. Click to select all instances.` : `Click to select all ${sel.totalCount} instances as wildcard (*).`);
 
   tr.innerHTML = `
-    <td class="text-center">
+    <td class="text-center cell-ha">
       <input type="checkbox" class="ha-checkbox ha-rollup-checkbox" data-rollup-id="${escapeHtml(rollup.id)}" title="${escapeHtml(chkTitle)}" ${sel.isAllSelected ? 'checked' : ''} />
     </td>
-    <td class="field-model-cell">
+    <td class="field-model-cell cell-model">
       <div class="source-pill-group">
         ${modelCellHtml}
       </div>
     </td>
-    <td>
+    <td class="cell-name">
       <div class="field-cell-main">
         <div class="field-label-line">
           <button type="button" class="btn-group-expand btn-rollup-expand ${isExpanded ? 'is-expanded' : ''}" data-rollup-id="${escapeHtml(rollup.id)}" title="${isExpanded ? 'Collapse sub-group instances' : 'Expand all sub-group instances'}">${isExpanded ? '▼' : '▶'}</button>
@@ -2450,15 +2586,15 @@ function renderRollupRow(rollup, isUnified) {
         <span class="field-key">${escapeHtml(rollup.wildcardKey || rollup.group_path_template || '')}</span>
       </div>
     </td>
-    <td>
+    <td class="cell-value">
       <div class="value-cell-wrap">
         <span class="field-value-badge rollup-val-badge" id="val-${sanitizeId(rollup.id)}">${valSummary.html}</span>
         ${formatTimestampBadge(valSummary.latestTs, `ts-${sanitizeId(rollup.id)}`)}
       </div>
     </td>
-    <td>${rollup.units ? escapeHtml(rollup.units) : '&mdash;'}</td>
-    <td>${sourceBadgeHtml}</td>
-    <td>
+    <td class="cell-unit${rollup.units ? '' : ' is-empty'}">${rollup.units ? escapeHtml(rollup.units) : '&mdash;'}</td>
+    <td class="cell-source">${sourceBadgeHtml}</td>
+    <td class="cell-type">
       <div class="type-cell-wrap">
         <span class="type-tag">${escapeHtml(rollup.ha_platform || 'sensor')}${rollup.ha_device_class ? ': ' + escapeHtml(rollup.ha_device_class) : ''}</span>
         <button type="button" class="badge-cat-toggle rollup-cat-toggle ${catInfo.catClass} ${catInfo.hasOverride ? 'has-override' : ''} ${sel.selectedCount === 0 ? 'is-dimmed' : ''}" title="Home Assistant Category: ${catInfo.label}${catInfo.hasOverride ? ' (User Override)' : ''}\nClick to set all ${sel.totalCount} instances to ${targetCatTitle}">
@@ -2467,7 +2603,7 @@ function renderRollupRow(rollup, isUnified) {
         </button>
       </div>
     </td>
-    <td class="text-right">
+    <td class="text-right cell-actions">
       <div class="action-cell-container">
         <button type="button" class="btn btn-secondary btn-sm btn-details" title="Explore Modbus register definition &amp; associated registers">Details</button>
         <div class="action-menu-wrapper">
@@ -2543,10 +2679,7 @@ function renderRollupRow(rollup, isUnified) {
   if (moreBtn && dropdownMenu) {
     moreBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      document.querySelectorAll('.action-dropdown-menu.show').forEach(m => {
-        if (m !== dropdownMenu) m.classList.remove('show');
-      });
-      dropdownMenu.classList.toggle('show');
+      toggleRowActionMenu(moreBtn, dropdownMenu);
     });
 
     dropdownMenu.querySelector('.item-rollup-expand')?.addEventListener('click', (e) => {
@@ -2626,27 +2759,27 @@ function renderRollupRow(rollup, isUnified) {
 
       return `
         <tr class="child-source-item rollup-child-item" id="child-row-${sanitizeId(instKey)}" data-idx="${idx}" data-key="${escapeHtml(instKey)}">
-          <td class="text-center">
+          <td class="text-center" data-label="HA">
             <input type="checkbox" class="ha-checkbox rollup-child-checkbox" data-idx="${idx}" ${instChecked ? 'checked' : ''} />
           </td>
-          <td class="child-protocol-cell">
+          <td class="child-protocol-cell" data-label="Instance">
             <span class="rollup-inst-name">${escapeHtml(instName)}</span>
             ${inst.group_path ? `<div class="rollup-inst-path">${escapeHtml(inst.group_path)}</div>` : ''}
           </td>
-          <td class="child-key-cell"><code class="code-path">${escapeHtml(instKey)}</code></td>
-          <td class="child-val-cell">
+          <td class="child-key-cell" data-label="Field Key"><code class="code-path">${escapeHtml(instKey)}</code></td>
+          <td class="child-val-cell" data-label="Value">
             <div class="child-val-wrap">
               <span class="field-value-badge${instIsBf ? ' is-bitfield' : ''}" id="val-${sanitizeId(instKey)}">${instFormattedVal}</span>
               ${formatTimestampBadge(instTs, `ts-${sanitizeId(instKey)}`)}
             </div>
           </td>
-          <td>
+          <td data-label="Category">
             <button type="button" class="badge-cat-toggle rollup-child-cat-toggle ${instIsDiag ? 'is-diagnostic' : 'is-primary'} ${instHasOverride ? 'has-override' : ''} ${!instChecked ? 'is-dimmed' : ''}" data-idx="${idx}" title="Click to toggle category for ${escapeHtml(instName)} only">
               <span class="cat-icon">${instIsDiag ? '🏷️' : '⚡'}</span>
               <span class="cat-text">${instIsDiag ? 'Diagnostic' : 'Primary'}</span>${instHasOverride ? ' <span class="cat-override-indicator">*</span>' : ''}
             </button>
           </td>
-          <td class="child-actions-cell text-right">
+          <td class="child-actions-cell text-right" data-label="Actions">
             ${inst.is_writable ? `<button type="button" class="btn btn-secondary btn-xs btn-child-edit" data-idx="${idx}">Set</button>` : ''}
             <button type="button" class="btn btn-secondary btn-xs btn-child-details" data-idx="${idx}">Details</button>
             <button type="button" class="btn btn-secondary btn-xs btn-child-copy" data-idx="${idx}" title="Copy field key">Copy</button>
@@ -2965,16 +3098,16 @@ function renderFieldTable() {
     const targetFieldRef = buildTargetFieldRef(f, activeSrc);
 
     tr.innerHTML = `
-      <td class="text-center">
+      <td class="text-center cell-ha">
         <input type="checkbox" class="ha-checkbox" data-key="${f.id}" ${isChecked ? 'checked' : ''} />
       </td>
-      <td class="field-model-cell">
+      <td class="field-model-cell cell-model">
         <div class="source-pill-group">
           ${sourcePillsHtml}
           ${(f.group_label || f.group_path) ? `<span class="badge-subgroup" title="SunSpec Sub-group: ${escapeHtml(f.group_path || '')}">${escapeHtml(f.group_label || f.group_path)}</span>` : ''}
         </div>
       </td>
-      <td>
+      <td class="cell-name">
         <div class="field-cell-main">
           <div class="field-label-line">
             ${expandBtnHtml}
@@ -2986,23 +3119,23 @@ function renderFieldTable() {
           ${formatBoundsBadge(f)}
         </div>
       </td>
-      <td>
+      <td class="cell-value">
         <div class="value-cell-wrap">
           <span class="field-value-badge latest${isBf ? ' is-bitfield' : ''}" id="val-${sanitizeId(f.id)}">${displayVal}</span>
           ${formatTimestampBadge(f.latest_updated || f.last_updated || (activeSrc && activeSrc.last_updated), `ts-${sanitizeId(f.id)}`)}
         </div>
       </td>
-      <td>${f.units || '&mdash;'}</td>
-      <td>
+      <td class="cell-unit${f.units ? '' : ' is-empty'}">${f.units || '&mdash;'}</td>
+      <td class="cell-source">
         ${activeBadge}
       </td>
-      <td>
+      <td class="cell-type">
         <div class="type-cell-wrap">
           <span class="type-tag">${f.ha_platform}${f.ha_device_class ? ': ' + f.ha_device_class : ''}</span>
           ${renderCatToggleHtml(f)}
         </div>
       </td>
-      <td class="text-right">
+      <td class="text-right cell-actions">
         <div class="action-cell-container">
           ${f.is_writable ? `<button class="btn btn-secondary btn-sm btn-edit" data-key="${targetFieldRef.key}">Set</button>` : ''}
           <button class="btn btn-secondary btn-sm btn-details" data-key="${targetFieldRef.key}" title="Explore Modbus register definition &amp; associated registers">Details</button>
@@ -3085,10 +3218,7 @@ function renderFieldTable() {
     if (moreBtn && dropdownMenu) {
       moreBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        document.querySelectorAll('.action-dropdown-menu.show').forEach(m => {
-          if (m !== dropdownMenu) m.classList.remove('show');
-        });
-        dropdownMenu.classList.toggle('show');
+        toggleRowActionMenu(moreBtn, dropdownMenu);
       });
 
       const menuDetails = dropdownMenu.querySelector('.item-details');
@@ -3254,16 +3384,16 @@ function renderFieldTable() {
 
         return `
           <tr class="child-source-item" data-field-key="${escapeHtml(s.field_key)}">
-            <td class="child-role-cell">${roleBadge}</td>
-            <td class="child-protocol-cell"><span class="source-type-pill ${isMqtt ? 'mqtt' : 'modbus'}">${escapeHtml(sourceLabel)}</span></td>
-            <td class="child-key-cell"><code class="code-path">${escapeHtml(s.field_key)}</code></td>
-            <td class="child-val-cell">
+            <td class="child-role-cell" data-label="Role">${roleBadge}</td>
+            <td class="child-protocol-cell" data-label="Source"><span class="source-type-pill ${isMqtt ? 'mqtt' : 'modbus'}">${escapeHtml(sourceLabel)}</span></td>
+            <td class="child-key-cell" data-label="Field Path"><code class="code-path">${escapeHtml(s.field_key)}</code></td>
+            <td class="child-val-cell" data-label="Value">
               <div class="child-val-wrap">
                 ${valDisplayHtml}
                 ${formatTimestampBadge(s.last_updated, `ts-${sanitizeId(s.field_key)}`)}
               </div>
             </td>
-            <td class="child-actions-cell text-right">
+            <td class="child-actions-cell text-right" data-label="Actions">
               ${!isMqtt ? `<button class="btn btn-xs btn-invert-polarity ${s.transform === 'negate' ? 'active' : ''}" data-sn="${escapeHtml(s.device_sn || f.device_sn || '')}" data-key="${escapeHtml(s.field_key)}" title="Toggle polarity negation (multiply by -1)">± ${s.transform === 'negate' ? 'Inverted' : 'Invert'}</button>` : ''}
               <button class="btn btn-xs btn-pin-source ${isPinned ? 'active' : ''}" data-group-id="${escapeHtml(f.id)}" data-key="${escapeHtml(s.field_key)}" title="${isPinned ? 'Unpin source' : 'Pin source'}">${isPinned ? '📌 Pinned' : 'Pin'}</button>
               ${s.is_custom_override || (f.sources && f.sources.length > 1) ? `<button class="btn btn-xs btn-remove-member" data-sn="${escapeHtml(s.device_sn || f.device_sn || '')}" data-key="${escapeHtml(s.field_key)}" title="Remove this field from the group">✕ Remove</button>` : ''}
@@ -3433,13 +3563,13 @@ function renderFieldTable() {
 
       tr.className = 'compound-row';
       tr.innerHTML = `
-        <td class="text-center">
+        <td class="text-center cell-ha">
           <input type="checkbox" class="ha-checkbox" data-key="${f.key}" ${isChecked ? 'checked' : ''} />
         </td>
-        <td class="field-model-cell">
+        <td class="field-model-cell cell-model">
           ${modelCellContent}
         </td>
-        <td>
+        <td class="cell-name">
           <div class="field-cell-main">
             <div class="field-label-line">
               <span class="field-label" title="${f.description || ''}">${f.label}</span>
@@ -3449,7 +3579,7 @@ function renderFieldTable() {
             ${formatBoundsBadge(f)}
           </div>
         </td>
-        <td>
+        <td class="cell-value">
           <div class="compound-val-container">
             <div class="val-latest-line">
               <span class="label-dim">Latest:</span>
@@ -3469,17 +3599,17 @@ function renderFieldTable() {
             </div>
           </div>
         </td>
-        <td>${f.units || '&mdash;'}</td>
-        <td>
+        <td class="cell-unit${f.units ? '' : ' is-empty'}">${f.units || '&mdash;'}</td>
+        <td class="cell-source">
           <span class="source-tag compound" title="Latest update from ${latestSrcName}">⚡ Compound</span>
         </td>
-        <td>
+        <td class="cell-type">
           <div class="type-cell-wrap">
             <span class="type-tag">${f.ha_platform}${f.ha_device_class ? ': ' + f.ha_device_class : ''}</span>
             ${renderCatToggleHtml(f)}
           </div>
         </td>
-        <td class="text-right">
+        <td class="text-right cell-actions">
           <div class="action-cell-container">
             ${f.is_writable ? `<button class="btn btn-secondary btn-sm btn-edit" data-key="${f.key}">Set</button>` : ''}
             <button class="btn btn-secondary btn-sm btn-details" data-key="${f.key}" title="Explore Modbus register definition &amp; associated registers">Details</button>
@@ -3509,13 +3639,13 @@ function renderFieldTable() {
       const isBf = isBitfield(f, f.value);
 
       tr.innerHTML = `
-        <td class="text-center">
+        <td class="text-center cell-ha">
           <input type="checkbox" class="ha-checkbox" data-key="${f.key}" ${isChecked ? 'checked' : ''} />
         </td>
-        <td class="field-model-cell">
+        <td class="field-model-cell cell-model">
           ${modelCellContent}
         </td>
-        <td>
+        <td class="cell-name">
           <div class="field-cell-main">
             <div class="field-label-line">
               <span class="field-label" title="${f.description || ''}">${f.label}</span>
@@ -3527,23 +3657,23 @@ function renderFieldTable() {
             ${formatBoundsBadge(f)}
           </div>
         </td>
-        <td>
+        <td class="cell-value">
           <div class="value-cell-wrap">
             <span class="field-value-badge${isBf ? ' is-bitfield' : ''}" id="val-${sanitizeId(f.key)}">${displayVal}</span>
             ${formatTimestampBadge(f.last_updated || f.timestamp, `ts-${sanitizeId(f.key)}`)}
           </div>
         </td>
-        <td>${f.units || '&mdash;'}</td>
-        <td>
+        <td class="cell-unit${f.units ? '' : ' is-empty'}">${f.units || '&mdash;'}</td>
+        <td class="cell-source">
           <span class="source-tag ${sourceClass}">${sourceLabel}</span>
         </td>
-        <td>
+        <td class="cell-type">
           <div class="type-cell-wrap">
             <span class="type-tag">${f.ha_platform}${f.ha_device_class ? ': ' + f.ha_device_class : ''}</span>
             ${renderCatToggleHtml(f)}
           </div>
         </td>
-        <td class="text-right">
+        <td class="text-right cell-actions">
           <div class="action-cell-container">
             ${f.is_writable ? `<button class="btn btn-secondary btn-sm btn-edit" data-key="${f.key}">Set</button>` : ''}
             <button class="btn btn-secondary btn-sm btn-details" data-key="${f.key}" title="Explore Modbus register definition &amp; associated registers">Details</button>
@@ -3596,10 +3726,7 @@ function renderFieldTable() {
     if (moreBtn && dropdownMenu) {
       moreBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        document.querySelectorAll('.action-dropdown-menu.show').forEach(m => {
-          if (m !== dropdownMenu) m.classList.remove('show');
-        });
-        dropdownMenu.classList.toggle('show');
+        toggleRowActionMenu(moreBtn, dropdownMenu);
       });
 
       const menuDetails = dropdownMenu.querySelector('.item-details');
@@ -4226,11 +4353,21 @@ function connectSSE() {
   sse.onerror = () => {
     document.getElementById('connStatusText').textContent = 'Reconnecting...';
     document.getElementById('liveIndicator').classList.remove('live');
+    if (el.mobileLiveDot) {
+      el.mobileLiveDot.classList.remove('live', 'disconnected');
+      el.mobileLiveDot.classList.add('degraded');
+      el.mobileLiveDot.title = 'Reconnecting...';
+    }
   };
 
   sse.onopen = () => {
     document.getElementById('connStatusText').textContent = 'Live Feed';
     document.getElementById('liveIndicator').classList.add('live');
+    if (el.mobileLiveDot) {
+      el.mobileLiveDot.classList.remove('degraded', 'disconnected');
+      el.mobileLiveDot.classList.add('live');
+      el.mobileLiveDot.title = 'Live Feed';
+    }
   };
 }
 
@@ -5132,7 +5269,7 @@ function renderFieldDetailsModal(data) {
             <span class="details-count-pill">${data.scaled_points.length} registers</span>
           </div>
         </div>
-        <div class="table-container" style="max-height: 220px; overflow-y: auto;">
+        <div class="table-container modal-table-scroll" style="max-height: 220px; overflow-y: auto;">
           <table class="associated-regs-table">
             <thead>
               <tr>
@@ -5177,7 +5314,7 @@ function renderFieldDetailsModal(data) {
             <span class="details-count-pill">${data.associated_registers.length}</span>
           </div>
         </div>
-        <div class="table-container" style="max-height: 240px; overflow-y: auto;">
+        <div class="table-container modal-table-scroll" style="max-height: 240px; overflow-y: auto;">
           <table class="associated-regs-table">
             <thead>
               <tr>
@@ -5232,7 +5369,7 @@ function renderFieldDetailsModal(data) {
             <span class="details-count-pill">${data.enum_symbols.length} symbols</span>
           </div>
         </div>
-        <div class="table-container" style="max-height: 200px; overflow-y: auto;">
+        <div class="table-container modal-table-scroll" style="max-height: 200px; overflow-y: auto;">
           <table class="modal-symbols-table">
             <thead>
               <tr>
@@ -5270,7 +5407,7 @@ function renderFieldDetailsModal(data) {
             <span class="details-count-pill">${data.bitfield_flags.length} flags</span>
           </div>
         </div>
-        <div class="table-container" style="max-height: 220px; overflow-y: auto;">
+        <div class="table-container modal-table-scroll" style="max-height: 220px; overflow-y: auto;">
           <table class="modal-symbols-table">
             <thead>
               <tr>
@@ -5477,6 +5614,97 @@ function renderFieldDetailsModal(data) {
 
 // Setup Event Listeners
 function setupEventListeners() {
+  // Responsive Drawer, Header Menu, Footer Menu & Mobile Toolbar Controls
+  if (el.btnMobileDevices) {
+    el.btnMobileDevices.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (el.deviceSidebar && el.deviceSidebar.classList.contains('open')) {
+        closeMobileSidebar();
+      } else {
+        openMobileSidebar();
+      }
+    });
+  }
+  if (el.btnSwitchDeviceBanner) {
+    el.btnSwitchDeviceBanner.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openMobileSidebar();
+    });
+  }
+  if (el.btnCloseSidebar) {
+    el.btnCloseSidebar.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeMobileSidebar();
+    });
+  }
+  if (el.sidebarBackdrop) {
+    el.sidebarBackdrop.addEventListener('click', () => closeMobileSidebar());
+  }
+
+  if (el.btnMobileHeaderMenu) {
+    el.btnMobileHeaderMenu.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const willOpen = !(el.headerStatusPanel && el.headerStatusPanel.classList.contains('mobile-open'));
+      setMobileFooterMenu(false);
+      setMobileHeaderMenu(willOpen);
+    });
+  }
+  [el.btnOpenCompare, el.btnOpenSuggestions, el.btnOpenBlockedSafety, el.btnSyncModbus].forEach(btn => {
+    if (btn) {
+      btn.addEventListener('click', () => setMobileHeaderMenu(false));
+    }
+  });
+
+  if (el.btnToggleMobileFilters) {
+    el.btnToggleMobileFilters.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const willOpen = !(el.toolbarOptionsPanel && el.toolbarOptionsPanel.classList.contains('mobile-open'));
+      setMobileFiltersOpen(willOpen);
+    });
+  }
+
+  if (el.mobileSortSelect) {
+    el.mobileSortSelect.addEventListener('change', (e) => {
+      const val = e.target.value;
+      if (!val) {
+        state.sortCriteria = [];
+      } else {
+        const [col, dir] = val.split(':');
+        if (col && dir) {
+          state.sortCriteria = [{ column: col, dir }];
+        }
+      }
+      updateSortUI();
+      renderFieldTable();
+    });
+  }
+
+  if (el.btnMobileFooterMenu) {
+    el.btnMobileFooterMenu.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const willOpen = !(el.appFooter && el.appFooter.classList.contains('mobile-footer-open'));
+      setMobileHeaderMenu(false);
+      setMobileFooterMenu(willOpen);
+    });
+  }
+  [el.btnPreviewHA, el.btnExportHADefaults, el.btnCleanHA, el.btnResetHA].forEach(btn => {
+    if (btn) {
+      btn.addEventListener('click', () => setMobileFooterMenu(false));
+    }
+  });
+
+  const desktopMq = window.matchMedia('(min-width: 1025px)');
+  if (desktopMq && typeof desktopMq.addEventListener === 'function') {
+    desktopMq.addEventListener('change', (e) => {
+      if (e.matches) {
+        closeMobileSidebar();
+        setMobileHeaderMenu(false);
+        setMobileFooterMenu(false);
+        setMobileFiltersOpen(false);
+      }
+    });
+  }
+
   // Search
   el.searchInput.addEventListener('input', (e) => {
     state.searchQuery = e.target.value.trim();
@@ -6030,11 +6258,25 @@ function setupEventListeners() {
   }
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      closeMobileSidebar();
+      setMobileHeaderMenu(false);
+      setMobileFooterMenu(false);
+      document.querySelectorAll('.action-dropdown-menu.show').forEach(m => m.classList.remove('show', 'open-up'));
       closeFieldDetails();
     }
   });
-  document.addEventListener('click', () => {
-    document.querySelectorAll('.action-dropdown-menu.show').forEach(m => m.classList.remove('show'));
+  document.addEventListener('click', (e) => {
+    document.querySelectorAll('.action-dropdown-menu.show').forEach(m => m.classList.remove('show', 'open-up'));
+    if (el.headerStatusPanel && el.headerStatusPanel.classList.contains('mobile-open')) {
+      if (!el.headerStatusPanel.contains(e.target) && (!el.btnMobileHeaderMenu || !el.btnMobileHeaderMenu.contains(e.target))) {
+        setMobileHeaderMenu(false);
+      }
+    }
+    if (el.appFooter && el.appFooter.classList.contains('mobile-footer-open')) {
+      if (!el.appFooter.contains(e.target)) {
+        setMobileFooterMenu(false);
+      }
+    }
   });
 
   // Write Modal
@@ -6624,7 +6866,10 @@ function setupEventListeners() {
 
   // Re-scan Devices Listeners
   if (el.btnOpenRescan) {
-    el.btnOpenRescan.addEventListener('click', openRescanModal);
+    el.btnOpenRescan.addEventListener('click', () => {
+      if (isCompactViewport()) closeMobileSidebar();
+      openRescanModal();
+    });
   }
   if (el.btnCloseRescanModal) {
     el.btnCloseRescanModal.addEventListener('click', closeRescanModal);
@@ -8435,9 +8680,9 @@ function renderCompareTableRows(rows) {
     }
 
     tr.innerHTML = `
-      <td>${conceptCol}</td>
-      <td>${agreementHtml}</td>
-      <td>${sourcesCol}</td>
+      <td class="cmp-cell-concept">${conceptCol}</td>
+      <td class="cmp-cell-status">${agreementHtml}</td>
+      <td class="cmp-cell-sources">${sourcesCol}</td>
     `;
     el.compareTableBody.appendChild(tr);
   });

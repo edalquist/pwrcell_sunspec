@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>PWRcell Explorer (v3.3.0)</title>
   <link rel="stylesheet" href="style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -13,11 +13,25 @@
   <div class="app-container">
     <!-- Top Navigation Header -->
     <header class="app-header">
-      <div class="brand">
-        <div class="logo-icon">⚡</div>
-        <div class="logo-text">
-          <h1>PWRcell Explorer</h1>
-          <span class="version-badge" id="appVersionBadge">v3.3.0</span>
+      <div class="header-top-row">
+        <button type="button" class="btn btn-secondary btn-sm mobile-only-btn mobile-devices-btn" id="btnMobileDevices" aria-label="Open devices list" aria-expanded="false" aria-controls="deviceSidebar">
+          ☰ Devices (<span id="mobileDeviceCountBadge">0</span>)
+        </button>
+
+        <div class="brand">
+          <div class="logo-icon">⚡</div>
+          <div class="logo-text">
+            <h1>PWRcell Explorer</h1>
+            <span class="version-badge" id="appVersionBadge">v3.3.0</span>
+          </div>
+        </div>
+
+        <div class="mobile-header-right">
+          <span class="mobile-live-dot live" id="mobileLiveDot" title="Live Feed" aria-label="Connection status"></span>
+          <button type="button" class="btn btn-secondary btn-sm mobile-only-btn mobile-tools-btn" id="btnMobileHeaderMenu" aria-expanded="false" aria-controls="headerStatusPanel">
+            ⚙️ Tools
+            <span class="mobile-suggestions-dot" id="mobileSuggestionsDot" style="display: none;"></span>
+          </button>
         </div>
       </div>
 
@@ -53,7 +67,7 @@
         </div>
       </div>
 
-      <div class="header-status">
+      <div class="header-status" id="headerStatusPanel">
         <button class="btn btn-secondary btn-sm" id="btnOpenCompare" title="Compare live push telemetry with Modbus registers">⚡ Compare Telemetry</button>
         <button class="btn btn-secondary btn-sm suggestion-header-btn" id="btnOpenSuggestions" title="Review suggested field groupings" style="display: none;">
           💡 Suggestions (<span id="cntHeaderSuggestions">0</span>)
@@ -69,14 +83,18 @@
     </header>
 
     <div class="app-body">
+      <div class="sidebar-backdrop" id="sidebarBackdrop" aria-hidden="true"></div>
       <!-- Left Sidebar: Devices Tree -->
-      <aside class="sidebar">
+      <aside class="sidebar" id="deviceSidebar">
         <div class="sidebar-header">
-          <div class="sidebar-title-group" style="display: flex; align-items: center; gap: 8px;">
+          <div class="sidebar-title-group">
             <h2>Discovered Devices</h2>
             <span class="counter" id="deviceCountBadge">0</span>
           </div>
-          <button class="btn btn-secondary btn-sm" id="btnOpenRescan" title="Scan Modbus network for devices">🔄 Re-scan</button>
+          <div class="sidebar-header-actions">
+            <button class="btn btn-secondary btn-sm" id="btnOpenRescan" title="Scan Modbus network for devices">🔄 Re-scan</button>
+            <button type="button" class="btn btn-secondary btn-sm mobile-only-btn mobile-sidebar-close" id="btnCloseSidebar" aria-label="Close devices menu">&times;</button>
+          </div>
         </div>
         <div class="device-list" id="deviceList">
           <div class="loading-spinner">Loading devices...</div>
@@ -88,7 +106,10 @@
         <!-- Device Info Banner with Merged View Mode Toggle -->
         <section class="device-banner" id="deviceBanner">
           <div class="device-info">
-            <h2 id="activeDeviceName">Select a Device</h2>
+            <div class="device-title-row">
+              <h2 id="activeDeviceName">Select a Device</h2>
+              <button type="button" class="btn btn-secondary btn-xs mobile-only-btn mobile-switch-device-btn" id="btnSwitchDeviceBanner">Devices ▾</button>
+            </div>
             <div class="device-meta">
               <span class="meta-item"><strong id="activeDeviceSerial">--</strong></span>
               <span class="meta-item">Slave ID: <strong id="activeDeviceSlaveId">--</strong></span>
@@ -154,7 +175,26 @@
               </div>
             </div>
 
-            <div class="toolbar-options">
+            <div class="mobile-toolbar-controls">
+              <button type="button" class="btn btn-secondary btn-sm mobile-only-btn" id="btnToggleMobileFilters" aria-expanded="false" aria-controls="toolbarOptionsPanel">⚙️ Options</button>
+              <div class="mobile-sort-box">
+                <label for="mobileSortSelect" class="model-select-label">Sort:</label>
+                <select id="mobileSortSelect" class="model-dropdown" title="Sort fields">
+                  <option value="">Natural Order</option>
+                  <option value="name:asc">Name (A → Z)</option>
+                  <option value="name:desc">Name (Z → A)</option>
+                  <option value="value:desc">Value (High → Low)</option>
+                  <option value="value:asc">Value (Low → High)</option>
+                  <option value="ha:desc">HA Selected First</option>
+                  <option value="model:asc">Model / Source</option>
+                  <option value="source:asc">Protocol Source</option>
+                  <option value="unit:asc">Unit</option>
+                  <option value="type:asc">Platform / Type</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="toolbar-options" id="toolbarOptionsPanel">
               <label class="toggle-label" id="optGroupByModel" title="Group table rows by SunSpec Model">
                 <input type="checkbox" id="groupByModel" />
                 <span>Group by Model</span>
@@ -245,19 +285,24 @@
     </div>
 
     <!-- Bottom Bar: Home Assistant Export Drawer -->
-    <footer class="app-footer">
+    <footer class="app-footer" id="appFooter">
       <div class="ha-status-bar">
         <div class="ha-stats">
           <span class="ha-icon">🏠</span>
-          <strong>Home Assistant Export:</strong>
-          <span id="haSelectedCount">0</span> entities selected
+          <strong class="ha-stats-label">Home Assistant Export:</strong>
+          <span id="haSelectedCount">0</span> <span class="ha-stats-entities">entities</span> selected
         </div>
         <div class="footer-actions">
-          <button class="btn btn-secondary" id="btnPreviewHA">Preview MQTT Discovery</button>
-          <button class="btn btn-secondary" id="btnExportHADefaults" title="Export current Home Assistant configuration for use as ha_default_config.yaml in the repo">📥 Export Defaults</button>
-          <button class="btn btn-secondary" id="btnCleanHA" title="Scan MQTT broker and purge any orphaned or obsolete PWRcell discovery topics">🧹 Clean Stale MQTT</button>
-          <button class="btn btn-secondary" id="btnResetHA" title="Reset all Home Assistant selections to default recommended configuration">↺ Reset to Defaults</button>
-          <button class="btn btn-primary" id="btnSaveHA">Save to ha_config.yaml</button>
+          <div class="footer-secondary-actions" id="footerSecondaryActions">
+            <button class="btn btn-secondary" id="btnPreviewHA">Preview MQTT Discovery</button>
+            <button class="btn btn-secondary" id="btnExportHADefaults" title="Export current Home Assistant configuration for use as ha_default_config.yaml in the repo">📥 Export Defaults</button>
+            <button class="btn btn-secondary" id="btnCleanHA" title="Scan MQTT broker and purge any orphaned or obsolete PWRcell discovery topics">🧹 Clean Stale MQTT</button>
+            <button class="btn btn-secondary" id="btnResetHA" title="Reset all Home Assistant selections to default recommended configuration">↺ Reset to Defaults</button>
+          </div>
+          <div class="footer-primary-actions">
+            <button type="button" class="btn btn-secondary btn-sm mobile-only-btn" id="btnMobileFooterMenu" aria-expanded="false" aria-controls="footerSecondaryActions">More ▴</button>
+            <button class="btn btn-primary" id="btnSaveHA">Save to ha_config.yaml</button>
+          </div>
         </div>
       </div>
     </footer>
@@ -374,9 +419,9 @@
           <table class="field-table compare-table">
             <thead>
               <tr>
-                <th style="width: 20%;">Device & Concept</th>
-                <th style="width: 18%;">Agreement / Status</th>
-                <th style="width: 62%;">Grouped Register Sources & Live Values</th>
+                <th class="col-cmp-concept">Device &amp; Concept</th>
+                <th class="col-cmp-status">Agreement / Status</th>
+                <th class="col-cmp-sources">Grouped Register Sources &amp; Live Values</th>
               </tr>
             </thead>
             <tbody id="compareTableBody">
@@ -431,8 +476,8 @@
           </div>
         </div>
       </div>
-      <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
-        <div style="display: flex; align-items: center; gap: 12px;">
+      <div class="modal-footer compare-modal-footer">
+        <div class="compare-modal-footer-left">
           <button class="btn btn-secondary btn-sm" id="btnOpenExportMappings" title="Export custom field groupings to YAML">📥 Export Mappings</button>
           <span class="compare-footer-note">⚡ Live sync updates every 2 seconds</span>
         </div>
@@ -741,12 +786,12 @@
           </div>
         </div>
 
-        <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+        <div class="safety-table-header">
           <span style="font-weight: 600; font-size: 13px;">Safety-Protected Fields in Active System (<span id="safetyBlockedCount">0</span>):</span>
           <span class="text-muted" style="font-size: 12px;" id="safetyConfigPath">config/blocked_fields.yaml</span>
         </div>
 
-        <div style="max-height: 360px; overflow-y: auto; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px;">
+        <div class="safety-table-scroll">
           <table class="data-table" style="width: 100%; margin: 0; font-size: 12px;">
             <thead>
               <tr>
@@ -790,7 +835,7 @@
           Scan the Modbus network to discover connected PWRcell inverters, batteries, PV links, and beacons.
         </p>
 
-        <div style="display: flex; gap: 16px; margin-bottom: 16px;">
+        <div class="rescan-range-row">
           <div class="form-group" style="flex: 1;">
             <label for="rescanStartId" style="display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px;">Start Slave ID</label>
             <input type="number" id="rescanStartId" class="text-input" min="1" max="247" value="1" style="width: 100%;" />

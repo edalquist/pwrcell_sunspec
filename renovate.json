@@ -33,6 +33,17 @@
       "automerge": true
     },
     {
+      "description": "Tag dev/test-only dependency updates as chore(deps) so they do not trigger add-on releases",
+      "matchManagers": [
+        "pip_requirements"
+      ],
+      "matchFileNames": [
+        "requirements-dev.txt"
+      ],
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "deps"
+    },
+    {
       "description": "Keep protobuf on major version 7 until pwrcell/protos/energy_record_set_pb2.py is regenerated",
       "matchDatasources": [
         "pypi"

@@ -67,6 +67,13 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertIn(b"groupingModal", resp.data)
         self.assertIn(b"radioGroupExisting", resp.data)
         self.assertIn(b"radioGroupUngroup", resp.data)
+        self.assertIn(b"viewport-fit=cover", resp.data)
+        self.assertIn(b"btnMobileDevices", resp.data)
+        self.assertIn(b"btnMobileHeaderMenu", resp.data)
+        self.assertIn(b"btnMobileFooterMenu", resp.data)
+        self.assertIn(b"btnToggleMobileFilters", resp.data)
+        self.assertIn(b"mobileSortSelect", resp.data)
+        self.assertIn(b"sidebarBackdrop", resp.data)
         resp.close()
 
     def test_overview_endpoint(self):

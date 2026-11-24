@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.0] - 2026-11-23
+
+### Added
+- **Responsive Mobile & Tablet Web Explorer UI (`pwrcell/ui/static/index.html`, `pwrcell/ui/static/style.css`, `pwrcell/ui/static/app.js`, `docs/management_ui.md`)**:
+  - Added full responsive layouts for tablet (`<= 1024px`) and mobile / Home Assistant Companion App Ingress WebViews (`<= 768px` and compact `360px`–`430px` viewports) with `viewport-fit=cover` and `env(safe-area-inset-bottom)` support.
+  - Added an off-canvas slide-over device drawer (`#deviceSidebar` + `#sidebarBackdrop`) with automatic close on device selection, Escape key dismissal, and automatic cleanup on resize back to desktop.
+  - Added compact mobile header (**☰ Devices**, live connection dot, and collapsible **⚙️ Tools** panel), 2-column quick telemetry chip grid with full-width **Mode** selector, and full-width segmented view switcher.
+  - Added collapsible toolbar display **Options**, a mobile **Sort** dropdown synced with `state.sortCriteria` and `#sortBar`, horizontally scrollable filter pills, CSS Grid mobile field cards (with viewport-aware `⋮` action menus), and stacked child-source / sub-group rollup cards.
+  - Added a sticky compact bottom footer bar with an upward-expanding **More ▴** menu for secondary Home Assistant actions, plus responsive modal dialogs (`#compareModal`, `#modbusDetailsModal`, `#writeModal`, `#groupingModal`, `#boundsModal`, `#blockedSafetyModal`, `#rescanModal`, `#previewModal`, `#exportMappingsModal`, `#exportHADefaultsModal`).
+- **Automated Playwright Desktop, Tablet & Mobile Browser UI Test Suite (`tests/test_ui_browser.py`, `tests/test_ui.py`, `requirements-dev.txt`, `.github/workflows/ci.yml`, `renovate.json`)**:
+  - Added `tests/test_ui_browser.py` verifying zero horizontal overflow, console/page errors, drawer/menu interactions, search/filtering/sorting, row/rollup expansion, HA config persistence, SSE live updates, modal viewport fit, and dynamic desktop-mobile resize across `1440×900`, `1280×800`, `768×1024`, `390×844`, and `360×680`.
+  - Added `requirements-dev.txt` (kept separate from runtime `requirements.txt` for lean add-on containers), Renovate dev-dependency rules (`chore(deps)`), and a dedicated `ui-tests` job in `.github/workflows/ci.yml`.
+
 ## [3.5.1] - 2026-11-23
 
 ### Fixed
