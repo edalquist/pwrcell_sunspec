@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.1] - 2026-11-23
+
+### Fixed
+- **Null/Empty Device Categories in `devices.yaml` (Issue #30 — `pwrcell/config.py`, `tests/test_client_lifecycle.py`)**: Updated `DeviceConfig.read()` to parse YAML with `yaml.safe_load()` and normalize empty/null category values (such as bare keys like `pv_link:` written by `dataconf` v3 prior to v3.3.4 or hand-edited files) to `{}` before delegating to `dataconf.dict()`, preventing `MalformedConfigException: expected dict at .<category> but received None` on startup under `dataconf` v4 while continuing to fail loudly on genuinely malformed YAML or invalid field types. Updated `DeviceConfig.write()` to write atomically via `yaml.safe_dump()` so empty categories always serialize as explicit `{}` mappings, and hardened `DeviceConfig.__post_init__()` and `DeviceConfig.get_device_map()` against `None` category values.
+
 ## [3.5.0] - 2026-11-23
 
 ### Added

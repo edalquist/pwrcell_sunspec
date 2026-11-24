@@ -383,6 +383,192 @@ class TestClientLifecycle(unittest.TestCase):
                 models_dir = load_models_dir(AppConfig(pwrcell=None))
                 self.assertEqual(models_dir, tmp_path / "sunspec-models")
 
+    def test_device_config_read_tolerates_null_and_missing_categories(self):
+        """DeviceConfig.read() must tolerate bare/null/empty/missing categories even under strict dataconf v4 rules."""
+        import os
+        import tempfile
+        from pathlib import Path
+        import dataconf
+        from dataconf.exceptions import MalformedConfigException
+        from pwrcell.config import DeviceConfig
+
+        real_dataconf_dict = dataconf.dict
+
+        def strict_dataconf_dict(data, clazz, **kwargs):
+            # Enforce dataconf v4 strictness against None values even when running under dataconf 3.x
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    if v is None:
+                        raise MalformedConfigException(f"expected dict at .{k} but received None")
+            return real_dataconf_dict(data, clazz, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            devices_file = tmp_path / "devices.yaml"
+
+            with patch.dict(os.environ, {"PWRCELL_DATA_DIR": str(tmp_path)}), \
+                 patch("pwrcell.config.dataconf.dict", side_effect=strict_dataconf_dict):
+                # 1. Missing devices.yaml returns None
+                self.assertIsNone(DeviceConfig.read())
+
+                # 2. Exact Issue #30 payload: bare pv_link: alongside populated categories
+                devices_file.write_text(
+                    "rebus_beacon:\n"
+                    "  00010012DXXX: 1\n"
+                    "inverter:\n"
+                    "  00010007XXXX: 3\n"
+                    "pv_link:\n"
+                    "battery:\n"
+                    "  0001000XXXX: 4\n"
+                    "icm:\n"
+                    "  000100XXXX: 2\n",
+                    encoding="utf-8",
+                )
+                cfg = DeviceConfig.read()
+                self.assertIsNotNone(cfg)
+                self.assertEqual(cfg.rebus_beacon, {"00010012DXXX": 1})
+                self.assertEqual(cfg.inverter, {"00010007XXXX": 3})
+                self.assertEqual(cfg.pv_link, {})
+                self.assertEqual(cfg.battery, {"0001000XXXX": 4})
+                self.assertEqual(cfg.icm, {"000100XXXX": 2})
+
+                # 3. All null variants (bare key, explicit null, ~) normalize to {} and count as empty
+                devices_file.write_text(
+                    "rebus_beacon:\n"
+                    "inverter:\n"
+                    "pv_link: null\n"
+                    "battery: ~\n"
+                    "icm:\n",
+                    encoding="utf-8",
+                )
+                cfg_all_null = DeviceConfig.read()
+                self.assertIsNotNone(cfg_all_null)
+                for attr in ("rebus_beacon", "inverter", "pv_link", "battery", "icm"):
+                    self.assertEqual(getattr(cfg_all_null, attr), {})
+                self.assertTrue(PwrcellClient(is_mock=False)._is_empty_device_config(cfg_all_null))
+
+                # 4. Empty file and comments-only file return empty DeviceConfig()
+                for content in ("", "# empty devices file\n"):
+                    devices_file.write_text(content, encoding="utf-8")
+                    cfg_empty = DeviceConfig.read()
+                    self.assertEqual(cfg_empty, DeviceConfig())
+
+                # 5. Partial devices.yaml omits some categories -> omitted categories default to {}
+                devices_file.write_text(
+                    "inverter:\n"
+                    "  00010007XXXX: 8\n",
+                    encoding="utf-8",
+                )
+                cfg_partial = DeviceConfig.read()
+                self.assertIsNotNone(cfg_partial)
+                self.assertEqual(cfg_partial.inverter, {"00010007XXXX": 8})
+                self.assertEqual(cfg_partial.rebus_beacon, {})
+                self.assertEqual(cfg_partial.pv_link, {})
+                self.assertEqual(cfg_partial.battery, {})
+                self.assertEqual(cfg_partial.icm, {})
+
+                # 6. Explicit empty mapping pv_link: {} loads cleanly
+                devices_file.write_text("pv_link: {}\n", encoding="utf-8")
+                cfg_explicit = DeviceConfig.read()
+                self.assertIsNotNone(cfg_explicit)
+                self.assertEqual(cfg_explicit.pv_link, {})
+
+                # 7. All-digit YAML serial key parsed as int by PyYAML is coerced to str key
+                devices_file.write_text(
+                    "battery:\n"
+                    "  123456: 4\n",
+                    encoding="utf-8",
+                )
+                cfg_digit_key = DeviceConfig.read()
+                self.assertIsNotNone(cfg_digit_key)
+                self.assertEqual(cfg_digit_key.battery, {"123456": 4})
+
+    def test_device_config_read_rejects_malformed_configs(self):
+        """DeviceConfig.read() must continue to raise loudly on malformed YAML, wrong types, or unexpected keys."""
+        import os
+        import tempfile
+        from pathlib import Path
+        import yaml
+        from dataconf.exceptions import MalformedConfigException, UnexpectedKeysException
+        from pwrcell.config import DeviceConfig
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            devices_file = tmp_path / "devices.yaml"
+
+            with patch.dict(os.environ, {"PWRCELL_DATA_DIR": str(tmp_path)}):
+                # 1. Invalid YAML syntax
+                devices_file.write_text("pv_link: [unclosed\n", encoding="utf-8")
+                with self.assertRaises(yaml.YAMLError):
+                    DeviceConfig.read()
+
+                # 2. Top-level non-mapping (list)
+                devices_file.write_text("- a\n- b\n", encoding="utf-8")
+                with self.assertRaises(MalformedConfigException):
+                    DeviceConfig.read()
+
+                # 3. Non-dict category values (string and list)
+                for bad_category in ('pv_link: "bad"\n', "pv_link: [1, 2]\n"):
+                    devices_file.write_text(bad_category, encoding="utf-8")
+                    with self.assertRaises(Exception):
+                        DeviceConfig.read()
+
+                # 4. Invalid slave IDs (non-int and null)
+                for bad_slave in (
+                    "inverter:\n  00010007XXXX: not_an_int\n",
+                    "inverter:\n  00010007XXXX:\n",
+                ):
+                    devices_file.write_text(bad_slave, encoding="utf-8")
+                    with self.assertRaises(Exception):
+                        DeviceConfig.read()
+
+                # 5. Unexpected top-level key
+                devices_file.write_text("unknown_category:\n  00010007XXXX: 1\n", encoding="utf-8")
+                with self.assertRaises(UnexpectedKeysException):
+                    DeviceConfig.read()
+
+    def test_device_config_write_emits_explicit_empty_dicts_and_normalizes_none(self):
+        """DeviceConfig.write() emits explicit {} mappings atomically and DeviceConfig normalizes None categories."""
+        import os
+        import tempfile
+        from pathlib import Path
+        import yaml
+        from pwrcell.config import DeviceConfig
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            devices_file = tmp_path / "devices.yaml"
+
+            with patch.dict(os.environ, {"PWRCELL_DATA_DIR": str(tmp_path)}):
+                cfg = DeviceConfig(
+                    rebus_beacon=None,
+                    inverter={"000100001234": 8, "000100070008": 3},
+                    pv_link=None,
+                )
+                self.assertEqual(cfg.rebus_beacon, {})
+                self.assertEqual(cfg.pv_link, {})
+
+                # Even if an attribute is mutated to None afterwards, get_device_map resets it to {}
+                cfg.pv_link = None
+                pv_map = cfg.get_device_map("pv_link")
+                self.assertEqual(pv_map, {})
+                self.assertIs(cfg.pv_link, pv_map)
+
+                cfg.write()
+                self.assertTrue(devices_file.exists())
+                self.assertFalse((tmp_path / "devices.yaml.tmp").exists())
+
+                written_text = devices_file.read_text(encoding="utf-8")
+                self.assertIn("pv_link: {}", written_text)
+                parsed_raw = yaml.safe_load(written_text)
+                self.assertTrue(all(v is not None for v in parsed_raw.values()))
+
+                round_tripped = DeviceConfig.read()
+                self.assertIsNotNone(round_tripped)
+                self.assertEqual(round_tripped.inverter.get("000100001234"), 8)
+                self.assertEqual(round_tripped.inverter.get("000100070008"), 3)
+                self.assertEqual(round_tripped.pv_link, {})
+
 
 if __name__ == "__main__":
     unittest.main()

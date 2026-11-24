@@ -1,13 +1,14 @@
 import dataclasses
 import logging
+import os
 import sys
 from dataclasses import field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import dataconf
-
-import os
+from dataconf.exceptions import MalformedConfigException
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -140,11 +141,18 @@ class DeviceConfig:
   battery: Dict[str, int] = field(default_factory=dict)
   icm: Dict[str, int] = field(default_factory=dict)
 
+  def __post_init__(self):
+    for f in dataclasses.fields(self):
+      if getattr(self, f.name) is None:
+        setattr(self, f.name, {})
+
   def get_device_map(self, device_type: str) -> Dict[str, int]:
     """Retrieve or initialize the slave map for any device type."""
-    if not hasattr(self, device_type):
-      setattr(self, device_type, {})
-    return getattr(self, device_type)
+    current = getattr(self, device_type, None)
+    if not isinstance(current, dict):
+      current = {}
+      setattr(self, device_type, current)
+    return current
 
   def to_dict(self) -> Dict[str, Dict[str, int]]:
     """Return all configured device categories as a dictionary."""
@@ -157,9 +165,30 @@ class DeviceConfig:
   def read(cls) -> Optional['DeviceConfig']:
     path = _getConfigPath(_DEVICE_FILE)
     try:
-      return dataconf.load(path, DeviceConfig)
-    except FileNotFoundError as e:
+      with open(path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+    except FileNotFoundError:
       return None
+
+    if raw is None:
+      return cls()
+
+    if not isinstance(raw, dict):
+      raise MalformedConfigException(
+        f"expected mapping in {path}, got {type(raw).__name__}"
+      )
+
+    normalized: Dict[str, Any] = {}
+    for k, v in raw.items():
+      key = str(k)
+      if v is None:
+        normalized[key] = {}
+      elif isinstance(v, dict):
+        normalized[key] = {str(sn): slave_id for sn, slave_id in v.items()}
+      else:
+        normalized[key] = v
+
+    return dataconf.dict(normalized, cls)
 
   @classmethod
   def delete(cls) -> bool:
@@ -183,6 +212,22 @@ class DeviceConfig:
     return deleted
 
   def write(self):
-    target = _getConfigPath(_DEVICE_FILE, for_write=True)
-    Path(target).parent.mkdir(parents=True, exist_ok=True)
-    dataconf.dump(target, self, out='yaml')
+    target = Path(_getConfigPath(_DEVICE_FILE, for_write=True))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload: Dict[str, Dict[str, int]] = {}
+    for f in dataclasses.fields(self):
+      val = getattr(self, f.name, None)
+      payload[f.name] = val if isinstance(val, dict) else {}
+
+    tmp_target = target.with_suffix(target.suffix + ".tmp")
+    try:
+      with open(tmp_target, "w", encoding="utf-8") as f:
+        yaml.safe_dump(payload, f, default_flow_style=False, sort_keys=False)
+      os.replace(tmp_target, target)
+    except Exception:
+      if tmp_target.exists():
+        try:
+          tmp_target.unlink()
+        except OSError:
+          pass
+      raise
