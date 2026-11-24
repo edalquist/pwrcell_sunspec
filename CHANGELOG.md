@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-11-23
+
+### Added
+- **Reusable Local-Only Beacon Hardening Script (`util/beacon_local_only.sh`)**: Added an idempotent, BusyBox-compatible POSIX `/bin/sh` utility (supporting both local execution and SSH `stdin` streaming) to harden internet-blocked Generac REbus Beacons with `--status`, `--dry-run`, `--apply`, and `--revert` modes. Disables cloud-only `monit` watchdogs (`mqtt_reboot`, `mqtt_active`, `ipv6_monitor`, `internet`, `inet_good`, `autossh_triggers`, `sshidle_monitor`, `update_manager`), disables Mosquitto AWS IoT bridges and clears bloated `mosquitto.db` persistence while keeping local `127.0.0.1:1883` MQTT and Modbus TCP intact, installs `/etc/logrotate.d/lcm_binary_log` (`copytruncate`, `size 10M`, `rotate 5`) with safe in-place `O_APPEND` truncation of oversized `/var/log/lcm_core/binary_log` (`>= 100 MiB`, opt-out via `--keep-binary-log`), and supports configuring local LAN NTP servers (`--ntp-server`, fixing the stock `NPSERVERS` typo) or disabling `ntpdate` retries (`--disable-ntp`), with pre-reload `monit -t` validation, rollback on failure, and factory backup restoration.
+- **Unit Tests & Documentation (`tests/test_beacon_local_only.py`, `README.md`, `DOCS.md`)**: Added unit test coverage for `util/beacon_local_only.sh` (audit, dry-run, idempotent apply, `binary_log` rotation/in-place truncation, NTP toggle, keep flags, monit/mosquitto rollback, revert, stdin execution, and argument/target guards) along with usage guides in `README.md` and `DOCS.md`.
+
 ## [3.3.4](https://github.com/edalquist/pwrcell_sunspec/compare/v3.3.3...v3.3.4) (2026-11-20)
 
 

@@ -93,3 +93,9 @@ Once the add-on connects to the MQTT broker, the following entities are automati
   - `select.rebus_beacon_rebus_dir_system_operating_mode` (Interactive dropdown with `SELF_SUPPLY`, `CLEAN_BACKUP`, `PRIORITY_BACKUP`, etc.)
 - **PWRcell PV Links**:
   - String power (W) and accumulated energy (kWh) per string.
+
+---
+
+## Offline / Internet-Blocked Beacons
+
+If you block outbound internet access from your Generac REbus Beacon at your router/firewall, stock Beacon watchdogs (`mqtt_reboot`, `check_internet`, and queued AWS MQTT bridges in `mosquitto.conf`) cause daily ~25-hour reboots, ~10-minute Ethernet resets, `mosquitto.db` bloat, and an unrotated `2 GiB` `/var/log/lcm_core/binary_log`. Use [`util/beacon_local_only.sh`](util/beacon_local_only.sh) (`--status`, `--dry-run`, `--apply --ntp-server <lan-ntp-ip>`, `--revert`) to safely harden the Beacon, install `/etc/logrotate.d/lcm_binary_log` (`copytruncate`, `size 10M`, `rotate 5`), and safely truncate oversized `binary_log` (`>= 100 MiB`) in place while keeping local Modbus TCP, local Mosquitto telemetry, and SSH intact.

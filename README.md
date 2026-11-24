@@ -214,6 +214,35 @@ sudo systemctl status pwrcell.service
 
 ---
 
+## Local-Only Beacon Hardening (Internet-Blocked Beacons)
+
+If you block outbound internet access on your Generac REbus Beacon to prevent remote firmware/access overrides, stock Beacon firmware triggers several destructive loops:
+
+- **~25-hour reboot loop (`mqtt_reboot`)**: `monit` reboots the Beacon after ~25 hours without cloud MQTT heartbeats (`/tmp/mqtt_active`), which resets the REbus DC bus and can cause intermittent `ERROR_REBUS_FAULT` trips on the inverter.
+- **~10-minute `eth0` bounces (`check_internet`)**: Repeated failed IPv6/internet probes reset the Ethernet interface and drop local SSH/Modbus/MQTT tunnels.
+- **Mosquitto database bloat (`mosquitto.db`)**: QoS-1 AWS IoT bridges queue undelivered cloud messages until `mosquitto.db` exceeds `200 kB`, causing `monit` to restart Mosquitto every 5 minutes and stalling SD card I/O.
+- **Unrotated `lcm_core` binary log (`/var/log/lcm_core/binary_log`)**: Without cloud upload rotation, `binary_log` grows unchecked up to the 2 GiB (`INT32_MAX`) limit on `/rw`.
+
+A reusable, idempotent POSIX shell script, [`util/beacon_local_only.sh`](util/beacon_local_only.sh), disables those cloud-only loops, installs an hourly `copytruncate` `logrotate` rule (`/etc/logrotate.d/lcm_binary_log`, `size 10M`, `rotate 5`) plus safe in-place `O_APPEND` truncation if `binary_log` is `>= 100 MiB`, and configures local LAN NTP while leaving essential local services (`lcm_core`, local Modbus TCP, local Mosquitto on port `1883`, `S58statuspusher`, and `sshd`) untouched:
+
+```bash
+# 1. Read-only audit of current Beacon state
+ssh root@192.168.0.73 'sh -s -- --status' < util/beacon_local_only.sh
+
+# 2. Preview exact file diffs and planned service calls without changing anything
+ssh root@192.168.0.73 'sh -s -- --dry-run --ntp-server 192.168.0.2' < util/beacon_local_only.sh
+
+# 3. Apply idempotently (validates monit -t before reloading; safe to re-run)
+ssh root@192.168.0.73 'sh -s -- --apply --ntp-server 192.168.0.2' < util/beacon_local_only.sh
+
+# Revert to original configs saved under /opt/pika/var/lib/beacon_local_only_backups/
+ssh root@192.168.0.73 'sh -s -- --revert' < util/beacon_local_only.sh
+```
+
+Use `--disable-ntp` instead of `--ntp-server <lan-ntp-ip>` if you do not run a local NTP server, and run `sh util/beacon_local_only.sh --help` for all flags (`--keep-cloud-bridges`, `--keep-cloud-services`, `--keep-binary-log`).
+
+---
+
 ## Testing
 
 Run the automated unit test suite:
