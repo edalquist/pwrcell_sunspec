@@ -241,6 +241,27 @@ ssh root@192.168.0.73 'sh -s -- --revert' < util/beacon_local_only.sh
 
 Use `--disable-ntp` instead of `--ntp-server <lan-ntp-ip>` if you do not run a local NTP server, and run `sh util/beacon_local_only.sh --help` for all flags (`--keep-cloud-bridges`, `--keep-cloud-services`, `--keep-binary-log`).
 
+### Offline SD-Card / Image Provisioning (Docker on macOS or Linux)
+
+> [!WARNING]
+> [`util/beacon_provision_image.sh`](util/beacon_provision_image.sh) and [`util/Dockerfile.beacon-provision`](util/Dockerfile.beacon-provision) are **untested against real Beacon SD-card `.img` files** (verified only via unit tests against simulated overlay directories). Always back up your `.img` file and run `--status` / `--dry-run` first.
+
+To add your SSH public key, ensure `sshd` allows root key login, and guarantee the Beacon's `iptables`/`ip6tables` firewall opens port `22` directly inside a backed-up SD-card `.img` file (or after a Generac OTA update overwrites settings), use [`util/beacon_provision_image.sh`](util/beacon_provision_image.sh). On macOS, it automatically builds and runs [`util/Dockerfile.beacon-provision`](util/Dockerfile.beacon-provision) in Docker so the Beacon's `ext4` writable overlay (`p7`) and active SquashFS rootfs (`p5`/`p6`) can be mounted safely without a native macOS `ext4` driver:
+
+```bash
+# Audit an offline Beacon SD-card image read-only
+./util/beacon_provision_image.sh --status --image ~/beacon-backup.img --ssh-key ~/.ssh/id_ed25519.pub
+
+# Preview exact diffs (read-only)
+./util/beacon_provision_image.sh --dry-run --image ~/beacon-backup.img --ssh-key ~/.ssh/id_ed25519.pub
+
+# Provision SSH key + sshd_config + firewall ACCEPT rules into p7 (/rw/user)
+./util/beacon_provision_image.sh --apply --image ~/beacon-backup.img --ssh-key ~/.ssh/id_ed25519.pub
+
+# Revert back to pre-provisioning state
+./util/beacon_provision_image.sh --revert --image ~/beacon-backup.img
+```
+
 ---
 
 ## Testing

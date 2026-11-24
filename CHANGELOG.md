@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] - 2026-11-23
+
+### Added
+- **Offline Beacon SD-Card Image Provisioner (`util/beacon_provision_image.sh`, `util/Dockerfile.beacon-provision`)**: Added an idempotent POSIX `/bin/sh` tool (with automatic privileged Alpine Linux Docker execution on macOS or native execution on Linux) to provision an offline Beacon `.img` file (or extracted overlay/rootfs directories via `--rw-root`/`--ro-root`) with `--status`, `--dry-run`, `--apply`, and `--revert` modes. Validates and appends OpenSSH public keys to `rw/user/root/.ssh/authorized_keys` (`0700`/`0600`, rejecting private keys), enables root pubkey SSH in `rw/user/etc/ssh/sshd_config`, ensures executable `S50sshd`, and inserts `-A INPUT -i <iface> -p tcp --dport <port> -j ACCEPT` rules into `etc/iptables/rules.v4` and `rules.v6` before catch-all `DROP` rules while backing up originals for clean revert.
+- **Unit Tests & Documentation (`tests/test_beacon_provision_image.py`, `README.md`, `DOCS.md`)**: Added 10 unit tests covering read-only audit/dry-run, overlay provisioning & idempotency, existing/blocking firewall rules, custom port/interfaces/`--no-ipv6`, non-executable `S50sshd` repair, clean `--revert`, and key/argument validation, plus usage docs in `README.md` and `DOCS.md`.
+
 ## [3.4.0] - 2026-11-23
 
 ### Added

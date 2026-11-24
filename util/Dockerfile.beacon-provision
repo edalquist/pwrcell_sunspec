@@ -1,0 +1,14 @@
+FROM alpine:3.21
+
+RUN apk add --no-cache \
+    util-linux \
+    e2fsprogs \
+    squashfs-tools \
+    openssh-keygen \
+    dosfstools \
+    diffutils
+
+COPY beacon_provision_image.sh /usr/local/bin/beacon_provision_image.sh
+RUN chmod +x /usr/local/bin/beacon_provision_image.sh
+
+ENTRYPOINT ["/usr/local/bin/beacon_provision_image.sh"]
