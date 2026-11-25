@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.2] - 2026-11-24
+
+### Fixed
+- **Protected & Non-Writable Fields Exported as Read-Only `sensor` Entities in Home Assistant (Issue #35 — `pwrcell/ha.py`, `pwrcell/state.py`, `pwrcell/concept.py`, `pwrcell/optimizer.py`)**:
+  - Added `get_effective_ha_platform()` in `pwrcell/ha.py` so `generate_discovery_payload()` only emits interactive `select`/`number`/`switch` platforms when `is_ha_writable_allowed()` is `True`, downgrading mutation-blocked (`config/blocked_fields.yaml`) and non-allowlisted `RW` registers from catalog `ha_hint` platforms to read-only `sensor` entities without `command_topic`, `min`/`max`/`step`/`mode`, or `options` (while preserving `device_class: "enum"` and `options` on true read-only enum sensors).
+  - Updated `get_effective_ha_category()` so read-only/downgraded sensors default to `entity_category: "diagnostic"` instead of `"config"` (which Home Assistant rejects on `sensor` entities), and safely coerce any `"config"` user override on a read-only sensor to `"diagnostic"` while still honoring `"primary"`/`"diagnostic"` overrides.
+  - Added automatic cleanup of stale `select`/`number`/`switch` MQTT discovery topics in `legacy_config_topics` when a field exports as `sensor`, removing previously published interactive controls from Home Assistant on upgrade or after blocking a register.
+  - Aligned `StateField.to_dict()`, `StateStore.get_compound_view()`, `ConceptView.to_dict()`, and `group_device_fields()` in `pwrcell/optimizer.py` with `get_effective_ha_platform()` and `get_effective_ha_category()` so the REST API and Web Explorer accurately display protected/non-HA-writable fields as `sensor` and omit writable `ha_options`.
+- **Unit Tests (`tests/test_safety.py`, `tests/test_bridge.py`, `tests/test_ha_discovery_audit.py`)**: Added regression tests covering protected `RW` enum/numeric discovery, dynamic block/unblock transitions in `blocked_fields.yaml`, stale `select`/`number`/`switch` topic purging, `config` category coercion, and Web Explorer / API metadata alignment.
+
 ## [3.6.1] - 2026-11-24
 
 ### Fixed

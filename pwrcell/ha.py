@@ -100,6 +100,42 @@ def is_ha_writable_allowed(field: Any) -> bool:
     return False
 
 
+READ_ONLY_HA_PLATFORMS = {"sensor", "binary_sensor"}
+WRITABLE_HA_PLATFORMS = {"select", "number", "switch"}
+
+
+def get_effective_ha_platform(field: Any) -> str:
+    """Resolve the effective Home Assistant platform, downgrading non-writable controls to sensor."""
+    is_compound = bool(getattr(field, "is_compound", False))
+    is_concept = bool(is_compound or hasattr(field, "concept_key"))
+    is_writable = is_ha_writable_allowed(field)
+
+    if is_concept:
+        raw_platform = getattr(field, "ha_platform", None) or "sensor"
+        if is_writable:
+            if raw_platform in WRITABLE_HA_PLATFORMS:
+                return raw_platform
+            if (
+                getattr(field, "ha_options", None)
+                or getattr(field, "ha_device_class", None) == "enum"
+                or getattr(field, "is_enum", False)
+                or getattr(field, "symbols", None)
+            ):
+                return "select"
+            return "number"
+        return raw_platform if raw_platform in READ_ONLY_HA_PLATFORMS else "sensor"
+
+    hint = getattr(field, "ha_hint", None)
+    hint_platform = getattr(hint, "platform", None) if hint else None
+    if is_writable:
+        if hint_platform in WRITABLE_HA_PLATFORMS:
+            return hint_platform
+        if getattr(field, "is_enum", False) or getattr(field, "symbols", None):
+            return "select"
+        return "number"
+    return hint_platform if hint_platform in READ_ONLY_HA_PLATFORMS else "sensor"
+
+
 def _filter_ha_options(options: Optional[List[str]]) -> Optional[List[str]]:
     if not options:
         return options
@@ -744,6 +780,7 @@ def get_effective_ha_category(
     """
     dev_sn = getattr(device, "serial_number", str(device) if isinstance(device, str) else "").strip().upper()
     dev_type = getattr(device, "device_type", None)
+    is_writable = is_ha_writable_allowed(field)
 
     # 1. Check user overrides
     if category_overrides:
@@ -820,8 +857,10 @@ def get_effective_ha_category(
                 val = str(category_overrides[c]).strip().lower()
                 if val in ("primary", "sensor", "none", "null", ""):
                     return None
-                if val in ("diagnostic", "config"):
-                    return val
+                if val == "diagnostic":
+                    return "diagnostic"
+                if val == "config":
+                    return "config" if is_writable else "diagnostic"
 
         if any(".*." in ok for ok in category_overrides):
             for ok, raw_val in category_overrides.items():
@@ -837,21 +876,29 @@ def get_effective_ha_category(
                     val = str(raw_val).strip().lower()
                     if val in ("primary", "sensor", "none", "null", ""):
                         return None
-                    if val in ("diagnostic", "config"):
-                        return val
+                    if val == "diagnostic":
+                        return "diagnostic"
+                    if val == "config":
+                        return "config" if is_writable else "diagnostic"
 
     # 2. Default logic
-    is_writable = is_ha_writable_allowed(field)
     if is_writable:
         hint = getattr(field, "ha_hint", None)
         if hint and getattr(hint, "entity_category", None):
             return hint.entity_category
-        return getattr(field, "entity_category", None)
+        cat = getattr(field, "entity_category", None)
+        if cat:
+            return cat
+        if hasattr(device, "fields"):
+            for src in getattr(field, "sources", []) or []:
+                s_fk = getattr(src, "field_key", None) or getattr(src, "key", None)
+                src_f = device.fields.get(s_fk) if s_fk else None
+                src_hint = getattr(src_f, "ha_hint", None) if src_f else None
+                if src_hint and getattr(src_hint, "entity_category", None):
+                    return src_hint.entity_category
+        return None
 
     if getattr(field, "group_path", None):
-        hint = getattr(field, "ha_hint", None)
-        if hint and getattr(hint, "entity_category", None) == "config":
-            return "config"
         return "diagnostic"
 
     f_key = getattr(field, "key", getattr(field, "field_key", None)) or getattr(field, "id", "")
@@ -868,10 +915,18 @@ def get_effective_ha_category(
         return "diagnostic"
 
     hint = getattr(field, "ha_hint", None)
-    if hint and getattr(hint, "entity_category", None):
-        return hint.entity_category
-
-    return getattr(field, "entity_category", None)
+    cat = getattr(hint, "entity_category", None) if hint else None
+    if not cat:
+        cat = getattr(field, "entity_category", None)
+    if not cat and hasattr(device, "fields"):
+        for src in getattr(field, "sources", []) or []:
+            s_fk = getattr(src, "field_key", None) or getattr(src, "key", None)
+            src_f = device.fields.get(s_fk) if s_fk else None
+            src_hint = getattr(src_f, "ha_hint", None) if src_f else None
+            if src_hint and getattr(src_hint, "entity_category", None):
+                cat = src_hint.entity_category
+                break
+    return "diagnostic" if cat == "config" else cat
 
 
 def unqualify_ha_config(selected_field_keys: Optional[List[str]]) -> List[str]:
@@ -1196,27 +1251,7 @@ def generate_discovery_payload(
     is_compound = field.is_compound
     is_concept = bool(is_compound or hasattr(field, "concept_key"))
     is_writable = is_ha_writable_allowed(field)
-
-    if is_concept:
-        platform = field.ha_platform if (is_writable or field.ha_platform == "sensor") else "sensor"
-        if is_writable and platform == "sensor":
-            if getattr(field, "ha_options", None) or getattr(field, "ha_device_class", None) == "enum":
-                platform = "select"
-            else:
-                platform = "number"
-    else:
-        hint = field.ha_hint
-        if is_writable:
-            if hint and hint.platform in ("select", "number", "switch"):
-                platform = hint.platform
-            elif getattr(field, "is_enum", False) or getattr(field, "symbols", None):
-                platform = "select"
-            else:
-                platform = "number"
-        elif hint and hint.platform:
-            platform = hint.platform
-        else:
-            platform = "sensor"
+    platform = get_effective_ha_platform(field)
 
     clean_sn = device.serial_number.strip().lower()
 
@@ -1292,6 +1327,20 @@ def generate_discovery_payload(
         for pfx in ("compound_", "concept_"):
             legacy_config_topics.append(f"{ha_prefix}/{platform}/{node_id}/{pfx}{c}/config")
             legacy_config_topics.append(f"{ha_prefix}/sensor/{node_id}/{pfx}{c}/config")
+    if platform == "sensor":
+        hint_obj = getattr(field, "ha_hint", None)
+        hint_plat = getattr(hint_obj, "platform", None) if hint_obj else None
+        raw_plat = getattr(field, "ha_platform", None)
+        was_potentially_writable = (
+            getattr(field, "access", None) == "RW"
+            or getattr(field, "modbus_writable", False)
+            or getattr(field, "is_mutation_blocked", False)
+            or hint_plat in WRITABLE_HA_PLATFORMS
+            or raw_plat in WRITABLE_HA_PLATFORMS
+        )
+        if was_potentially_writable:
+            for old_plat in ("select", "number", "switch"):
+                legacy_config_topics.append(f"{ha_prefix}/{old_plat}/{node_id}/{object_id}/config")
     # Exclude current config_topic and deduplicate
     legacy_config_topics = [t for t in dict.fromkeys(legacy_config_topics) if t != config_topic]
 
@@ -1421,7 +1470,7 @@ def generate_discovery_payload(
             u_raw = hint.unit_of_measurement or field.units
             if u_raw:
                 payload["unit_of_measurement"] = normalize_ha_unit(u_raw)
-            if hint.entity_category:
+            if hint.entity_category and hint.entity_category != "config":
                 payload["entity_category"] = hint.entity_category
             if hint.icon:
                 payload["icon"] = hint.icon

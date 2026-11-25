@@ -413,6 +413,21 @@ class TestHaDiscoveryAudit(unittest.TestCase):
             reset_payload = generate_discovery_payload(f_tmpcab, self.inv, category_overrides=loaded)["payload"]
             self.assertEqual(reset_payload.get("entity_category"), "diagnostic")
 
+    def test_config_category_override_coerced_to_diagnostic_on_readonly_sensor(self):
+        """User override 'config' on a read-only/protected sensor must be coerced to 'diagnostic'."""
+        from pwrcell.ha import get_effective_ha_category
+
+        f_tmpcab = self.inv.fields["inverter.inverter.TmpCab"]
+        overrides = {f"{self.inv.serial_number}:inverter.inverter.TmpCab": "config"}
+        self.assertEqual(get_effective_ha_category(f_tmpcab, self.inv, category_overrides=overrides), "diagnostic")
+        payload = generate_discovery_payload(f_tmpcab, self.inv, category_overrides=overrides)["payload"]
+        self.assertEqual(payload.get("entity_category"), "diagnostic")
+
+        # 'primary' override still clears entity_category
+        prim_overrides = {f"{self.inv.serial_number}:inverter.inverter.TmpCab": "primary"}
+        self.assertIsNone(get_effective_ha_category(f_tmpcab, self.inv, category_overrides=prim_overrides))
+        self.assertNotIn("entity_category", generate_discovery_payload(f_tmpcab, self.inv, category_overrides=prim_overrides)["payload"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -329,6 +329,10 @@ class ConceptView:
                 except Exception:
                     pass
 
+        from .ha import get_effective_ha_platform
+        eff_platform = get_effective_ha_platform(self)
+        eff_category = "diagnostic" if (eff_platform in ("sensor", "binary_sensor") and self.ha_category == "config") else self.ha_category
+
         return {
             "id": self.id,
             "key": self.active_source_key or self.id,
@@ -373,11 +377,11 @@ class ConceptView:
             "is_writable": self.is_writable and not self.is_mutation_blocked,
             "modbus_writable": self.is_writable or any(getattr(s, "is_writable", False) for s in self.sources),
             "is_mutation_blocked": self.is_mutation_blocked,
-            "ha_platform": self.ha_platform,
+            "ha_platform": eff_platform,
             "ha_device_class": self.ha_device_class,
             "ha_state_class": self.ha_state_class,
-            "ha_category": self.ha_category,
-            "is_diagnostic": self.ha_category == "diagnostic",
+            "ha_category": eff_category,
+            "is_diagnostic": eff_category == "diagnostic",
             "is_selected": self.is_selected,
             "bounds": self.get_bounds(),
             "point_type": self.point_type,

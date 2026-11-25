@@ -666,7 +666,8 @@ class TestHomeAssistantBridge(unittest.TestCase):
         bat = self.client.state.get_battery()
         beacon = self.client.state.get_beacon()
 
-        # 1. Non-allowlisted RW register (e.g. grid code / volt-var curve point V1 on model 126) must be exposed as read-only sensor
+        # 1. Non-allowlisted RW register (e.g. grid code / volt-var curve point V1 on model 126, even with catalog ha_hint)
+        from pwrcell.catalog import HomeAssistantHint
         grid_code_field = StateField(
             key="inverter.volt_var.V1",
             device_sn=inv.serial_number,
@@ -680,12 +681,22 @@ class TestHomeAssistantBridge(unittest.TestCase):
             access="RW",
             point_type="uint16",
             model_id=126,
+            ha_hint=HomeAssistantHint(
+                platform="number",
+                device_class="voltage",
+                unit_of_measurement="V",
+                entity_category="config",
+                min_value=0.0,
+                max_value=500.0,
+                step=1.0,
+            ),
         )
         self.assertFalse(is_ha_writable_allowed(grid_code_field))
         grid_payload = generate_discovery_payload(grid_code_field, inv)
         self.assertEqual(grid_payload["platform"], "sensor")
         self.assertIsNone(grid_payload["command_topic"])
         self.assertNotIn("command_topic", grid_payload["payload"])
+        self.assertNotEqual(grid_payload["payload"].get("entity_category"), "config")
 
         # 2. Allow-listed battery reserve register (SoCRsvMin on model 802) is exposed as writable number with bounds
         soc_rsv_field = bat.fields.get("battery.battery.SoCRsvMin")
@@ -989,6 +1000,45 @@ class TestHomeAssistantBridge(unittest.TestCase):
                 self.assertEqual(mock_mqttc.connect_async.call_count, 2)
             finally:
                 bridge.stop()
+
+    def test_publish_discovery_clears_stale_select_number_topics_for_protected_fields(self):
+        """publish_discovery publishes protected RW fields as sensor and clears stale select/number/switch topics."""
+        bat = self.client.state.get_battery()
+        self.assertIsNotNone(bat)
+        bat_sn = bat.serial_number.strip().upper()
+        bat_sn_lower = bat_sn.lower()
+
+        self.client.state.update_from_modbus_points(
+            serial_number=bat_sn,
+            model_id=802,
+            raw_values={"SetInvState": 1},
+            computed_values={"SetInvState": 1},
+        )
+        set_inv_field = bat.fields.get("battery.battery.SetInvState")
+        self.assertIsNotNone(set_inv_field)
+        self.assertTrue(set_inv_field.is_mutation_blocked)
+
+        self.bridge.selected_field_keys = [f"{bat_sn}:battery.battery.SetInvState"]
+        self.bridge._selected_set = set(self.bridge.selected_field_keys)
+        self.mock_mqttc.reset_mock()
+
+        self.bridge.publish_discovery()
+
+        published = {}
+        for call in self.mock_mqttc.publish.call_args_list:
+            published[call[0][0]] = call[0][1]
+
+        sensor_topic = f"homeassistant/sensor/pwrcell_{bat_sn_lower}/battery_setinvstate/config"
+        self.assertIn(sensor_topic, published)
+        sensor_payload = json.loads(published[sensor_topic])
+        self.assertEqual(sensor_payload.get("entity_category"), "diagnostic")
+        self.assertNotIn("command_topic", sensor_payload)
+        self.assertNotIn("options", sensor_payload)
+
+        # Stale interactive topics are proactively cleared with empty retained payload
+        for old_plat in ("select", "number", "switch"):
+            old_topic = f"homeassistant/{old_plat}/pwrcell_{bat_sn_lower}/battery_setinvstate/config"
+            self.assertEqual(published.get(old_topic), "")
 
 
 if __name__ == "__main__":

@@ -175,6 +175,230 @@ class TestSafetyBlockedFields(unittest.TestCase):
         self.assertEqual(info["blocked_fields"][0]["name"], "IslandEna")
         self.assertIn("manually edit config/blocked_fields.yaml", info["unblock_instruction"])
 
+    def test_protected_rw_enum_and_numeric_export_as_readonly_sensors(self):
+        """Issue #35: Protected RW fields with catalog ha_hint must export as read-only sensors."""
+        from unittest.mock import patch
+        from pwrcell.catalog import HomeAssistantHint
+        from pwrcell.ha import generate_discovery_payload
+        from pwrcell.state import FieldSource
+
+        catalog = get_catalog()
+        state = StateStore(catalog=catalog)
+        bat = state.register_device(
+            serial_number="000100080009",
+            slave_id=9,
+            device_type="battery",
+            model_name="PWRcell Battery",
+        )
+        inv = state.register_device(
+            serial_number="000100070008",
+            slave_id=8,
+            device_type="inverter",
+            model_name="PWRcell Inverter",
+        )
+
+        with patch("pwrcell.safety.get_blocked_fields_path", return_value=self.config_path):
+            clear_blocked_fields_cache()
+
+            # 1. Protected RW enum from catalog (SetInvState in Model 802)
+            state.update_from_modbus_points(
+                serial_number="000100080009",
+                model_id=802,
+                raw_values={"SetInvState": 1},
+                computed_values={"SetInvState": 1},
+            )
+            set_inv_field = bat.fields.get("battery.battery.SetInvState")
+            self.assertIsNotNone(set_inv_field)
+            self.assertEqual(set_inv_field.access, "RW")
+            self.assertTrue(set_inv_field.is_mutation_blocked)
+            self.assertFalse(set_inv_field.is_writable)
+            self.assertEqual(set_inv_field.ha_hint.platform, "select")
+
+            disc_enum = generate_discovery_payload(set_inv_field, bat)
+            self.assertEqual(disc_enum["platform"], "sensor")
+            self.assertIn("/sensor/", disc_enum["config_topic"])
+            self.assertIsNone(disc_enum["command_topic"])
+            self.assertNotIn("command_topic", disc_enum["payload"])
+            self.assertNotIn("options", disc_enum["payload"])
+            self.assertEqual(disc_enum["payload"].get("entity_category"), "diagnostic")
+            self.assertIn(
+                "homeassistant/select/pwrcell_000100080009/battery_setinvstate/config",
+                disc_enum["legacy_config_topics"],
+            )
+
+            # 2. Protected RW numeric with catalog-style number ha_hint (VNom on inverter)
+            vnom_hint = HomeAssistantHint(
+                platform="number",
+                device_class="voltage",
+                unit_of_measurement="V",
+                entity_category="config",
+                min_value=0.0,
+                max_value=500.0,
+                step=1.0,
+            )
+            state.set_field(
+                device_sn="000100070008",
+                name="VNom",
+                label="Nominal Voltage",
+                description="Nominal AC voltage",
+                value=240.0,
+                raw_value=240,
+                units="V",
+                source=FieldSource.MODBUS_POLL,
+                access="RW",
+                point_type="uint16",
+                ha_hint=vnom_hint,
+                sub_group="inverter",
+                model_id=121,
+            )
+            vnom_field = inv.fields["inverter.inverter.VNom"]
+            self.assertTrue(vnom_field.is_mutation_blocked)
+            self.assertFalse(vnom_field.is_writable)
+
+            disc_num = generate_discovery_payload(vnom_field, inv)
+            self.assertEqual(disc_num["platform"], "sensor")
+            self.assertIn("/sensor/", disc_num["config_topic"])
+            self.assertIsNone(disc_num["command_topic"])
+            for forbidden_key in ("command_topic", "min", "max", "step", "mode"):
+                self.assertNotIn(forbidden_key, disc_num["payload"])
+            self.assertEqual(disc_num["payload"].get("device_class"), "voltage")
+            self.assertEqual(disc_num["payload"].get("unit_of_measurement"), "V")
+            self.assertEqual(disc_num["payload"].get("entity_category"), "diagnostic")
+            self.assertIn(
+                "homeassistant/number/pwrcell_000100070008/inverter_vnom/config",
+                disc_num["legacy_config_topics"],
+            )
+
+    def test_dynamic_block_unblock_and_serialized_metadata(self):
+        """Blocking/unblocking in blocked_fields.yaml switches HA discovery, StateField, ConceptView, and UnifiedFieldGroup."""
+        from unittest.mock import patch
+        from pwrcell.ha import generate_discovery_payload
+        from pwrcell.state import FieldSource
+
+        catalog = get_catalog()
+        state = StateStore(catalog=catalog)
+        bat = state.register_device(
+            serial_number="000100080009",
+            slave_id=9,
+            device_type="battery",
+            model_name="PWRcell Battery",
+        )
+        beacon = state.register_device(
+            serial_number="000100120001",
+            slave_id=1,
+            device_type="rebus_beacon",
+            model_name="PWRcell Beacon",
+        )
+        inv = state.register_device(
+            serial_number="000100070008",
+            slave_id=8,
+            device_type="inverter",
+            model_name="PWRcell Inverter",
+        )
+
+        state.update_from_modbus_points(
+            serial_number="000100080009",
+            model_id=802,
+            raw_values={"SoCMax": 950, "SoC_SF": -1},
+            computed_values={"SoCMax": 95.0, "SoC_SF": -1},
+        )
+        state.update_from_modbus_points(
+            serial_number="000100120001",
+            model_id=64200,
+            raw_values={"SysMd": 1},
+            computed_values={"SysMd": "GRID_TIE"},
+        )
+        state.set_field(
+            device_sn="000100070008",
+            name="system_mode",
+            sub_group="live",
+            value="SELF_SUPPLY",
+            raw_value=3,
+            source=FieldSource.MQTT_PUSH,
+        )
+
+        # Write a temporary blocked_fields.yaml that blocks SoCMax, SysMd, and system_mode
+        blocked_cfg = Path(self.temp_dir.name) / "dynamic_blocked.yaml"
+        with open(blocked_cfg, "w", encoding="utf-8") as f:
+            yaml.dump({"blocked_fields": ["battery.*.SoCMax", "*.SysMd", "*system_mode*"]}, f)
+
+        with patch("pwrcell.safety.get_blocked_fields_path", return_value=blocked_cfg):
+            clear_blocked_fields_cache()
+
+            soc_f = bat.fields["battery.battery.SoCMax"]
+            sysmd_f = beacon.fields["rebus_beacon.REbus_dir.SysMd"]
+            c_sys = state.get_compound_view("system_mode", inv.serial_number)
+
+            # Discovery downgrades all three to read-only sensor + diagnostic
+            disc_soc = generate_discovery_payload(soc_f, bat)
+            self.assertEqual(disc_soc["platform"], "sensor")
+            self.assertIsNone(disc_soc["command_topic"])
+            self.assertEqual(disc_soc["payload"].get("entity_category"), "diagnostic")
+            self.assertNotIn("min", disc_soc["payload"])
+
+            disc_sysmd = generate_discovery_payload(sysmd_f, beacon)
+            self.assertEqual(disc_sysmd["platform"], "sensor")
+            self.assertIsNone(disc_sysmd["command_topic"])
+            self.assertNotIn("options", disc_sysmd["payload"])
+            self.assertEqual(disc_sysmd["payload"].get("entity_category"), "diagnostic")
+
+            disc_comp = generate_discovery_payload(c_sys, inv)
+            self.assertEqual(disc_comp["platform"], "sensor")
+            self.assertIsNone(disc_comp["command_topic"])
+            self.assertNotIn("options", disc_comp["payload"])
+            self.assertNotIn("entity_category", disc_comp["payload"])
+
+            # Explicit primary override still honored; config override coerced to diagnostic
+            disc_primary = generate_discovery_payload(
+                soc_f, bat, category_overrides={f"{bat.serial_number}:battery.battery.SoCMax": "primary"}
+            )
+            self.assertNotIn("entity_category", disc_primary["payload"])
+            disc_cfg = generate_discovery_payload(
+                soc_f, bat, category_overrides={f"{bat.serial_number}:battery.battery.SoCMax": "config"}
+            )
+            self.assertEqual(disc_cfg["payload"].get("entity_category"), "diagnostic")
+
+            # Serialized API payloads (StateField, ConceptView, UnifiedFieldGroup) all align
+            soc_dict = soc_f.to_dict()
+            self.assertEqual(soc_dict["ha_platform"], "sensor")
+            self.assertEqual(soc_dict["ha_category"], "diagnostic")
+            self.assertIsNone(soc_dict["ha_options"])
+
+            sysmd_dict = sysmd_f.to_dict()
+            self.assertEqual(sysmd_dict["ha_platform"], "sensor")
+            self.assertEqual(sysmd_dict["ha_category"], "diagnostic")
+            self.assertIsNone(sysmd_dict["ha_options"])
+            self.assertTrue(sysmd_dict["symbols"])  # symbols preserved for Web UI display
+
+            c_dict = c_sys.to_dict()
+            self.assertEqual(c_dict["ha_platform"], "sensor")
+            self.assertIsNone(c_dict["ha_category"])
+            self.assertFalse(c_dict["is_writable"])
+
+            bat_groups = state.get_unified_fields(bat.serial_number)
+            soc_grp = next((g for g in bat_groups if g.name == "SoCMax" or g.concept_key == "socmax_802"), None)
+            self.assertIsNotNone(soc_grp)
+            self.assertEqual(soc_grp.ha_platform, "sensor")
+            self.assertEqual(soc_grp.ha_category, "diagnostic")
+            self.assertIsNone(soc_grp.ha_options)
+
+            # Unblock all fields on disk -> immediately reverts to interactive controls
+            with open(blocked_cfg, "w", encoding="utf-8") as f:
+                yaml.dump({"blocked_fields": []}, f)
+            clear_blocked_fields_cache()
+
+            disc_soc_unblocked = generate_discovery_payload(soc_f, bat)
+            self.assertEqual(disc_soc_unblocked["platform"], "number")
+            self.assertIsNotNone(disc_soc_unblocked["command_topic"])
+            self.assertEqual(disc_soc_unblocked["payload"].get("entity_category"), "config")
+            self.assertIsNotNone(disc_soc_unblocked["old_sensor_topic"])
+
+            disc_sysmd_unblocked = generate_discovery_payload(sysmd_f, beacon)
+            self.assertEqual(disc_sysmd_unblocked["platform"], "select")
+            self.assertIsNotNone(disc_sysmd_unblocked["command_topic"])
+            self.assertEqual(disc_sysmd_unblocked["payload"].get("entity_category"), "config")
+            self.assertIn("options", disc_sysmd_unblocked["payload"])
+
 
 if __name__ == "__main__":
     unittest.main()

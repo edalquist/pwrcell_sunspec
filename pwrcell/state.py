@@ -619,10 +619,12 @@ class StateField:
             else:
                 raw_hex_str = f"0x{self.raw_value:X}"
 
-        ha_platform = self.ha_hint.platform if self.ha_hint else "sensor"
+        from .ha import get_effective_ha_platform
+        ha_platform = get_effective_ha_platform(self)
+        ha_device_class = self.ha_hint.device_class if self.ha_hint else None
         ha_precision = None
         if ha_platform == "sensor" and not self.is_enum and not self.is_bitfield and self.point_type != "string":
-            eff_dclass = self.ha_hint.device_class if self.ha_hint else None
+            eff_dclass = ha_device_class
             if eff_dclass != "enum":
                 eff_unit = (self.ha_hint.unit_of_measurement if self.ha_hint else None) or self.units
                 derived_prec = get_suggested_precision(
@@ -638,6 +640,13 @@ class StateField:
                 else:
                     cands = [p for p in (hint_prec, derived_prec) if p is not None]
                     ha_precision = max(cands) if cands else None
+
+        ha_category = self.get_ha_category(category_overrides=category_overrides)
+        ha_options = (
+            self.ha_hint.options
+            if (self.ha_hint and (ha_platform == "select" or (ha_platform == "sensor" and ha_device_class == "enum")))
+            else None
+        )
 
         return {
             "key": self.key,
@@ -673,12 +682,12 @@ class StateField:
             "is_compound_raw": self.is_compound_raw,
             "symbols": serialized_symbols,
             "ha_platform": ha_platform,
-            "ha_device_class": self.ha_hint.device_class if self.ha_hint else None,
+            "ha_device_class": ha_device_class,
             "ha_state_class": self.ha_hint.state_class if self.ha_hint else None,
             "ha_unit": self.ha_hint.unit_of_measurement if self.ha_hint else self.units,
-            "ha_category": self.get_ha_category(category_overrides=category_overrides),
-            "is_diagnostic": self.get_ha_category(category_overrides=category_overrides) == "diagnostic",
-            "ha_options": self.ha_hint.options if self.ha_hint else None,
+            "ha_category": ha_category,
+            "is_diagnostic": ha_category == "diagnostic",
+            "ha_options": ha_options,
             "ha_suggested_display_precision": ha_precision,
             "model_id": self.model_id,
             "model_name": self.model_name,
@@ -1465,7 +1474,18 @@ class StateStore:
             ha_options=options,
             ha_suggested_display_precision=precision,
         )
-        from .ha import get_effective_ha_category
+        from .ha import get_effective_ha_category, get_effective_ha_platform
+        if c_view.bounds is None:
+            if options:
+                c_view.bounds = c_view.get_bounds()
+            elif mb_field is not None:
+                mb_sf = target_dev.get_scale_factor_value(mb_field) if hasattr(target_dev, "get_scale_factor_value") else None
+                c_view.bounds = mb_field.get_bounds(sf_value=mb_sf)
+        if c_view.is_mutation_blocked:
+            c_view.is_writable = False
+        c_view.ha_platform = get_effective_ha_platform(c_view)
+        if c_view.ha_platform == "sensor" and c_view.ha_device_class != "enum":
+            c_view.ha_options = None
         c_view.ha_category = get_effective_ha_category(c_view, target_dev.serial_number)
         return c_view
 

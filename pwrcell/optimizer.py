@@ -1051,7 +1051,10 @@ def group_device_fields(
             group_label=meta.get("group_label") or next((s.group_label for s in sources if s.group_label), None),
             concept_template=meta.get("concept_template"),
         )
-        from .ha import get_effective_ha_category
+        from .ha import get_effective_ha_category, get_effective_ha_platform
+        group.ha_platform = get_effective_ha_platform(group)
+        if group.ha_platform == "sensor" and group.ha_device_class != "enum":
+            group.ha_options = None
         group.ha_category = get_effective_ha_category(group, dev, category_overrides=category_overrides)
         groups.append(group)
 
