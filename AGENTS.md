@@ -15,7 +15,7 @@ Adhere strictly to [Semantic Versioning (SemVer)](https://semver.org/):
 - **MINOR** (`X.Y.Z` -> `X.(Y+1).0`): New features, backward-compatible additions, new endpoints, or newly supported devices/models.
 - **MAJOR** (`X.Y.Z` -> `(X+1).0.0`): Breaking changes, schema changes incompatible with prior versions, or major architectural shifts.
 
-**Version Files (Both MUST Be Updated in Sync):**
+**Version Files (All Three MUST Be Updated in Sync):**
 1. [config.yaml](file:///Users/edalquist/projects/pwrcell_sunspec/config.yaml):
    ```yaml
    version: "X.Y.Z"
@@ -24,9 +24,15 @@ Adhere strictly to [Semantic Versioning (SemVer)](https://semver.org/):
    ```python
    __version__ = "X.Y.Z"
    ```
+3. [.release-please-manifest.json](file:///Users/edalquist/projects/pwrcell_sunspec/.release-please-manifest.json):
+   ```json
+   {
+     ".": "X.Y.Z"
+   }
+   ```
 
 > [!IMPORTANT]
-> Both `config.yaml` and `pwrcell/__init__.py` must always have the exact same version string. Never update one without the other.
+> `config.yaml`, `pwrcell/__init__.py`, and `.release-please-manifest.json` must always have the exact same version string. Never update one without the others (enforced by CI's `Version & Changelog Sync` job).
 
 ---
 
@@ -88,7 +94,8 @@ Before finalizing changes and version bumps:
    ```bash
    .venv/bin/python3 -m unittest tests/test_<module>.py
    ```
-2. Verify both version definitions match:
+2. Verify all three version definitions match:
    - `grep 'version:' config.yaml`
    - `grep '__version__' pwrcell/__init__.py`
+   - `cat .release-please-manifest.json`
 3. Verify that `CHANGELOG.md` contains an entry corresponding to the new version.
