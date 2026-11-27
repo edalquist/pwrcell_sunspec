@@ -1,6 +1,6 @@
 """Generac PWRcell SunSpec & MQTT Integration Library (v3)."""
 
-__version__ = "3.8.0"  # x-release-please-version
+__version__ = "3.9.0"  # x-release-please-version
 
 from .client import PwrcellClient, create_client
 from .config import AppConfig, DeviceConfig
