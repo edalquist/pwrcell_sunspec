@@ -4,65 +4,28 @@ This document provides instructions and protocols for AI assistants and automate
 
 ---
 
-## 🚨 Mandatory Code Update Protocol: Release Version & Release Notes
+## Release Management (`release-please`)
 
-Whenever you make updates, modifications, or additions to code in this repository (features, bug fixes, enhancements, or refactors), you **MUST** always perform the following two steps before concluding the task:
+Releases, version bumps, release notes in [CHANGELOG.md](file:///Users/edalquist/projects/pwrcell_sunspec/CHANGELOG.md), and Git tags (`vX.Y.Z`) are managed **exclusively** by `release-please` ([.github/workflows/release-please.yml](file:///Users/edalquist/projects/pwrcell_sunspec/.github/workflows/release-please.yml) and [release-please-config.json](file:///Users/edalquist/projects/pwrcell_sunspec/release-please-config.json)).
 
-### 1. Update the Release Version (Semantic Versioning)
+### 1. Do NOT Manually Bump Versions or Edit `CHANGELOG.md`
 
-Adhere strictly to [Semantic Versioning (SemVer)](https://semver.org/):
-- **PATCH** (`X.Y.Z` -> `X.Y.(Z+1)`): Bug fixes, small patches, internal refactoring, or minor non-breaking enhancements.
-- **MINOR** (`X.Y.Z` -> `X.(Y+1).0`): New features, backward-compatible additions, new endpoints, or newly supported devices/models.
-- **MAJOR** (`X.Y.Z` -> `(X+1).0.0`): Breaking changes, schema changes incompatible with prior versions, or major architectural shifts.
+- **Never** manually bump versions in [config.yaml](file:///Users/edalquist/projects/pwrcell_sunspec/config.yaml), [pwrcell/__init__.py](file:///Users/edalquist/projects/pwrcell_sunspec/pwrcell/__init__.py), or [.release-please-manifest.json](file:///Users/edalquist/projects/pwrcell_sunspec/.release-please-manifest.json), and **never** manually add release sections to [CHANGELOG.md](file:///Users/edalquist/projects/pwrcell_sunspec/CHANGELOG.md) in regular feature, fix, or refactor commits.
+- Manually bumping `.release-please-manifest.json` without a corresponding `vX.Y.Z` Git tag/release breaks `release-please`'s tag boundary lookup, causing cumulative changelogs across the entire repo history and double-bumped versions.
+- Preserve the `# x-release-please-version` inline comments on `version:` in [config.yaml](file:///Users/edalquist/projects/pwrcell_sunspec/config.yaml) and `__version__ =` in [pwrcell/__init__.py](file:///Users/edalquist/projects/pwrcell_sunspec/pwrcell/__init__.py) so `release-please` can keep all version files synchronized automatically when opening and merging a Release PR.
 
-**Version Files (All Three MUST Be Updated in Sync):**
-1. [config.yaml](file:///Users/edalquist/projects/pwrcell_sunspec/config.yaml):
-   ```yaml
-   version: "X.Y.Z"
-   ```
-2. [pwrcell/__init__.py](file:///Users/edalquist/projects/pwrcell_sunspec/pwrcell/__init__.py):
-   ```python
-   __version__ = "X.Y.Z"
-   ```
-3. [.release-please-manifest.json](file:///Users/edalquist/projects/pwrcell_sunspec/.release-please-manifest.json):
-   ```json
-   {
-     ".": "X.Y.Z"
-   }
-   ```
+### 2. Use Conventional Commits
+
+Always format commit subjects using [Conventional Commits](https://www.conventionalcommits.org/) so `release-please` computes the right [Semantic Versioning (SemVer)](https://semver.org/) bump and changelog section automatically:
+
+- **`feat:`** or **`feat(<scope>):`** -> **MINOR** (`X.(Y+1).0`), listed under **Added**.
+- **`fix:`** or **`fix(<scope>):`** -> **PATCH** (`X.Y.(Z+1)`), listed under **Fixed**.
+- **`feat!:`**, **`fix!:`**, or a **`BREAKING CHANGE:`** footer -> **MAJOR** (`(X+1).0.0`).
+- **`perf:`**, **`refactor:`**, **`revert:`** -> listed under **Changed** (no MINOR/MAJOR bump on their own).
+- **`docs:`**, **`chore:`**, **`ci:`**, **`test:`** -> hidden from release notes.
 
 > [!IMPORTANT]
-> `config.yaml`, `pwrcell/__init__.py`, and `.release-please-manifest.json` must always have the exact same version string. Never update one without the others (enforced by CI's `Version & Changelog Sync` job).
-
----
-
-### 2. Update Release Notes in `CHANGELOG.md`
-
-All user-visible and technical changes must be documented in [CHANGELOG.md](file:///Users/edalquist/projects/pwrcell_sunspec/CHANGELOG.md) following the [Keep a Changelog](https://keepachangelog.com/) format. Home Assistant Supervisor displays this file directly in the Add-on Store changelog tab.
-
-**Format:**
-```markdown
-## [X.Y.Z] - YYYY-MM-DD
-
-### Added
-- Description of new features, options, or endpoints.
-
-### Changed
-- Description of changes in existing functionality.
-
-### Fixed
-- Description of bugs or issues resolved.
-
-### Removed
-- Description of features or deprecated capabilities removed.
-
-### Security
-- Vulnerability or security improvements.
-```
-
-- Add the new version block directly below the header introduction and above previous version entries.
-- Use the current date in ISO format (`YYYY-MM-DD`).
-- Use clear bullet points explaining what changed, which components/files were affected, and any user-facing impacts or resolved issue numbers.
+> `config.yaml`, `pwrcell/__init__.py`, and `.release-please-manifest.json` must always have the exact same version string, and `CHANGELOG.md` must contain an entry for that version (enforced by CI's `Version & Changelog Sync` job). Leaving these files untouched on feature/fix commits keeps them synchronized at the latest released version until `release-please` merges the next Release PR.
 
 ---
 
@@ -85,7 +48,7 @@ All user-visible and technical changes must be documented in [CHANGELOG.md](file
 
 ## Testing & Verification
 
-Before finalizing changes and version bumps:
+Before finalizing changes:
 1. Run relevant unit tests using Python in `.venv`:
    ```bash
    .venv/bin/python3 -m unittest discover tests
@@ -94,8 +57,8 @@ Before finalizing changes and version bumps:
    ```bash
    .venv/bin/python3 -m unittest tests/test_<module>.py
    ```
-2. Verify all three version definitions match:
+2. Verify that all three version definitions remain synchronized at the current released version (and have not drifted from `CHANGELOG.md`):
    - `grep 'version:' config.yaml`
    - `grep '__version__' pwrcell/__init__.py`
    - `cat .release-please-manifest.json`
-3. Verify that `CHANGELOG.md` contains an entry corresponding to the new version.
+   - `head -n 15 CHANGELOG.md`
