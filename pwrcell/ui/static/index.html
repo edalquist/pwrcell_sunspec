@@ -807,6 +807,25 @@
           </table>
         </div>
 
+        <div style="margin-top: 16px;" id="safetyUnblockedSection" hidden>
+          <div class="safety-table-header">
+            <span style="font-weight: 600; font-size: 13px; color: #f59e0b;">Unblocked by User Override (<span id="safetyUnblockedCount">0</span>):</span>
+          </div>
+          <div class="safety-table-scroll">
+            <table class="data-table" style="width: 100%; margin: 0; font-size: 12px;">
+              <thead>
+                <tr>
+                  <th width="32%">Field Key</th>
+                  <th width="24%">Label</th>
+                  <th width="22%">Overridden Rule</th>
+                  <th width="22%">Allow Rule</th>
+                </tr>
+              </thead>
+              <tbody id="safetyUnblockedTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+
         <div style="margin-top: 16px;">
           <details>
             <summary style="cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-muted, #94a3b8);">Configured Protection Patterns (<span id="safetyPatternCount">0</span>) ▾</summary>

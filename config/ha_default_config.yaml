@@ -70,17 +70,6 @@ selected_fields:
 - pv_link.compound.accumulated_energy
 - pv_link.compound.device_temperature
 - pv_link.compound.rebus_power
-controllable_fields:
-- system_mode
-- SysMd
-- SoCRsvMin
-- SoCRsvMax
-- SoCMax
-- SoCMin
-- WChaRteMax
-- WDisChaRteMax
-- AChaMax
-- ADisChaMax
 custom_bounds:
   battery.battery.AChaMax:
     min: 0

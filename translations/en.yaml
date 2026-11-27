@@ -1,0 +1,70 @@
+configuration:
+  beacon_host:
+    name: Beacon Host
+    description: IP address or hostname of your Generac REbus Beacon on the local network.
+  beacon_port:
+    name: Beacon SSH Port
+    description: SSH port on the Generac REbus Beacon (default 22).
+  beacon_user:
+    name: Beacon SSH User
+    description: SSH username for connecting to the Beacon (default root).
+  beacon_password:
+    name: Beacon SSH Password
+    description: Optional SSH password if key-based authentication is not used.
+  ssh_key_file:
+    name: SSH Private Key File
+    description: Path to an SSH private key file stored in /share (e.g. /share/pwrcell_ssh_key).
+  ssh_key:
+    name: SSH Private Key (Inline)
+    description: Paste your PEM/OpenSSH private key directly here (takes precedence over ssh_key_file).
+  ssh_key_passphrase:
+    name: SSH Key Passphrase
+    description: Optional passphrase for an encrypted SSH private key.
+  mqtt_host:
+    name: MQTT Broker Host
+    description: Hostname or IP of your Home Assistant MQTT broker (default core-mosquitto).
+  mqtt_port:
+    name: MQTT Broker Port
+    description: TCP port of your Home Assistant MQTT broker (default 1883).
+  mqtt_username:
+    name: MQTT Username
+    description: Username for the Home Assistant MQTT broker (leave blank if anonymous).
+  mqtt_password:
+    name: MQTT Password
+    description: Password for the Home Assistant MQTT broker.
+  mqtt_client_name:
+    name: MQTT Client ID
+    description: Optional client identifier used when connecting to the MQTT broker.
+  poll_rate:
+    name: Fast Telemetry Poll Interval (seconds)
+    description: Interval in seconds for fast telemetry Modbus polling.
+  config_poll_interval:
+    name: Config Sync Poll Interval (seconds)
+    description: Interval in seconds to sync physical front-panel keypad changes.
+  slow_poll_interval:
+    name: Slow Poll Interval (seconds)
+    description: Interval in seconds for diagnostic accumulators and slow registers.
+  enable_web_explorer:
+    name: Enable Web Explorer (Ingress)
+    description: Launch the embedded PWRcell Web Explorer UI via Home Assistant Ingress.
+  include_bulk_table_groups:
+    name: Include Bulk Curve & Schedule Tables
+    description: Opt-in to expose large repeating SunSpec curve and schedule table groups.
+  log_level:
+    name: Log Level
+    description: Logging verbosity for the add-on service.
+  mock_mode:
+    name: Mock / Simulator Mode
+    description: Run against the built-in device simulator without live PWRcell hardware.
+  blocked_fields:
+    name: Additional Blocked Fields (Block Overrides)
+    description: >-
+      Extra Modbus register patterns to block from mutation on top of the built-in safety defaults
+      (e.g. "inverter.EIconfig.Conn", "battery.*.SoCMax", or "000100030004:pv_link.pvlink_status.Ena").
+      Case-insensitive; wildcards (*) and optional <SERIAL>: prefixes are supported.
+  unblocked_fields:
+    name: Unblocked Fields (Allow Overrides)
+    description: >-
+      Modbus register patterns to explicitly allow even if matched by the built-in safety defaults or a
+      broader block pattern (e.g. "inverter.EIconfig.ZExp", "inverter.EIconfig.ZExpLim").
+      Takes precedence over blocked_fields. Use with caution.

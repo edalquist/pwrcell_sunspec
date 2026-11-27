@@ -1,5 +1,5 @@
 name: "Generac PWRcell"
-version: "3.7.0"  # x-release-please-version
+version: "3.8.0"  # x-release-please-version
 slug: "pwrcell"
 description: "Generac PWRcell SunSpec Gateway, Home Assistant MQTT Bridge & Web Explorer"
 url: "https://github.com/edalquist/pwrcell_sunspec"
@@ -43,6 +43,10 @@ schema:
   include_bulk_table_groups: bool?
   log_level: list(DEBUG|INFO|WARNING|ERROR)?
   mock_mode: bool?
+  blocked_fields:
+    - str
+  unblocked_fields:
+    - str
 
 options:
   beacon_host: "192.168.0.73"
@@ -64,3 +68,5 @@ options:
   include_bulk_table_groups: false
   log_level: "INFO"
   mock_mode: false
+  blocked_fields: []
+  unblocked_fields: []

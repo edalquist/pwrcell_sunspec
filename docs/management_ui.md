@@ -199,7 +199,7 @@ Protected parameters include:
 - Factory battery capacity calibration and cell balancing constants.
 
 > [!CAUTION]
-> Protected registers **cannot be unlocked via the Web UI or REST API**. To unlock mutation for a field, an administrator must manually edit `config/blocked_fields.yaml` on the host filesystem.
+> Protected registers **cannot be unlocked via the Web UI or REST API**. To customize restrictions out-of-band in the Home Assistant Add-on, configure `blocked_fields` (positive block overrides) and `unblocked_fields` (negative unblock overrides) in the **Add-on Configuration** tab and restart. For standalone installations, edit `config/blocked_fields.yaml` (or set `blocked_fields` / `unblocked_fields` in `config/pwrcell.yaml`).
 
 ---
 

@@ -1138,6 +1138,10 @@ class TestWebExplorerApi(unittest.TestCase):
         self.assertEqual(data["status"], "ok")
         self.assertIn("patterns", data)
         self.assertIn("blocked_fields", data)
+        self.assertIn("extra_blocked_patterns", data)
+        self.assertIn("unblocked_patterns", data)
+        self.assertIn("unblocked_fields", data)
+        self.assertIn("unblocked_count", data)
         self.assertIn("manually edit config/blocked_fields.yaml", data["unblock_instruction"])
 
         # Attempt to write to a blocked register via API should fail with 400

@@ -109,6 +109,14 @@ def generate_config_from_options(
     if not client_name or client_name == "null":
         client_name = os.environ.get("HOSTNAME") or "pwrcell-ha"
 
+    def _clean_str_list(raw) -> list[str]:
+        if not isinstance(raw, list):
+            return []
+        return [str(x).strip() for x in raw if x is not None and str(x).strip()]
+
+    blocked_fields = _clean_str_list(opts.get("blocked_fields"))
+    unblocked_fields = _clean_str_list(opts.get("unblocked_fields"))
+
     cfg_dict = {
         "testing": False,
         "poll_rate": int(opts.get("poll_rate", 12) or 12),
@@ -117,6 +125,8 @@ def generate_config_from_options(
         "enable_polling": True,
         "include_bulk_table_groups": bool(opts.get("include_bulk_table_groups", False)),
         "log_level": str(opts.get("log_level") or "INFO"),
+        "blocked_fields": blocked_fields,
+        "unblocked_fields": unblocked_fields,
         "pwrcell": {
             "ssh_tunnel": {
                 "host": str(opts.get("beacon_host") or "192.168.0.73"),

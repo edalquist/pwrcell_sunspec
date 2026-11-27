@@ -658,15 +658,16 @@ class TestHomeAssistantBridge(unittest.TestCase):
         self.assertEqual(self.client.state.get_compound_view("system_mode").latest_value, "SELF_SUPPLY")
 
     def test_writable_exposure_allowlist_and_safety_shutdown_exclusion(self):
-        """Only explicitly allow-listed points are exposed as writable in HA discovery, and SAFETY_SHUTDOWN is excluded from HA select options."""
+        """Unblocked RW controls export as writable in HA while blocked_fields.yaml protects grid-code registers and SAFETY_SHUTDOWN is excluded."""
         from pwrcell.ha import is_ha_writable_allowed
         from pwrcell.state import StateField
 
         inv = self.client.state.get_inverter()
         bat = self.client.state.get_battery()
         beacon = self.client.state.get_beacon()
+        pv = next(d for d in self.client.state.devices.values() if d.device_type == "pv_link")
 
-        # 1. Non-allowlisted RW register (e.g. grid code / volt-var curve point V1 on model 126, even with catalog ha_hint)
+        # 1. Grid-code / volt-var curve point V1 on model 126 is blocked by config/blocked_fields.yaml
         from pwrcell.catalog import HomeAssistantHint
         grid_code_field = StateField(
             key="inverter.volt_var.V1",
@@ -691,14 +692,18 @@ class TestHomeAssistantBridge(unittest.TestCase):
                 step=1.0,
             ),
         )
+        inv.fields[grid_code_field.key] = grid_code_field
+        self.assertTrue(grid_code_field.is_mutation_blocked)
         self.assertFalse(is_ha_writable_allowed(grid_code_field))
         grid_payload = generate_discovery_payload(grid_code_field, inv)
         self.assertEqual(grid_payload["platform"], "sensor")
         self.assertIsNone(grid_payload["command_topic"])
         self.assertNotIn("command_topic", grid_payload["payload"])
         self.assertNotEqual(grid_payload["payload"].get("entity_category"), "config")
+        with self.assertRaises(PermissionError):
+            self.client.controls.write_field("inverter.volt_var.V1", 250.0, device_sn=inv.serial_number)
 
-        # 2. Allow-listed battery reserve register (SoCRsvMin on model 802) is exposed as writable number with bounds
+        # 2. Unblocked operational controls (SoCRsvMin, Enable Inverter, Enable PV Link, Enable String) export as writable controls
         soc_rsv_field = bat.fields.get("battery.battery.SoCRsvMin")
         self.assertIsNotNone(soc_rsv_field)
         self.assertTrue(is_ha_writable_allowed(soc_rsv_field))
@@ -708,7 +713,20 @@ class TestHomeAssistantBridge(unittest.TestCase):
         self.assertIn("min", rsv_payload["payload"])
         self.assertIn("max", rsv_payload["payload"])
 
-        # 3. Allow-listed system_mode (both compound and raw SysMd) is exposed as writable select WITHOUT SAFETY_SHUTDOWN
+        for dev_obj, fk in (
+            (inv, "inverter.EIconfig.Conn"),
+            (pv, "pv_link.pvlink_status.Ena"),
+            (bat, "battery.lithium_ion_string.SetEna"),
+        ):
+            fld = dev_obj.fields.get(fk)
+            self.assertIsNotNone(fld, f"Expected field {fk} missing")
+            self.assertTrue(is_ha_writable_allowed(fld), f"{fk} should be HA-writable")
+            pl = generate_discovery_payload(fld, dev_obj)
+            self.assertEqual(pl["platform"], "select")
+            self.assertIsNotNone(pl["command_topic"])
+            self.assertEqual(pl["payload"].get("entity_category"), "config")
+
+        # 3. Unblocked system_mode (both compound and raw SysMd) exports as writable select WITHOUT SAFETY_SHUTDOWN
         c_sys_mode = self.client.state.get_compound_view("system_mode")
         self.assertTrue(is_ha_writable_allowed(c_sys_mode))
         c_payload = generate_discovery_payload(c_sys_mode, inv)
@@ -1039,6 +1057,67 @@ class TestHomeAssistantBridge(unittest.TestCase):
         for old_plat in ("select", "number", "switch"):
             old_topic = f"homeassistant/{old_plat}/pwrcell_{bat_sn_lower}/battery_setinvstate/config"
             self.assertEqual(published.get(old_topic), "")
+
+    def test_unblocked_enable_controls_subscribe_and_execute_commands(self):
+        """Unblocked enable controls publish as select, subscribe to command topics, and execute MQTT commands."""
+        import time
+
+        inv = self.client.state.get_inverter()
+        bat = self.client.state.get_battery()
+        pv = next(d for d in self.client.state.devices.values() if d.device_type == "pv_link")
+
+        inv_sn = inv.serial_number.strip().upper()
+        bat_sn = bat.serial_number.strip().upper()
+        pv_sn = pv.serial_number.strip().upper()
+
+        self.bridge.selected_field_keys = [
+            f"{inv_sn}:inverter.EIconfig.Conn",
+            f"{pv_sn}:pv_link.pvlink_status.Ena",
+            f"{bat_sn}:battery.lithium_ion_string.SetEna",
+        ]
+        self.bridge._selected_set = set(self.bridge.selected_field_keys)
+        self.mock_mqttc.reset_mock()
+
+        self.bridge.publish_discovery()
+
+        published = {}
+        for call in self.mock_mqttc.publish.call_args_list:
+            published[call[0][0]] = call[0][1]
+
+        expected_topics = [
+            (
+                f"homeassistant/select/pwrcell_{inv_sn.lower()}/eiconfig_conn/config",
+                f"pwrcell/{inv_sn.lower()}/eiconfig_conn/set",
+            ),
+            (
+                f"homeassistant/select/pwrcell_{pv_sn.lower()}/pvlink_status_ena/config",
+                f"pwrcell/{pv_sn.lower()}/pvlink_status_ena/set",
+            ),
+            (
+                f"homeassistant/select/pwrcell_{bat_sn.lower()}/lithium_ion_string_setena/config",
+                f"pwrcell/{bat_sn.lower()}/lithium_ion_string_setena/set",
+            ),
+        ]
+        subscribed_topics = {call[0][0] for call in self.mock_mqttc.subscribe.call_args_list}
+
+        for cfg_topic, cmd_topic in expected_topics:
+            self.assertIn(cfg_topic, published)
+            pl = json.loads(published[cfg_topic])
+            self.assertEqual(pl.get("command_topic"), cmd_topic)
+            self.assertTrue(pl.get("options"))
+            self.assertEqual(pl.get("entity_category"), "config")
+            self.assertIn(cmd_topic, self.bridge._command_topic_to_field)
+            self.assertIn(cmd_topic, subscribed_topics)
+
+        # Simulate incoming MQTT command to disable PV Link and confirm controls.write_field executes it
+        pv_cmd_topic = f"pwrcell/{pv_sn.lower()}/pvlink_status_ena/set"
+        msg = MagicMock()
+        msg.topic = pv_cmd_topic
+        msg.payload = b"DISABLE"
+        msg.retain = False
+        self.bridge._on_message(self.mock_mqttc, None, msg)
+        time.sleep(0.2)
+        self.assertEqual(pv.fields["pv_link.pvlink_status.Ena"].value, "DISABLE")
 
 
 if __name__ == "__main__":

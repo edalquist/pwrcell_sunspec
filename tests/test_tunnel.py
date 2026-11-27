@@ -266,6 +266,48 @@ class TestPwrCellTunnel(unittest.TestCase):
                 self.assertEqual(loaded_cfg.pwrcell.ssh_tunnel.key_passphrase, tricky_passphrase)
                 self.assertEqual(loaded_cfg.mqtt.password, tricky_mqtt_pass)
                 self.assertEqual(loaded_cfg.poll_rate, 15)
+                self.assertEqual(loaded_cfg.blocked_fields, [])
+                self.assertEqual(loaded_cfg.unblocked_fields, [])
+            finally:
+                if old_env is None:
+                    os.environ.pop("PWRCELL_CONFIG", None)
+                else:
+                    os.environ["PWRCELL_CONFIG"] = old_env
+
+    def test_generate_config_from_options_roundtrips_safety_overrides(self):
+        """generate_config_from_options must persist blocked_fields and unblocked_fields for AppConfig.read()."""
+        import json
+        import os
+        import yaml
+        from pwrcell.setup_key import generate_config_from_options
+
+        with tempfile.TemporaryDirectory() as tmp:
+            opts_path = Path(tmp) / "options.json"
+            cfg_path = Path(tmp) / "pwrcell.yaml"
+            opts = {
+                "beacon_host": "192.168.0.73",
+                "blocked_fields": ["  inverter.EIconfig.Conn ", "", "battery.*.SoCMax"],
+                "unblocked_fields": ["inverter.EIconfig.ZExp", None, "  inverter.EIconfig.ZExpLim "],
+            }
+            opts_path.write_text(json.dumps(opts), encoding="utf-8")
+
+            generate_config_from_options(
+                str(opts_path),
+                str(cfg_path),
+                target_key_path=str(Path(tmp) / "id_rsa_pwrcell"),
+            )
+
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                raw_yaml = yaml.safe_load(f)
+            self.assertEqual(raw_yaml["blocked_fields"], ["inverter.EIconfig.Conn", "battery.*.SoCMax"])
+            self.assertEqual(raw_yaml["unblocked_fields"], ["inverter.EIconfig.ZExp", "inverter.EIconfig.ZExpLim"])
+
+            old_env = os.environ.get("PWRCELL_CONFIG")
+            os.environ["PWRCELL_CONFIG"] = str(cfg_path)
+            try:
+                loaded_cfg = AppConfig.read()
+                self.assertEqual(loaded_cfg.blocked_fields, ["inverter.EIconfig.Conn", "battery.*.SoCMax"])
+                self.assertEqual(loaded_cfg.unblocked_fields, ["inverter.EIconfig.ZExp", "inverter.EIconfig.ZExpLim"])
             finally:
                 if old_env is None:
                     os.environ.pop("PWRCELL_CONFIG", None)

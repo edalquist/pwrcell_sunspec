@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.0] - 2026-11-26
+
+### Added
+- **Out-of-Band Restriction Overrides via Home Assistant Add-on Configuration (`config.yaml`, `translations/en.yaml`, `pwrcell/setup_key.py`, `pwrcell/config.py`, `pwrcell/safety.py`, `DOCS.md`)**:
+  - Added `blocked_fields` (positive block overrides) and `unblocked_fields` (negative allow overrides) options to the Home Assistant Add-on Configuration schema (`config.yaml`) and `translations/en.yaml`, piped via `setup_key.py` into `/data/pwrcell.yaml` and supported in standalone `config/pwrcell.yaml` via `AppConfig`.
+  - Layered overrides cleanly on top of the bundled `config/blocked_fields.yaml` defaults with `unblocked_fields` taking precedence over `blocked_fields`, plus serial-scoped pattern matching (`<SERIAL>:<field_key>`) without leaking plain wildcards into serial prefixes.
+  - Updated `/api/safety/blocked_fields` (`get_blocked_mutation_fields()`) and the read-only **🔒 Safety Policy** modal (`pwrcell/ui/static/index.html`, `pwrcell/ui/static/app.js`) to display active override patterns (`override` badges) and any default-protected fields explicitly unblocked by user override.
+
+### Fixed
+- **Unify Home Assistant Writability on `config/blocked_fields.yaml` (Issue #35 follow-up — `pwrcell/ha.py`, `config/ha_default_config.yaml`)**:
+  - Removed the hidden 10-field `HA_WRITABLE_ALLOWLIST` / `controllable_fields` gate from `is_ha_writable_allowed()` so `config/blocked_fields.yaml` is the single source of truth for write restrictions across the Web Explorer, REST API, `ControlDispatcher`, and Home Assistant MQTT Discovery.
+  - Restored Home Assistant interactive `select`/`number` controls (and live `command_topic` subscriptions in `pwrcell/bridge.py`) for unblocked `RW` operational registers such as Enable Inverter (`inverter.EIconfig.Conn`), Enable/Disable PV Link (`pv_link.pvlink_status.Ena`), Enable/Disable String (`battery.lithium_ion_string.SetEna`), `battery.lithium_ion_string.SetCon`, `battery.battery.SetOp`, and `rebus_beacon.REbus_dir.devices.*.Ena`, while ensuring unblocking any field in `config/blocked_fields.yaml` takes effect in Home Assistant as documented.
+  - Guarded `is_ha_writable_allowed()` and `generate_discovery_payload()` so non-interactive SunSpec types (`bitfield`, `string`, `ipaddr`, `ipv6addr`, `eui48`, `pad`, and scale factors) always export as read-only `sensor` entities without `command_topic`, while continuing to exclude `SAFETY_SHUTDOWN` from `select` options.
+- **Hardened Default Protection List (`config/blocked_fields.yaml`, `config/blocked_fields.example.yaml`)**:
+  - Added grid-code compliance and ride-through curve registers (`inverter.SA_defaults.*`, `volt_var`, `volt_watt`, `freq_watt`, `hvrt*`, `lvrt*`, `hfrt*`, `lfrt*`, `ext_settings.AGra`, `output_controls.VarRamp`), device addressing (`*.common.DA`), flash access (`*.flash_reader.*`), rapid shutdown config (`pv_link.pvrss_config.*`, `pv_link.pvlink_status.AMax`), Beacon directory clear/IP settings (`rebus_beacon.REbus_dir.Clr`, `rebus_beacon.ip_settings.*`), and installer/PLM/transfer-switch registers (`inverter.EIconfig.Pwd`, `PLM*`, `GPLM*`, `CTTrig`, `XFR*`) so they are consistently protected everywhere.
+- **Unit Tests (`tests/test_safety.py`, `tests/test_bridge.py`, `tests/test_tunnel.py`, `tests/test_ui.py`)**: Added full-device mock `RW` invariant tests verifying Web Explorer and Home Assistant writability match `blocked_fields.yaml` and register types, unblock transition tests for non-legacy protected registers, positive/negative override precedence and serial-scoping tests, `setup_key`/API audit tests, and end-to-end MQTT command execution tests for Enable Inverter, PV Link, and Battery String controls.
+
 ## [3.7.0](https://github.com/edalquist/pwrcell_sunspec/compare/v3.6.2...v3.7.0) (2026-11-25)
 
 

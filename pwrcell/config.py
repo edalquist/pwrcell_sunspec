@@ -4,7 +4,7 @@ import os
 import sys
 from dataclasses import field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import dataconf
 from dataconf.exceptions import MalformedConfigException
@@ -114,6 +114,8 @@ class AppConfig:
   telemetry_mappings_file: str = "telemetry_mappings.yaml"
   polling_tiers: Dict[str, Any] | None = None  # Path-based tier configuration (fast, config, slow)
   include_bulk_table_groups: bool = False  # Opt-in to expose large repeating curve/schedule table groups
+  blocked_fields: List[str] = field(default_factory=list)
+  unblocked_fields: List[str] = field(default_factory=list)
 
   @classmethod
   def read(cls) -> 'AppConfig':

@@ -243,6 +243,9 @@ const el = {
   safetyPatternCount: document.getElementById('safetyPatternCount'),
   safetyPatternsList: document.getElementById('safetyPatternsList'),
   safetyUnblockPolicy: document.getElementById('safetyUnblockPolicy'),
+  safetyUnblockedSection: document.getElementById('safetyUnblockedSection'),
+  safetyUnblockedCount: document.getElementById('safetyUnblockedCount'),
+  safetyUnblockedTableBody: document.getElementById('safetyUnblockedTableBody'),
   btnOpenRescan: document.getElementById('btnOpenRescan'),
   rescanModal: document.getElementById('rescanModal'),
   btnCloseRescanModal: document.getElementById('btnCloseRescanModal'),
@@ -7719,7 +7722,41 @@ async function openBlockedSafetyModal() {
 
     if (el.safetyPatternsList) {
       const patterns = data.patterns || [];
-      el.safetyPatternsList.innerHTML = patterns.map(p => `<div>&bull; ${escapeHtml(p)}</div>`).join('') || '<div>No patterns configured.</div>';
+      const extraSet = new Set(data.extra_blocked_patterns || []);
+      const unblockedPats = data.unblocked_patterns || [];
+      let html = patterns.map(p => {
+        const badge = extraSet.has(p) ? ' <span class="badge-protected" style="font-size: 10px;">override</span>' : '';
+        return `<div>&bull; ${escapeHtml(p)}${badge}</div>`;
+      }).join('') || '<div>No block patterns configured.</div>';
+      if (unblockedPats.length > 0) {
+        html += '<div style="margin-top: 8px; font-weight: 600; color: #f59e0b;">Unblock Override Patterns:</div>';
+        html += unblockedPats.map(p => `<div>&bull; ${escapeHtml(p)}</div>`).join('');
+      }
+      el.safetyPatternsList.innerHTML = html;
+    }
+
+    if (el.safetyUnblockedSection && el.safetyUnblockedTableBody && el.safetyUnblockedCount) {
+      const unblockedItems = data.unblocked_fields || [];
+      const unblockedPats = data.unblocked_patterns || [];
+      el.safetyUnblockedCount.textContent = unblockedItems.length;
+      if (unblockedItems.length > 0 || unblockedPats.length > 0) {
+        el.safetyUnblockedSection.hidden = false;
+        if (unblockedItems.length === 0) {
+          el.safetyUnblockedTableBody.innerHTML = '<tr><td colspan="4" class="text-center" style="padding: 12px; color: var(--text-muted, #94a3b8);">Unblock patterns configured, no active default-protected fields matched.</td></tr>';
+        } else {
+          el.safetyUnblockedTableBody.innerHTML = unblockedItems.map(it => `
+            <tr>
+              <td><code>${escapeHtml(it.key)}</code></td>
+              <td><strong>${escapeHtml(it.label || it.name)}</strong></td>
+              <td><span class="badge-protected">${escapeHtml(it.matched_block_pattern)}</span></td>
+              <td><span class="badge-writable">${escapeHtml(it.matched_unblock_pattern)}</span></td>
+            </tr>
+          `).join('');
+        }
+      } else {
+        el.safetyUnblockedSection.hidden = true;
+        el.safetyUnblockedTableBody.innerHTML = '';
+      }
     }
 
     if (el.safetyBlockedTableBody) {

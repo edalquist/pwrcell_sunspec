@@ -58,6 +58,15 @@ In the Add-on **Configuration** tab, customize the following settings:
 | `enable_web_explorer` | boolean | `true` | Launch the Web Explorer UI via Home Assistant Ingress. |
 | `log_level` | string | `"INFO"` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
 | `mock_mode` | boolean | `false` | Set to `true` to run against the built-in simulator for testing without live hardware. |
+| `blocked_fields` | list of strings | `[]` | Extra SunSpec register patterns to block from mutation on top of the built-in defaults in `config/blocked_fields.yaml` (e.g., `inverter.EIconfig.Conn`, `battery.*.SoCMax`, or `<SERIAL>:pv_link.pvlink_status.Ena`). |
+| `unblocked_fields` | list of strings | `[]` | SunSpec register patterns to explicitly allow even if matched by the built-in defaults or a broader `blocked_fields` rule (e.g., `inverter.EIconfig.ZExp`). Takes precedence over `blocked_fields`. |
+
+### Safety Restriction Overrides (`blocked_fields` / `unblocked_fields`)
+
+By default, grid-protection, trip-limit, and hardware-safety registers in `config/blocked_fields.yaml` are locked read-only across the Web Explorer, REST API, and Home Assistant MQTT Discovery. To customize restrictions out-of-band without editing files inside `/data`:
+- Add patterns to **`blocked_fields`** in the Add-on Configuration tab to block additional registers (positive overrides).
+- Add patterns to **`unblocked_fields`** to explicitly allow specific registers (negative overrides, which take precedence over `blocked_fields`).
+- Patterns are case-insensitive, support `*` wildcards (e.g., `battery.*.SoCMax`), and can optionally be scoped to a single hardware serial number (`000100030004:pv_link.pvlink_status.Ena`). Save and restart the add-on to apply changes and update Home Assistant discovery.
 
 ---
 

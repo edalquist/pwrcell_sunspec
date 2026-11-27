@@ -42,62 +42,42 @@ ORIGIN_INFO: Dict[str, str] = {
     "support_url": "https://github.com/edalquist/pwrcell_sunspec",
 }
 
-def _load_ha_security_config() -> tuple[Set[str], Set[str]]:
-    """Load controllable allowlist and excluded options from HA config or default seed."""
-    default_writable = {
-        "system_mode", "SysMd", "SoCRsvMin", "SoCRsvMax",
-        "SoCMax", "SoCMin", "WChaRteMax", "WDisChaRteMax",
-        "AChaMax", "ADisChaMax",
-    }
+def _load_ha_excluded_select_options() -> Set[str]:
+    """Load excluded select options from HA config or default seed."""
     default_excluded = {"SAFETY_SHUTDOWN"}
     try:
-        import yaml
         for p in (get_default_ha_config_path(), get_default_seed_config_path()):
             if p.exists():
                 with open(p, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
                 if isinstance(data, dict):
-                    ctrl = data.get("controllable_fields")
                     excl = data.get("excluded_select_options")
-                    w_set = set(ctrl) if isinstance(ctrl, list) else default_writable
-                    e_set = set(excl) if isinstance(excl, list) else default_excluded
-                    return w_set, e_set
+                    return set(excl) if isinstance(excl, list) else default_excluded
     except Exception:
         pass
-    return default_writable, default_excluded
+    return default_excluded
 
 
-HA_WRITABLE_ALLOWLIST, HA_EXCLUDED_SELECT_OPTIONS = _load_ha_security_config()
+HA_EXCLUDED_SELECT_OPTIONS: Set[str] = _load_ha_excluded_select_options()
+
+NON_INTERACTIVE_HA_POINT_TYPES: Set[str] = {"string", "ipaddr", "ipv6addr", "eui48", "pad"}
 
 
 def is_ha_writable_allowed(field: Any) -> bool:
-    """Return True if the field is both writable and in the Home Assistant writable allow-list."""
+    """Return True if the field is writable, unblocked by safety policy, and HA-interactive."""
     from .safety import is_mutation_blocked
     if is_mutation_blocked(field):
         return False
     if not getattr(field, "is_writable", False):
         return False
-    if field.is_compound:
-        mapping_id = getattr(field, "mapping_id", None) or getattr(field, "name", "")
-        return mapping_id in HA_WRITABLE_ALLOWLIST
-    pt_name = getattr(field, "name", "") or str(getattr(field, "key", "")).split(".")[-1]
-    f_key = getattr(field, "key", "")
-    active_fk = getattr(field, "active_source_key", None)
-    if (
-        pt_name in HA_WRITABLE_ALLOWLIST
-        or f_key in HA_WRITABLE_ALLOWLIST
-        or (active_fk and active_fk in HA_WRITABLE_ALLOWLIST)
-    ):
-        return True
-    try:
-        from .bounds import get_custom_bounds
-        if get_custom_bounds(f_key, getattr(field, "device_sn", None), pt_name) or (
-            active_fk and get_custom_bounds(active_fk, getattr(field, "device_sn", None), pt_name)
-        ):
-            return True
-    except Exception:
-        pass
-    return False
+    if getattr(field, "is_scale_factor", False):
+        return False
+    pt_type = (getattr(field, "point_type", None) or "").strip().lower()
+    if getattr(field, "is_bitfield", False) or pt_type.startswith("bitfield"):
+        return False
+    if pt_type in NON_INTERACTIVE_HA_POINT_TYPES:
+        return False
+    return True
 
 
 READ_ONLY_HA_PLATFORMS = {"sensor", "binary_sensor"}
@@ -1642,14 +1622,12 @@ def generate_discovery_payload(
     if getattr(field, "is_bitfield", False) or (getattr(field, "point_type", "") or "").startswith("bitfield"):
         attributes_topic = f"{base_topic}/{clean_sn}/{object_id}/attributes"
         payload["json_attributes_topic"] = attributes_topic
-        if is_writable:
-            payload["command_topic"] = command_topic
 
     return {
         "config_topic": config_topic,
         "state_topic": state_topic,
         "attributes_topic": attributes_topic,
-        "command_topic": command_topic if is_writable else None,
+        "command_topic": command_topic if (is_writable and platform in WRITABLE_HA_PLATFORMS) else None,
         "old_sensor_topic": old_sensor_topic,
         "legacy_config_topics": legacy_config_topics,
         "suggested_display_precision": precision,

@@ -399,6 +399,362 @@ class TestSafetyBlockedFields(unittest.TestCase):
             self.assertEqual(disc_sysmd_unblocked["payload"].get("entity_category"), "config")
             self.assertIn("options", disc_sysmd_unblocked["payload"])
 
+    def test_all_mock_rw_fields_ha_writability_matches_blocked_policy(self):
+        """Every mock RW field's HA writability must match blocked_fields.yaml and data-type safety rules."""
+        from pwrcell.client import create_client
+        from pwrcell.ha import NON_INTERACTIVE_HA_POINT_TYPES, generate_discovery_payload
+
+        clear_blocked_fields_cache()
+        found_keys = {}
+
+        with create_client(mock=True) as client:
+            for dev in client.state.get_devices_snapshot():
+                for f_key, f in list(dev.fields.items()):
+                    if f.access != "RW":
+                        continue
+                    found_keys.setdefault(f_key, (f, dev))
+                    disc = generate_discovery_payload(f, dev)
+                    f_dict = f.to_dict()
+                    pt_type = (f.point_type or "").strip().lower()
+
+                    if f.is_mutation_blocked:
+                        self.assertFalse(f.is_writable, f"Blocked field {f_key} must have is_writable=False")
+                        self.assertFalse(is_ha_writable_allowed(f), f"Blocked field {f_key} must not be HA-writable")
+                        self.assertEqual(disc["platform"], "sensor", f"Blocked field {f_key} must export as sensor")
+                        self.assertIsNone(disc["command_topic"], f"Blocked field {f_key} must have no command_topic")
+                        self.assertNotIn("command_topic", disc["payload"])
+                        self.assertNotEqual(disc["payload"].get("entity_category"), "config")
+                        self.assertEqual(f_dict["ha_platform"], "sensor")
+                    elif (
+                        f.is_bitfield
+                        or pt_type.startswith("bitfield")
+                        or pt_type in NON_INTERACTIVE_HA_POINT_TYPES
+                        or f.is_scale_factor
+                    ):
+                        self.assertFalse(
+                            is_ha_writable_allowed(f),
+                            f"Non-interactive RW type {f_key} ({pt_type}) must not be HA-writable",
+                        )
+                        self.assertEqual(disc["platform"], "sensor")
+                        self.assertIsNone(disc["command_topic"])
+                        self.assertNotIn("command_topic", disc["payload"])
+                        self.assertEqual(f_dict["ha_platform"], "sensor")
+                    else:
+                        self.assertTrue(f.is_writable, f"Unblocked RW field {f_key} must have is_writable=True")
+                        self.assertTrue(
+                            is_ha_writable_allowed(f),
+                            f"Unblocked RW field {f_key} must be HA-writable",
+                        )
+                        self.assertIn(
+                            disc["platform"],
+                            ("select", "number"),
+                            f"Unblocked RW field {f_key} must export as select or number",
+                        )
+                        self.assertIsNotNone(disc["command_topic"], f"Unblocked RW field {f_key} needs command_topic")
+                        self.assertEqual(disc["payload"].get("command_topic"), disc["command_topic"])
+                        self.assertEqual(f_dict["ha_platform"], disc["platform"])
+
+            # User-reported device enable/connect controls must be unblocked & exported as select controls
+            for expected_select in (
+                "inverter.EIconfig.Conn",
+                "inverter.controls.Conn",
+                "pv_link.pvlink_status.Ena",
+                "battery.lithium_ion_string.SetEna",
+                "battery.lithium_ion_string.SetCon",
+                "battery.battery.SetOp",
+                "rebus_beacon.REbus_dir.devices.1.Ena",
+            ):
+                self.assertIn(expected_select, found_keys, f"Expected mock field {expected_select} missing")
+                f_obj, dev_obj = found_keys[expected_select]
+                self.assertFalse(f_obj.is_mutation_blocked, f"{expected_select} must not be mutation blocked")
+                self.assertTrue(is_ha_writable_allowed(f_obj), f"{expected_select} must be HA-writable")
+                disc = generate_discovery_payload(f_obj, dev_obj)
+                self.assertEqual(disc["platform"], "select", f"{expected_select} must export as select")
+                self.assertIsNotNone(disc["command_topic"])
+
+            # Newly hardened hazardous/internal RW fields must be blocked & read-only sensors
+            for expected_blocked in (
+                "inverter.SA_defaults.SRD",
+                "inverter.volt_var.ActCrv",
+                "pv_link.flash_reader.cmd",
+                "pv_link.pvrss_config.EnablePVRSS",
+                "pv_link.pvlink_status.AMax",
+                "rebus_beacon.REbus_dir.Clr",
+                "rebus_beacon.common.DA",
+                "inverter.EIconfig.Pwd",
+            ):
+                self.assertIn(expected_blocked, found_keys, f"Expected mock field {expected_blocked} missing")
+                f_obj, dev_obj = found_keys[expected_blocked]
+                self.assertTrue(f_obj.is_mutation_blocked, f"{expected_blocked} must be mutation blocked")
+                self.assertFalse(is_ha_writable_allowed(f_obj), f"{expected_blocked} must not be HA-writable")
+                disc = generate_discovery_payload(f_obj, dev_obj)
+                self.assertEqual(disc["platform"], "sensor", f"{expected_blocked} must export as sensor")
+                self.assertIsNone(disc["command_topic"])
+
+    def test_unblocking_default_protected_field_enables_ha_control(self):
+        """Unblocking a non-allowlisted protected field in blocked_fields.yaml must immediately expose it in HA."""
+        from unittest.mock import patch
+        from pwrcell.catalog import HomeAssistantHint
+        from pwrcell.ha import generate_discovery_payload
+        from pwrcell.state import FieldSource
+
+        catalog = get_catalog()
+        state = StateStore(catalog=catalog)
+        bat = state.register_device(
+            serial_number="000100080009",
+            slave_id=9,
+            device_type="battery",
+            model_name="PWRcell Battery",
+        )
+        inv = state.register_device(
+            serial_number="000100070008",
+            slave_id=8,
+            device_type="inverter",
+            model_name="PWRcell Inverter",
+        )
+
+        state.update_from_modbus_points(
+            serial_number="000100080009",
+            model_id=802,
+            raw_values={"SetInvState": 1},
+            computed_values={"SetInvState": 1},
+        )
+        state.set_field(
+            device_sn="000100070008",
+            name="ZExp",
+            label="Export Limiting",
+            description="Zero export mode",
+            value="DISABLED",
+            raw_value=0,
+            source=FieldSource.MODBUS_POLL,
+            access="RW",
+            point_type="enum16",
+            is_enum=True,
+            symbols=[{"name": "DISABLED", "value": 0}, {"name": "ENABLED", "value": 1}],
+            ha_hint=HomeAssistantHint(
+                platform="select",
+                entity_category="config",
+                options=["DISABLED", "ENABLED"],
+            ),
+            sub_group="EIconfig",
+            model_id=64208,
+        )
+
+        temp_blocked = Path(self.temp_dir.name) / "custom_blocked.yaml"
+        with open(temp_blocked, "w", encoding="utf-8") as f:
+            yaml.dump({"blocked_fields": ["inverter.*.ZExp", "battery.*.SetInvState"]}, f)
+
+        with patch("pwrcell.safety.get_blocked_fields_path", return_value=temp_blocked):
+            clear_blocked_fields_cache()
+            zexp_f = inv.fields["inverter.EIconfig.ZExp"]
+            set_inv_f = bat.fields["battery.battery.SetInvState"]
+
+            for fld, dev in ((zexp_f, inv), (set_inv_f, bat)):
+                self.assertFalse(is_ha_writable_allowed(fld))
+                disc = generate_discovery_payload(fld, dev)
+                self.assertEqual(disc["platform"], "sensor")
+                self.assertIsNone(disc["command_topic"])
+                self.assertEqual(disc["payload"].get("entity_category"), "diagnostic")
+
+            # Remove both from blocked_fields.yaml -> both immediately become writable select controls
+            with open(temp_blocked, "w", encoding="utf-8") as f:
+                yaml.dump({"blocked_fields": []}, f)
+            clear_blocked_fields_cache()
+
+            for fld, dev in ((zexp_f, inv), (set_inv_f, bat)):
+                self.assertTrue(is_ha_writable_allowed(fld))
+                disc = generate_discovery_payload(fld, dev)
+                self.assertEqual(disc["platform"], "select")
+                self.assertIsNotNone(disc["command_topic"])
+                self.assertTrue(disc["payload"].get("options"))
+                self.assertEqual(disc["payload"].get("entity_category"), "config")
+                self.assertIsNotNone(disc["old_sensor_topic"])
+
+    def test_positive_and_negative_overrides_precedence_and_ha_discovery(self):
+        """Positive (blocked_fields) and negative (unblocked_fields) overrides layer over defaults with unblock precedence."""
+        from unittest.mock import patch
+        from pwrcell.catalog import HomeAssistantHint
+        from pwrcell.ha import generate_discovery_payload
+        from pwrcell.state import FieldSource
+
+        catalog = get_catalog()
+        state = StateStore(catalog=catalog)
+        inv = state.register_device(
+            serial_number="000100070008",
+            slave_id=8,
+            device_type="inverter",
+            model_name="PWRcell Inverter",
+        )
+        pv1 = state.register_device(
+            serial_number="000100030003",
+            slave_id=3,
+            device_type="pv_link",
+            model_name="PV Link",
+        )
+        pv2 = state.register_device(
+            serial_number="000100030004",
+            slave_id=4,
+            device_type="pv_link",
+            model_name="PV Link",
+        )
+        trip_sn_bat = state.register_device(
+            serial_number="SN_TRIP_01",
+            slave_id=9,
+            device_type="battery",
+            model_name="PWRcell Battery",
+        )
+
+        # Register fields: ZExp (default blocked), PV Link Ena on two serials, REbus_arb.Conn & PQSet_Ena, and SoCMax on SN_TRIP_01
+        state.set_field(
+            device_sn="000100070008",
+            name="ZExp",
+            label="Export Limiting",
+            value="DISABLED",
+            raw_value=0,
+            source=FieldSource.MODBUS_POLL,
+            access="RW",
+            point_type="enum16",
+            is_enum=True,
+            symbols=[{"name": "DISABLED", "value": 0}, {"name": "ENABLED", "value": 1}],
+            ha_hint=HomeAssistantHint(platform="select", entity_category="config", options=["DISABLED", "ENABLED"]),
+            sub_group="EIconfig",
+            model_id=64208,
+        )
+        for name, label, val, opts in (
+            ("Conn", "Connect", "CONNECT", ["DISCONNECT", "CONNECT"]),
+            ("PQSet_Ena", "Enable arbitrage control", "DISABLE", ["DISABLE", "ENABLE"]),
+        ):
+            state.set_field(
+                device_sn="000100070008",
+                name=name,
+                label=label,
+                value=val,
+                raw_value=1,
+                source=FieldSource.MODBUS_POLL,
+                access="RW",
+                point_type="enum16",
+                is_enum=True,
+                symbols=[{"name": o, "value": idx} for idx, o in enumerate(opts)],
+                ha_hint=HomeAssistantHint(platform="select", entity_category="config", options=opts),
+                sub_group="REbus_arb",
+                model_id=64204,
+            )
+        for pv_sn in ("000100030003", "000100030004"):
+            state.set_field(
+                device_sn=pv_sn,
+                name="Ena",
+                label="Enable or Disable PV Link",
+                value="ENABLE",
+                raw_value=1,
+                source=FieldSource.MODBUS_POLL,
+                access="RW",
+                point_type="enum16",
+                is_enum=True,
+                symbols=[{"name": "DISABLE", "value": 0}, {"name": "ENABLE", "value": 1}],
+                ha_hint=HomeAssistantHint(platform="select", entity_category="config", options=["DISABLE", "ENABLE"]),
+                sub_group="pvlink_status",
+                model_id=64251,
+            )
+        state.update_from_modbus_points(
+            serial_number="SN_TRIP_01",
+            model_id=802,
+            raw_values={"SoCMax": 950, "SoC_SF": -1},
+            computed_values={"SoCMax": 95.0, "SoC_SF": -1},
+        )
+
+        ov_path = Path(self.temp_dir.name) / "pwrcell.yaml"
+        with open(ov_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(
+                {
+                    "blocked_fields": [
+                        "000100030004:pv_link.pvlink_status.Ena",
+                        "inverter.REbus_arb.*",
+                    ],
+                    "unblocked_fields": [
+                        "inverter.EIconfig.ZExp",
+                        "inverter.REbus_arb.Conn",
+                    ],
+                },
+                f,
+            )
+
+        with patch("pwrcell.safety.get_safety_overrides_path", return_value=ov_path):
+            clear_blocked_fields_cache()
+            controls = ControlDispatcher(modbus_client=None, state_store=state, catalog=catalog)
+
+            zexp_f = inv.fields["inverter.EIconfig.ZExp"]
+            arb_conn_f = inv.fields["inverter.REbus_arb.Conn"]
+            arb_pq_f = inv.fields["inverter.REbus_arb.PQSet_Ena"]
+            pv1_ena_f = pv1.fields["pv_link.pvlink_status.Ena"]
+            pv2_ena_f = pv2.fields["pv_link.pvlink_status.Ena"]
+            trip_soc_f = trip_sn_bat.fields["battery.battery.SoCMax"]
+
+            # 1. Negative override unblocks default-protected inverter.EIconfig.ZExp
+            self.assertFalse(zexp_f.is_mutation_blocked)
+            self.assertTrue(is_ha_writable_allowed(zexp_f))
+            disc_zexp = generate_discovery_payload(zexp_f, inv)
+            self.assertEqual(disc_zexp["platform"], "select")
+            self.assertIsNotNone(disc_zexp["command_topic"])
+            self.assertEqual(controls.write_field("inverter.EIconfig.ZExp", "ENABLED", device_sn="000100070008"), "ENABLED")
+
+            # 2. Broad block + narrow unblock: REbus_arb.PQSet_Ena blocked, REbus_arb.Conn allowed
+            self.assertTrue(arb_pq_f.is_mutation_blocked)
+            self.assertFalse(is_ha_writable_allowed(arb_pq_f))
+            self.assertEqual(generate_discovery_payload(arb_pq_f, inv)["platform"], "sensor")
+            with self.assertRaises(PermissionError):
+                controls.write_field("inverter.REbus_arb.PQSet_Ena", "ENABLE", device_sn="000100070008")
+
+            self.assertFalse(arb_conn_f.is_mutation_blocked)
+            self.assertTrue(is_ha_writable_allowed(arb_conn_f))
+            self.assertEqual(generate_discovery_payload(arb_conn_f, inv)["platform"], "select")
+
+            # 3. Serial-scoped positive override blocks 000100030004 only; sibling 000100030003 stays writable
+            self.assertTrue(pv2_ena_f.is_mutation_blocked)
+            self.assertFalse(is_ha_writable_allowed(pv2_ena_f))
+            self.assertEqual(generate_discovery_payload(pv2_ena_f, pv2)["platform"], "sensor")
+            with self.assertRaises(PermissionError):
+                controls.write_field("pv_link.pvlink_status.Ena", "DISABLE", device_sn="000100030004")
+
+            self.assertFalse(pv1_ena_f.is_mutation_blocked)
+            self.assertTrue(is_ha_writable_allowed(pv1_ena_f))
+            self.assertEqual(generate_discovery_payload(pv1_ena_f, pv1)["platform"], "select")
+
+            # 4. Plain *Trip* rule must not match serial number "SN_TRIP_01"
+            self.assertFalse(trip_soc_f.is_mutation_blocked)
+            self.assertTrue(is_ha_writable_allowed(trip_soc_f))
+
+            # 5. Audit payload reports both blocked items and overridden/unblocked items
+            audit = get_blocked_mutation_fields(state)
+            self.assertEqual(audit["extra_blocked_patterns"], [
+                "000100030004:pv_link.pvlink_status.Ena",
+                "inverter.REbus_arb.*",
+            ])
+            self.assertEqual(audit["unblocked_patterns"], [
+                "inverter.EIconfig.ZExp",
+                "inverter.REbus_arb.Conn",
+            ])
+            unblocked_keys = {it["key"] for it in audit["unblocked_fields"]}
+            self.assertEqual(unblocked_keys, {"inverter.EIconfig.ZExp", "inverter.REbus_arb.Conn"})
+            blocked_by_sn = {(it["device_sn"], it["key"]): it for it in audit["blocked_fields"]}
+            self.assertIn(("000100030004", "pv_link.pvlink_status.Ena"), blocked_by_sn)
+            self.assertEqual(blocked_by_sn[("000100030004", "pv_link.pvlink_status.Ena")]["source"], "override")
+            self.assertNotIn(("000100030003", "pv_link.pvlink_status.Ena"), blocked_by_sn)
+
+        # 6. Also verify PWRCELL_CONFIG env var picks up overrides without patching get_safety_overrides_path
+        old_env = os.environ.get("PWRCELL_CONFIG")
+        os.environ["PWRCELL_CONFIG"] = str(ov_path)
+        try:
+            clear_blocked_fields_cache()
+            self.assertFalse(is_mutation_blocked("inverter.EIconfig.ZExp"))
+            self.assertTrue(is_mutation_blocked("pv_link.pvlink_status.Ena", device_sn="000100030004"))
+            self.assertFalse(is_mutation_blocked("pv_link.pvlink_status.Ena", device_sn="000100030003"))
+        finally:
+            if old_env is None:
+                os.environ.pop("PWRCELL_CONFIG", None)
+            else:
+                os.environ["PWRCELL_CONFIG"] = old_env
+            clear_blocked_fields_cache()
+
 
 if __name__ == "__main__":
     unittest.main()
