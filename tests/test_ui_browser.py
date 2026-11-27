@@ -64,6 +64,7 @@ class TestWebExplorerBrowserUI(unittest.TestCase):
         cls._patches = [
             mock.patch("pwrcell.ha.get_default_ha_config_path", return_value=tmp / "ha_config.yaml"),
             mock.patch("pwrcell.bridge.get_default_ha_config_path", return_value=tmp / "ha_config.yaml"),
+            mock.patch("pwrcell.bridge.get_default_published_topics_path", return_value=tmp / ".ha_published_topics.json"),
             mock.patch("pwrcell.grouping.get_default_grouping_config_path", return_value=tmp / "custom_groupings.yaml"),
             mock.patch("pwrcell.mapping._resolve_mappings_path", return_value=tmp_mappings),
         ]

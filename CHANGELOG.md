@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.0] - 2026-11-27
+
+### Added
+- **Public Home Assistant Add-on Configuration Directory (`config.yaml`, `rootfs/run.sh`, `pwrcell/config.py`, `pwrcell/ha.py`, `pwrcell/grouping.py`, `pwrcell/mapping.py`, `pwrcell/bridge.py`, `pwrcell/cli.py`, Issue #36)**:
+  - Replaced legacy `"config:rw"` mount with `"addon_config:rw"` in `config.yaml`, exposing user-accessible configuration files (`ha_config.yaml`, `custom_groupings.yaml`, `devices.yaml`, and optional `groupings.yaml` / `blocked_fields.yaml` overrides) in Home Assistant's `/addon_configs/<slug>` directory (`/config` inside the container).
+  - Retained private credentials and runtime state/caches (`options.json`, `pwrcell.yaml`, `.ha_published_topics.json`, `.monotonic_offsets.json`, `sunspec-models/`, `known_hosts`) in `/data` (`data_dir()`), decoupling `.ha_published_topics.json` from `ha_config.yaml`'s directory.
+  - Added `config_dir()` (`PWRCELL_CONFIG_DIR` / `--config-dir`) alongside `data_dir()` (`PWRCELL_DATA_DIR` / `--data-dir`), keeping single-directory `PWRCELL_DATA_DIR` and standalone `config/` setups 100% backwards compatible.
+  - Added `migrate_legacy_addon_configs()` in `pwrcell/config.py` (invoked on add-on startup and CLI initialization) to atomically and non-destructively copy existing user configs from `/data` to `/config` on upgrade (from `<= 3.9.0`) without overwriting existing `/config` files or deleting `/data` rollback copies, guarded by `/data/.config_migrated.json` and a `/config/configuration.yaml` safety check.
+  - Bundled `pwrcell/data/groupings.yaml` is now read directly on fresh installs without seeding an unmodified copy into `/config/groupings.yaml` until customized or saved.
+
+### Changed
+- **Actionable `ssh_key_file` Mount Warning (`pwrcell/setup_key.py`, `DOCS.md`, `README.md`, `docs/management_ui.md`)**:
+  - Added an explicit startup warning if `ssh_key_file` references a missing `/config/...` path, noting that `/config` now maps to `/addon_configs/<slug>` rather than Home Assistant Core's `/config`.
+  - Updated UI export path hints (`pwrcell/ui/static/index.html`, `pwrcell/ui/static/app.js`, `pwrcell/grouping.py`) and documentation to reflect `/config` (`/addon_configs/<slug>`).
+
 ## [3.9.0](https://github.com/edalquist/pwrcell_sunspec/compare/v3.8.0...v3.9.0) (2026-11-27)
 
 

@@ -12,13 +12,15 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import time
 
 from .bridge import HomeAssistantBridge
 from .client import create_client
-from .config import AppConfig
+from .config import AppConfig, migrate_legacy_addon_configs
+from .ha import reload_ha_excluded_select_options
 from .ui.server import run_explorer
 
 
@@ -232,6 +234,8 @@ def main():
     parser = argparse.ArgumentParser(prog="pwrcell", description="Generac PWRcell v3 Client & Explorer")
     parser.add_argument("--mock", action="store_true", default=False, help="Run in mock/simulation mode")
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
+    parser.add_argument("--config-dir", type=str, default=None, help="Directory for user configuration files (overrides PWRCELL_CONFIG_DIR)")
+    parser.add_argument("--data-dir", type=str, default=None, help="Directory for runtime state and caches (overrides PWRCELL_DATA_DIR)")
 
     subparsers = parser.add_subparsers(dest="subcommand", help="Available subcommands")
 
@@ -332,6 +336,19 @@ def main():
         format="%(asctime)s [%(levelname)s] [%(threadName)s] %(message)s",
         level=getattr(logging, effective_log_level.upper(), logging.INFO),
     )
+
+    if getattr(args, "config_dir", None):
+        os.environ["PWRCELL_CONFIG_DIR"] = args.config_dir
+    if getattr(args, "data_dir", None):
+        os.environ["PWRCELL_DATA_DIR"] = args.data_dir
+    if getattr(args, "config_dir", None) or getattr(args, "data_dir", None):
+        reload_ha_excluded_select_options()
+
+    try:
+        migrate_legacy_addon_configs()
+    except Exception as e:
+        logging.getLogger(__name__).warning("Legacy config migration failed: %s", e)
+    reload_ha_excluded_select_options()
 
     try:
         config = AppConfig.read()

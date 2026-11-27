@@ -7644,7 +7644,7 @@ function updateExportFormatUI() {
     if (el.btnFormatGeneralized) el.btnFormatGeneralized.classList.add('active');
     if (el.btnFormatTelemetry) el.btnFormatTelemetry.classList.remove('active');
     if (el.exportTargetFilename) el.exportTargetFilename.textContent = 'custom_groupings.yaml';
-    if (el.exportTargetLocation) el.exportTargetLocation.textContent = 'Place in /data/custom_groupings.yaml or config/custom_groupings.yaml';
+    if (el.exportTargetLocation) el.exportTargetLocation.textContent = 'Place in /config/custom_groupings.yaml (HA /addon_configs/<slug>) or config/custom_groupings.yaml';
     currentExportFilename = 'custom_groupings.yaml';
   } else {
     if (el.btnFormatGeneralized) el.btnFormatGeneralized.classList.remove('active');

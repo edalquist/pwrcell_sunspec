@@ -10,7 +10,7 @@ Integrates your Generac PWRcell system (Inverter, Battery, PV Links, REbus Beaco
 - **Embedded Web Explorer (Ingress)**: View live power flow, compare Modbus registers with push telemetry, inspect raw SunSpec points, and trigger manual syncs directly from the Home Assistant sidebar.
 - **Control System Modes**: Select and switch system operating modes (`SELF_SUPPLY`, `CLEAN_BACKUP`, `PRIORITY_BACKUP`, etc.) directly from Home Assistant dashboards or the Web Explorer with full enum validation.
 - **Automatic SSH Tunneling**: Automatically opens and maintains an SSH tunnel to your Generac Beacon to access the internal Modbus TCP and telemetry streams.
-- **Persistent Configuration**: Selected entities and discovered Modbus devices are preserved in Home Assistant's `/data` partition across add-on updates.
+- **Persistent Configuration**: User-accessible configuration files (`ha_config.yaml`, `custom_groupings.yaml`, `devices.yaml`, and optional `groupings.yaml` / `blocked_fields.yaml` overrides) are stored in Home Assistant's public add-on config directory (`/addon_configs/<slug>`, mounted as `/config` inside the container) for easy editing and independent backup, while private credentials and runtime caches (`options.json`, `pwrcell.yaml`, `.ha_published_topics.json`, `.monotonic_offsets.json`, `sunspec-models/`, `known_hosts`) remain in `/data`. Existing `/data` user configs from `<= 3.9.0` are automatically and non-destructively migrated on first startup.
 
 ---
 
@@ -47,7 +47,7 @@ In the Add-on **Configuration** tab, customize the following settings:
 | `beacon_port` | integer | `22` | SSH port on the Generac Beacon (default: `22`). |
 | `beacon_user` | string | `root` | SSH user for connecting to the Beacon. |
 | `ssh_key` | password | `""` | *(Recommended)* Paste your SSH private key (PEM/OpenSSH format) directly here. |
-| `ssh_key_file` | string | `"/share/pwrcell_ssh_key"` | Alternative path to an SSH private key file stored in `/share`. |
+| `ssh_key_file` | string | `"/share/pwrcell_ssh_key"` | Alternative path to an SSH private key file stored in `/share` (or `/config` inside `/addon_configs/<slug>`). Note: `/config` now maps to `/addon_configs/<slug>` rather than Home Assistant Core's `/config`. |
 | `mqtt_host` | string | `"core-mosquitto"` | Hostname of your Home Assistant MQTT broker (default `core-mosquitto` for the official Mosquitto add-on). |
 | `mqtt_port` | integer | `1883` | MQTT port (default: `1883`). |
 | `mqtt_username` | string | `""` | MQTT username (leave blank if anonymous or using local broker integration). |
@@ -63,9 +63,10 @@ In the Add-on **Configuration** tab, customize the following settings:
 
 ### Safety Restriction Overrides (`blocked_fields` / `unblocked_fields`)
 
-By default, grid-protection, trip-limit, and hardware-safety registers in `config/blocked_fields.yaml` are locked read-only across the Web Explorer, REST API, and Home Assistant MQTT Discovery. To customize restrictions out-of-band without editing files inside `/data`:
+By default, grid-protection, trip-limit, and hardware-safety registers in `config/blocked_fields.yaml` are locked read-only across the Web Explorer, REST API, and Home Assistant MQTT Discovery. To customize restrictions out-of-band:
 - Add patterns to **`blocked_fields`** in the Add-on Configuration tab to block additional registers (positive overrides).
 - Add patterns to **`unblocked_fields`** to explicitly allow specific registers (negative overrides, which take precedence over `blocked_fields`).
+- Alternatively, place a custom `blocked_fields.yaml` in the add-on's public config directory (`/addon_configs/<slug>/blocked_fields.yaml`, mapped to `/config/blocked_fields.yaml`).
 - Patterns are case-insensitive, support `*` wildcards (e.g., `battery.*.SoCMax`), and can optionally be scoped to a single hardware serial number (`000100030004:pv_link.pvlink_status.Ena`). Save and restart the add-on to apply changes and update Home Assistant discovery.
 
 ---

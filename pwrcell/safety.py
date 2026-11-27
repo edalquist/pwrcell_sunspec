@@ -4,8 +4,8 @@ Enforces system-level mutation locks on sensitive Modbus registers (e.g. grid tr
 thresholds, factory calibration, inverter safety disconnect limits, internal battery cutoffs).
 
 SECURITY & SAFETY ARCHITECTURE:
-- Default blocked patterns live in `config/blocked_fields.yaml` (or `/data/blocked_fields.yaml`
-  in HA Add-on if customized directly).
+- Default blocked patterns live in `config/blocked_fields.yaml` (or `/config/blocked_fields.yaml`
+  in HA Add-on if customized directly in `/addon_configs/<slug>`).
 - Out-of-band positive (`blocked_fields`) and negative (`unblocked_fields`) overrides can be
   configured in the Home Assistant Add-on Configuration UI (synced to `/data/pwrcell.yaml`) or
   in standalone `config/pwrcell.yaml` / `config/blocked_fields.yaml`.
@@ -451,7 +451,8 @@ def get_blocked_mutation_fields(
         "unblocked_fields": unblocked_items,
         "unblock_instruction": (
             "In Home Assistant, configure 'blocked_fields' (positive block overrides) and "
-            "'unblocked_fields' (negative unblock overrides) in the Add-on Configuration tab and restart. "
+            "'unblocked_fields' (negative unblock overrides) in the Add-on Configuration tab and restart "
+            "(or place a custom blocked_fields.yaml in /addon_configs/<slug>). "
             "For standalone installs, manually edit config/blocked_fields.yaml (or set blocked_fields / "
             "unblocked_fields in config/pwrcell.yaml). No Web Explorer or REST API unblock option is permitted."
         ),

@@ -27,7 +27,7 @@ from .catalog import (
     normalize_ha_unit,
     wildcardize_group_field_key,
 )
-from .config import data_dir, is_addon_data_env
+from .config import config_dir, is_custom_config_env
 from .state import FieldSource, StateField, StateStore, UnifiedDevice
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,14 @@ def _load_ha_excluded_select_options() -> Set[str]:
 
 
 HA_EXCLUDED_SELECT_OPTIONS: Set[str] = _load_ha_excluded_select_options()
+
+
+def reload_ha_excluded_select_options() -> Set[str]:
+    """Reload excluded select options from HA config or default seed in place."""
+    updated = _load_ha_excluded_select_options()
+    HA_EXCLUDED_SELECT_OPTIONS.clear()
+    HA_EXCLUDED_SELECT_OPTIONS.update(updated)
+    return HA_EXCLUDED_SELECT_OPTIONS
 
 NON_INTERACTIVE_HA_POINT_TYPES: Set[str] = {"string", "ipaddr", "ipv6addr", "eui48", "pad"}
 
@@ -130,8 +138,8 @@ def get_default_seed_config_path() -> Path:
 
 
 def get_default_ha_config_path() -> Path:
-    if is_addon_data_env():
-        return data_dir() / DEFAULT_HA_CONFIG_FILE
+    if is_custom_config_env():
+        return config_dir() / DEFAULT_HA_CONFIG_FILE
     repo_root = Path(__file__).resolve().parent.parent
     if (repo_root / "config" / DEFAULT_HA_CONFIG_FILE).exists():
         return repo_root / "config" / DEFAULT_HA_CONFIG_FILE
@@ -139,7 +147,7 @@ def get_default_ha_config_path() -> Path:
         return repo_root / DEFAULT_HA_CONFIG_FILE
     if (repo_root / "config").exists():
         return repo_root / "config" / DEFAULT_HA_CONFIG_FILE
-    return data_dir() / DEFAULT_HA_CONFIG_FILE
+    return config_dir() / DEFAULT_HA_CONFIG_FILE
 
 
 def get_matching_selected_entries(

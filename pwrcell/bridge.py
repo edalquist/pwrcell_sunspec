@@ -22,7 +22,7 @@ from paho.mqtt.reasoncodes import ReasonCode
 
 from .catalog import get_suggested_precision
 from .client import PwrcellClient
-from .config import AppConfig, MqttConfig
+from .config import AppConfig, MqttConfig, data_dir
 from .ha import (
     collect_compound_member_keys,
     ensure_selected_field_definitions,
@@ -49,8 +49,7 @@ DEFAULT_HA_PUBLISHED_TOPICS_FILE = ".ha_published_topics.json"
 
 
 def get_default_published_topics_path() -> Path:
-    ha_cfg_path = get_default_ha_config_path()
-    return ha_cfg_path.parent / DEFAULT_HA_PUBLISHED_TOPICS_FILE
+    return data_dir() / DEFAULT_HA_PUBLISHED_TOPICS_FILE
 
 
 def format_state_value(value: Any, precision: Optional[int] = None) -> Optional[str]:

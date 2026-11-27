@@ -21,7 +21,7 @@ from .catalog import (
     is_group_wildcard_key,
     wildcardize_group_field_key,
 )
-from .config import data_dir, is_addon_data_env
+from .config import config_dir, is_custom_config_env
 
 logger = logging.getLogger(__name__)
 
@@ -43,14 +43,14 @@ def clear_custom_groupings_cache() -> None:
 
 def get_default_grouping_config_path() -> Path:
     """Locate the custom groupings YAML file."""
-    if is_addon_data_env():
-        return data_dir() / DEFAULT_GROUPING_CONFIG_FILE
+    if is_custom_config_env():
+        return config_dir() / DEFAULT_GROUPING_CONFIG_FILE
     repo_root = Path(__file__).resolve().parent.parent
     if (repo_root / "config" / DEFAULT_GROUPING_CONFIG_FILE).exists():
         return repo_root / "config" / DEFAULT_GROUPING_CONFIG_FILE
     if (repo_root / DEFAULT_GROUPING_CONFIG_FILE).exists():
         return repo_root / DEFAULT_GROUPING_CONFIG_FILE
-    return data_dir() / DEFAULT_GROUPING_CONFIG_FILE
+    return config_dir() / DEFAULT_GROUPING_CONFIG_FILE
 
 
 def load_custom_groupings(config_path: Optional[Path | str] = None) -> Dict[str, Any]:
@@ -495,8 +495,8 @@ def export_generalized_groupings(config_path: Optional[Path | str] = None) -> Di
 
     Produces a clean, portable custom_groupings.yaml format where overrides are keyed
     directly by device field key (e.g. 'inverter.inverter.W': 'inverter_output_power').
-    This can be placed in /data/custom_groupings.yaml or config/custom_groupings.yaml
-    to apply universally across any PWRcell system on fresh install.
+    This can be placed in /config/custom_groupings.yaml (/addon_configs/<slug>/custom_groupings.yaml
+    on Home Assistant) or config/custom_groupings.yaml to apply universally across any PWRcell system.
     """
     raw_data = load_custom_groupings(config_path)
     overrides = raw_data.get("field_overrides", {}) or {}
@@ -534,7 +534,7 @@ def export_generalized_groupings(config_path: Optional[Path | str] = None) -> Di
     yaml_header = (
         "# PWRcell SunSpec - Generalized Custom Field Groupings\n"
         "# Portable configuration without device serial numbers.\n"
-        "# Place in /data/custom_groupings.yaml or config/custom_groupings.yaml to set defaults for new installs.\n\n"
+        "# Place in /config/custom_groupings.yaml (HA /addon_configs/<slug>) or config/custom_groupings.yaml.\n\n"
     )
     yaml_str = yaml_header + yaml.safe_dump(result_dict, default_flow_style=False, sort_keys=True)
     return {

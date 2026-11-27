@@ -4,6 +4,16 @@ set -e
 OPTIONS_FILE="/data/options.json"
 CONFIG_FILE="/data/pwrcell.yaml"
 
+export PWRCELL_DATA_DIR="/data"
+if [ -d "/config" ] && [ -w "/config" ] && [ ! -f "/config/configuration.yaml" ]; then
+    export PWRCELL_CONFIG_DIR="/config"
+    echo "[INFO] Using public add-on configuration directory /config (/addon_configs/<slug>)."
+    python3 -m pwrcell.config migrate
+else
+    export PWRCELL_CONFIG_DIR="/data"
+    echo "[WARNING] Public add-on /config directory unavailable or points to HA Core /config; falling back to /data."
+fi
+
 echo "[INFO] Starting Generac PWRcell Home Assistant Add-on..."
 
 if [ -f "$OPTIONS_FILE" ]; then

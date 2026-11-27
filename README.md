@@ -60,7 +60,7 @@ In the add-on's **Configuration** tab in Home Assistant, set your parameters:
 | `beacon_port` | integer | `22` | SSH port on the Beacon (default: `22`). |
 | `beacon_user` | string | `root` | SSH user for Beacon connection. |
 | `ssh_key` | password | `""` | *(Recommended)* Paste your SSH private key text directly into this field. |
-| `ssh_key_file` | string | `"/share/pwrcell_ssh_key"` | Alternative path to an SSH private key file in `/share`. |
+| `ssh_key_file` | string | `"/share/pwrcell_ssh_key"` | Alternative path to an SSH private key file in `/share` (or `/addon_configs/<slug>`). |
 | `mqtt_host` | string | `"core-mosquitto"` | Hostname of your Home Assistant MQTT broker (`core-mosquitto` for Mosquitto add-on). |
 | `mqtt_port` | integer | `1883` | MQTT broker port. |
 | `mqtt_username` | string | `""` | MQTT username (optional if using anonymous/local auth). |
@@ -209,7 +209,8 @@ sudo systemctl status pwrcell.service
 4. Click **Select Recommended** to auto-select standard home energy metrics (Solar Power, Grid Power, Home Load, Battery SOC/Power, System Mode).
 5. Click **Preview HA** to view the generated MQTT Discovery payload.
 6. Click **Save HA Config**:
-   - Selections are saved persistently to `config/ha_config.yaml` (or `/data/ha_config.yaml` inside the add-on).
+   - Selections are saved persistently to `config/ha_config.yaml` (or `/config/ha_config.yaml` inside the add-on, mapped on the host to `/addon_configs/<slug>/ha_config.yaml`).
+   - Standalone installs can optionally separate user config and runtime cache directories via `PWRCELL_CONFIG_DIR` / `PWRCELL_DATA_DIR` (or `--config-dir` / `--data-dir`).
    - The bridge dynamically updates Home Assistant over MQTT in real time without needing a service restart. Newly selected entities appear immediately in **Settings** > **Devices & Services** > **MQTT**, and deselected entities are automatically removed.
 
 ---

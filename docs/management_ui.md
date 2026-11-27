@@ -67,7 +67,7 @@ Click **🔄 Re-scan** in the sidebar header to discover connected hardware:
 ![Device Discovery Re-scan Modal](images/ui_rescan_discovery.png)
 
 - **Start / End Slave ID**: Modbus address probe range (default: `1` to `100`, max `247`).
-- **Force full re-scan**: Deletes `/data/devices.yaml` and clears cached SunSpec models on disk before scanning. Use when adding/replacing hardware or clearing stale devices.
+- **Force full re-scan**: Deletes `devices.yaml` (`/config/devices.yaml` in the HA Add-on, or `config/devices.yaml` standalone) and clears cached SunSpec models on disk before scanning. Use when adding/replacing hardware or clearing stale devices.
 
 ---
 
@@ -211,7 +211,7 @@ The persistent bottom drawer controls MQTT Discovery publishing to Home Assistan
 
 ![Home Assistant MQTT Discovery Preview Modal](images/ui_mqtt_preview.png)
 
-- **Save to ha_config.yaml**: Persists staged entities to `/data/ha_config.yaml`. The MQTT bridge dynamically reloads and publishes discovery without restarting the add-on.
+- **Save to ha_config.yaml**: Persists staged entities to `/config/ha_config.yaml` (`/addon_configs/<slug>/ha_config.yaml` on Home Assistant, or `config/ha_config.yaml` standalone). The MQTT bridge dynamically reloads and publishes discovery without restarting the add-on.
 - **Reset to Defaults**: Restores the recommended baseline from `config/ha_default_config.yaml` and clears custom overrides.
 - **Clean Stale MQTT**: Sweeps the broker for orphaned `homeassistant/+/pwrcell_*` discovery topics and purges deleted entities from Home Assistant.
 - **Export Defaults / Mappings**: Generates sanitized YAML files (`ha_default_config.yaml` or `groupings.yaml`) to contribute improvements back to the upstream repository.

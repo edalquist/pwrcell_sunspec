@@ -102,8 +102,17 @@ def generate_config_from_options(
         id_file = target_key_path
     elif ssh_key_file and _safe_exists(ssh_key_file):
         id_file = ssh_key_file
-    elif _safe_exists("/share/pwrcell_ssh_key"):
-        id_file = "/share/pwrcell_ssh_key"
+    else:
+        if ssh_key_file and ssh_key_file.startswith("/config/"):
+            print(
+                f"[WARNING] Configured ssh_key_file '{ssh_key_file}' was not found. "
+                "Note: /config inside this add-on now maps to the add-on's public config folder "
+                "(/addon_configs/<slug> on the host) instead of Home Assistant Core's /config. "
+                "Move your key to /share/pwrcell_ssh_key or /addon_configs/<slug>/, or paste it into the ssh_key option.",
+                file=sys.stderr,
+            )
+        if _safe_exists("/share/pwrcell_ssh_key"):
+            id_file = "/share/pwrcell_ssh_key"
 
     client_name = opts.get("mqtt_client_name") or ""
     if not client_name or client_name == "null":

@@ -517,6 +517,7 @@ class TestHaWildcardAndExplicitRules(unittest.TestCase):
         self._patches = [
             mock.patch("pwrcell.ha.get_default_ha_config_path", return_value=self.ha_config_path),
             mock.patch("pwrcell.bridge.get_default_ha_config_path", return_value=self.ha_config_path),
+            mock.patch("pwrcell.bridge.get_default_published_topics_path", return_value=tmp / ".ha_published_topics.json"),
             mock.patch("pwrcell.grouping.get_default_grouping_config_path", return_value=self.custom_groupings_path),
             mock.patch("pwrcell.mapping._resolve_mappings_path", return_value=self.groupings_path),
         ]
@@ -724,6 +725,7 @@ class TestFrontendRollupAndWildcardSelection(unittest.TestCase):
         self._patches = [
             mock.patch("pwrcell.ha.get_default_ha_config_path", return_value=self.ha_config_path),
             mock.patch("pwrcell.bridge.get_default_ha_config_path", return_value=self.ha_config_path),
+            mock.patch("pwrcell.bridge.get_default_published_topics_path", return_value=tmp / ".ha_published_topics.json"),
             mock.patch("pwrcell.grouping.get_default_grouping_config_path", return_value=self.custom_groupings_path),
             mock.patch("pwrcell.mapping._resolve_mappings_path", return_value=self.groupings_path),
         ]
@@ -887,6 +889,7 @@ class TestSubgroupRecommenderAndCorrelator(unittest.TestCase):
         self._patches = [
             mock.patch("pwrcell.ha.get_default_ha_config_path", return_value=self.ha_config_path),
             mock.patch("pwrcell.bridge.get_default_ha_config_path", return_value=self.ha_config_path),
+            mock.patch("pwrcell.bridge.get_default_published_topics_path", return_value=tmp / ".ha_published_topics.json"),
             mock.patch("pwrcell.grouping.get_default_grouping_config_path", return_value=self.custom_groupings_path),
             mock.patch("pwrcell.mapping._resolve_mappings_path", return_value=self.groupings_path),
         ]

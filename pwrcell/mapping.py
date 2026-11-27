@@ -15,7 +15,7 @@ except ImportError:
     yaml = None
 
 from .catalog import infer_ha_classes
-from .config import data_dir, is_addon_data_env
+from .config import config_dir, data_dir, is_addon_data_env, is_custom_config_env
 
 logger = logging.getLogger(__name__)
 
@@ -471,35 +471,44 @@ def get_default_mappings() -> List[TelemetryMappingDef]:
     return []
 
 
-def _resolve_mappings_path(config_path: Optional[Path | str] = None) -> Path:
+def _resolve_mappings_path(config_path: Optional[Path | str] = None, for_write: bool = False) -> Path:
     if config_path:
         return Path(config_path)
-    if is_addon_data_env():
-        g_path = data_dir() / DEFAULT_GROUPINGS_FILE
-        if g_path.exists():
-            return g_path
-        leg_path = data_dir() / LEGACY_MAPPINGS_FILE
-        if leg_path.exists():
-            return leg_path
-        return g_path
     pkg_dir = Path(__file__).resolve().parent
     repo_root = pkg_dir.parent
+    pkg_data_path = pkg_dir / "data" / DEFAULT_GROUPINGS_FILE
 
-    # Look for groupings.yaml in config, root, data_dir
-    for base in (repo_root / "config", repo_root, data_dir()):
+    if is_custom_config_env():
+        cfg = config_dir()
+        if for_write:
+            return cfg / DEFAULT_GROUPINGS_FILE
+        g_path = cfg / DEFAULT_GROUPINGS_FILE
+        if g_path.exists():
+            return g_path
+        leg_path = cfg / LEGACY_MAPPINGS_FILE
+        if leg_path.exists():
+            return leg_path
+        return pkg_data_path
+
+    if for_write:
+        for base in (repo_root / "config", repo_root, config_dir()):
+            p = base / DEFAULT_GROUPINGS_FILE
+            if p.exists():
+                return p
+        return config_dir() / DEFAULT_GROUPINGS_FILE
+
+    # Look for groupings.yaml in config, root, config_dir
+    for base in (repo_root / "config", repo_root, config_dir()):
         p = base / DEFAULT_GROUPINGS_FILE
         if p.exists():
             return p
     # Look for legacy telemetry_mappings.yaml
-    for base in (repo_root / "config", repo_root, data_dir()):
+    for base in (repo_root / "config", repo_root, config_dir()):
         p = base / LEGACY_MAPPINGS_FILE
         if p.exists():
             return p
 
-    data_path = pkg_dir / "data" / DEFAULT_GROUPINGS_FILE
-    if data_path.exists():
-        return data_path
-    return data_path
+    return pkg_data_path
 
 
 def load_mappings_config(config_path: Optional[Path | str] = None) -> Dict[str, Any]:
@@ -580,7 +589,7 @@ def save_mappings(
     auto_group_heuristics: bool = False,
 ):
     """Save field groups list, ungrouped fields, and heuristic settings to YAML (v2.0 minimal format)."""
-    path = _resolve_mappings_path(config_path)
+    path = _resolve_mappings_path(config_path, for_write=True)
     # If path currently points to legacy file name, prefer saving as groupings.yaml
     if path.name == LEGACY_MAPPINGS_FILE and not config_path:
         path = path.parent / DEFAULT_GROUPINGS_FILE
@@ -637,8 +646,19 @@ def save_mappings(
 
 def reset_mappings_to_defaults(config_path: Optional[Path | str] = None) -> Path:
     """Reset runtime groupings.yaml back to packaged defaults and reload MappingRegistry."""
-    path = _resolve_mappings_path(config_path)
     pkg_data_path = Path(__file__).resolve().parent / "data" / DEFAULT_GROUPINGS_FILE
+    if config_path is None and is_custom_config_env():
+        cfg = config_dir()
+        for fname in (DEFAULT_GROUPINGS_FILE, LEGACY_MAPPINGS_FILE):
+            custom_p = cfg / fname
+            if custom_p.exists() and custom_p.resolve() != pkg_data_path.resolve():
+                custom_p.unlink()
+                logger.info("Removed custom groupings override %s to restore packaged defaults", custom_p)
+        if MappingRegistry._instance is not None:
+            MappingRegistry._instance.reload()
+        return pkg_data_path
+
+    path = _resolve_mappings_path(config_path, for_write=True)
     if pkg_data_path.exists() and path.resolve() != pkg_data_path.resolve():
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(".tmp")
@@ -768,7 +788,7 @@ class MappingRegistry:
                 if syn not in m.synonyms:
                     m.synonyms.append(syn)
 
-        if self.config_path is None and is_addon_data_env():
+        if self.config_path is None and is_custom_config_env():
             existing_ids = {m.id for m in self._mappings}
             missing_defaults = []
             for dm in defaults:

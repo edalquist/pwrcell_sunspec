@@ -44,6 +44,7 @@ class TestIssue17HaConfigAndPreview(unittest.TestCase):
         self._patches = [
             mock.patch("pwrcell.ha.get_default_ha_config_path", return_value=self.ha_config_path),
             mock.patch("pwrcell.bridge.get_default_ha_config_path", return_value=self.ha_config_path),
+            mock.patch("pwrcell.bridge.get_default_published_topics_path", return_value=self.topics_path),
             mock.patch("pwrcell.grouping.get_default_grouping_config_path", return_value=self.custom_groupings_path),
             mock.patch("pwrcell.mapping._resolve_mappings_path", return_value=self.groupings_path),
         ]
@@ -458,16 +459,24 @@ console.log('NODE_JS_TESTS_OK');
         self.assertIn("inverter", resolved_models)
         self.assertTrue(resolved_models["inverter"])
 
-        # Add-on first boot seeding into empty PWRCELL_DATA_DIR
-        fresh_data_dir = Path(self._tmp_dir.name) / "addon_data"
-        target_groupings = fresh_data_dir / "groupings.yaml"
-        self._patches[3].stop()
+        # Add-on first boot into empty PWRCELL_CONFIG_DIR: reads bundled defaults without writing unmodified groupings.yaml
+        fresh_cfg_dir = Path(self._tmp_dir.name) / "addon_config"
+        fresh_cfg_dir.mkdir(parents=True, exist_ok=True)
+        target_groupings = fresh_cfg_dir / "groupings.yaml"
+        self._patches[4].stop()
         try:
-            with mock.patch("pwrcell.mapping.is_addon_data_env", return_value=True), mock.patch(
-                "pwrcell.mapping.data_dir", return_value=fresh_data_dir
+            with mock.patch("pwrcell.mapping.is_custom_config_env", return_value=True), mock.patch(
+                "pwrcell.mapping.config_dir", return_value=fresh_cfg_dir
             ):
                 mappings = mapping_module.load_mappings()
+                self.assertFalse(target_groupings.exists())
+                soc_m = next(m for m in mappings if m.id == "battery_soc")
+                self.assertIn("battery.lithium_ion_string.SoC", soc_m.modbus_fields)
+
+                # Saving mappings writes to config_dir / groupings.yaml and subsequent loads read from it
+                mapping_module.save_mappings(mappings, auto_group_heuristics=False)
                 self.assertTrue(target_groupings.exists())
+                self.assertEqual(mapping_module._resolve_mappings_path(), target_groupings)
                 import yaml
                 doc = yaml.safe_load(target_groupings.read_text(encoding="utf-8"))
                 self.assertIs(doc.get("auto_group_heuristics"), False)
@@ -475,11 +484,9 @@ console.log('NODE_JS_TESTS_OK');
                 self.assertEqual(grid_doc.get("device_type"), "inverter")
                 self.assertEqual(grid_doc["fields"][0], "inverter.live.grid_power_w")
                 self.assertEqual(grid_doc["fields"][1], {"path": "inverter.inverter_status.CTPow", "transform": "negate"})
-                soc_m = next(m for m in mappings if m.id == "battery_soc")
-                self.assertIn("battery.lithium_ion_string.SoC", soc_m.modbus_fields)
 
                 # Verify save_mappings round-trip preserves device_type, auto_group_heuristics, and member_transforms
-                resaved_path = fresh_data_dir / "resaved_groupings.yaml"
+                resaved_path = fresh_cfg_dir / "resaved_groupings.yaml"
                 mapping_module.save_mappings(mappings, resaved_path, auto_group_heuristics=False)
                 resaved_doc = yaml.safe_load(resaved_path.read_text(encoding="utf-8"))
                 self.assertIs(resaved_doc.get("auto_group_heuristics"), False)
@@ -488,7 +495,7 @@ console.log('NODE_JS_TESTS_OK');
                 self.assertEqual(resaved_grid["fields"][0], "inverter.live.grid_power_w")
                 self.assertEqual(resaved_grid["fields"][1], {"path": "inverter.inverter_status.CTPow", "transform": "negate"})
         finally:
-            self._patches[3].start()
+            self._patches[4].start()
 
     def test_debug_logging_diagnostics(self):
         """DEBUG logs surface save diffs, repaired/collapsed keys, pre-populated definitions, and unmatched preview keys."""
