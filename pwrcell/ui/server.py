@@ -43,29 +43,41 @@ def create_app(client: PwrcellClient) -> Flask:
     app.sse_queues = sse_queues  # type: ignore[attr-defined]
     app.sse_lock = sse_lock      # type: ignore[attr-defined]
 
-    def on_field_change(field: StateField):
-        event_data = {
-            "type": "field_update",
-            "field": field.to_dict(),
-        }
-        with sse_lock:
-            for q in list(sse_queues):
+    def _broadcast_sse(queues_snapshot: list[queue.Queue], event_data: dict):
+        for q in queues_snapshot:
+            try:
+                q.put_nowait(event_data)
+            except queue.Full:
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    pass
                 try:
                     q.put_nowait(event_data)
                 except queue.Full:
                     pass
 
+    def on_field_change(field: StateField):
+        with sse_lock:
+            if not sse_queues:
+                return
+            queues_snapshot = list(sse_queues)
+        event_data = {
+            "type": "field_update",
+            "field": field.to_dict(),
+        }
+        _broadcast_sse(queues_snapshot, event_data)
+
     def on_compound_change(c_view):
+        with sse_lock:
+            if not sse_queues:
+                return
+            queues_snapshot = list(sse_queues)
         event_data = {
             "type": "compound_update",
             "field": c_view.to_dict(),
         }
-        with sse_lock:
-            for q in list(sse_queues):
-                try:
-                    q.put_nowait(event_data)
-                except queue.Full:
-                    pass
+        _broadcast_sse(queues_snapshot, event_data)
 
     # Subscribe to state store changes and compound view updates
     client.state.subscribe(on_field_change)
@@ -98,7 +110,7 @@ def create_app(client: PwrcellClient) -> Flask:
     @app.route("/api/stream")
     def sse_stream():
         """Server-Sent Events endpoint streaming live state updates to the browser."""
-        client_queue: queue.Queue = queue.Queue(maxsize=100)
+        client_queue: queue.Queue = queue.Queue(maxsize=256)
         with sse_lock:
             sse_queues.append(client_queue)
 

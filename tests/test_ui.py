@@ -352,6 +352,44 @@ class TestWebExplorerApi(unittest.TestCase):
         # The finally block in event_generator must have executed and cleaned up the queue
         self.assertEqual(len(self.app.sse_queues), 0)
 
+    def test_sse_queue_evicts_oldest_when_full(self):
+        import queue
+        from pwrcell.state import FieldSource
+
+        bounded_q: queue.Queue = queue.Queue(maxsize=2)
+        bounded_q.put_nowait({"type": "stale_1"})
+        bounded_q.put_nowait({"type": "stale_2"})
+
+        with self.app.sse_lock:
+            self.app.sse_queues.append(bounded_q)
+        try:
+            self.client.state.set_field(
+                device_sn="000100070008",
+                name="_test_sse_eviction_metric",
+                label="Test SSE Eviction",
+                description="Temporary test metric",
+                value=999,
+                raw_value=999,
+                units="W",
+                source=FieldSource.MQTT_PUSH,
+                sub_group="live",
+            )
+            items = []
+            while not bounded_q.empty():
+                items.append(bounded_q.get_nowait())
+            self.assertEqual(len(items), 2)
+            self.assertEqual(items[0], {"type": "stale_2"})
+            self.assertEqual(items[1]["type"], "field_update")
+            self.assertEqual(items[1]["field"]["value"], 999)
+        finally:
+            with self.app.sse_lock:
+                if bounded_q in self.app.sse_queues:
+                    self.app.sse_queues.remove(bounded_q)
+            inv = self.client.state.get_device("000100070008")
+            if inv:
+                with self.client.state._lock:
+                    inv.fields.pop("inverter.live._test_sse_eviction_metric", None)
+
     def test_ha_discovery_options_for_enum_and_select(self):
         # 1. Preview for enum select field (rebus_beacon.REbus_dir.SysMd)
         self.test_client.post(

@@ -145,6 +145,12 @@ class TestWebExplorerBrowserUI(unittest.TestCase):
 
         def _cleanup():
             try:
+                page.evaluate(
+                    "() => { if (typeof state !== 'undefined' && state.eventSource) { state.eventSource.close(); state.eventSource = null; state.sseConnected = false; } }"
+                )
+            except Exception:
+                pass
+            try:
                 page.close()
             finally:
                 context.close()
@@ -448,24 +454,59 @@ class TestWebExplorerBrowserUI(unittest.TestCase):
         self._goto_and_wait_ready(page)
         self._select_device_by_sn(page, INVERTER_SN)
         page.wait_for_function(
+            "() => Boolean(typeof state !== 'undefined' && state.sseConnected && state.eventSource && state.eventSource.readyState === EventSource.OPEN)"
+        )
+        page.wait_for_function(
             "() => document.getElementById('connStatusText')?.textContent?.trim() === 'Live Feed'"
         )
 
-        # Push a deterministic live field change through StateStore -> SSE -> UI
-        self.client.state.set_field(
-            device_sn=INVERTER_SN,
-            name="solar_power_w",
-            label="Solar Power",
-            description="Live solar generation",
-            value=4321,
-            raw_value=4321,
-            units="W",
-            source=FieldSource.MQTT_PUSH,
-            sub_group="live",
+        # Pause background mock simulator while pushing a deterministic SSE update
+        sim_was_running = bool(
+            self.client._sim_thread and self.client._sim_thread.is_alive()
         )
-        page.wait_for_function(
-            "() => document.getElementById('topSolar')?.textContent?.includes('4321 W')"
-        )
+        if sim_was_running:
+            self.client._sim_stop.set()
+            self.client._sim_thread.join(timeout=3.0)
+        try:
+            inv = self.client.state.get_device(INVERTER_SN)
+            existing = inv.fields.get("inverter.live.solar_power_w") if inv else None
+            if existing is not None and existing.value == 4321:
+                self.client.state.set_field(
+                    device_sn=INVERTER_SN,
+                    name="solar_power_w",
+                    label="Solar Power",
+                    description="Live solar generation",
+                    value=4320,
+                    raw_value=4320,
+                    units="W",
+                    source=FieldSource.MQTT_PUSH,
+                    sub_group="live",
+                )
+
+            # Push a deterministic live field change through StateStore -> SSE -> UI
+            self.client.state.set_field(
+                device_sn=INVERTER_SN,
+                name="solar_power_w",
+                label="Solar Power",
+                description="Live solar generation",
+                value=4321,
+                raw_value=4321,
+                units="W",
+                source=FieldSource.MQTT_PUSH,
+                sub_group="live",
+            )
+            page.wait_for_function(
+                "() => document.getElementById('topSolar')?.textContent?.includes('4321 W')"
+            )
+        finally:
+            if sim_was_running and self.client._running:
+                self.client._sim_stop.clear()
+                self.client._sim_thread = threading.Thread(
+                    target=self.client._mock_sim_loop,
+                    name="PwrCellMockSim",
+                    daemon=True,
+                )
+                self.client._sim_thread.start()
         self._assert_clean_errors(page_errors, console_errors)
 
     # ------------------------------------------------------------------

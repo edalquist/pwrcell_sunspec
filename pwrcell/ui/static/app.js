@@ -30,6 +30,7 @@ const state = {
   searchQuery: '',
   isMock: false,
   eventSource: null,
+  sseConnected: false,
   sortCriteria: [], // [{ column: 'model', dir: 'asc' }, ...]
   multiSortMode: false,
   bannerCollapsed: false,
@@ -4337,13 +4338,16 @@ function connectSSE() {
     state.eventSource.close();
   }
 
+  state.sseConnected = false;
   const sse = new EventSource(apiPath('api/stream'));
   state.eventSource = sse;
 
   sse.onmessage = (event) => {
     try {
       const msg = JSON.parse(event.data);
-      if (msg.type === 'field_update') {
+      if (msg.type === 'connected') {
+        state.sseConnected = true;
+      } else if (msg.type === 'field_update') {
         handleLiveFieldUpdate(msg.field);
       } else if (msg.type === 'compound_update') {
         handleLiveCompoundUpdate(msg.field);
@@ -4354,6 +4358,7 @@ function connectSSE() {
   };
 
   sse.onerror = () => {
+    state.sseConnected = false;
     document.getElementById('connStatusText').textContent = 'Reconnecting...';
     document.getElementById('liveIndicator').classList.remove('live');
     if (el.mobileLiveDot) {
@@ -4373,6 +4378,14 @@ function connectSSE() {
     }
   };
 }
+
+window.addEventListener('pagehide', () => {
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
+  state.sseConnected = false;
+});
 
 // Handle Live Compound Field Update from SSE
 function handleLiveCompoundUpdate(cField) {
