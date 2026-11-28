@@ -118,6 +118,34 @@ jobs:
           print(f"OK: All version files and CHANGELOG.md are in sync at {config_version}")
           EOF
 
+  proto-check:
+    name: Protobuf Descriptor Sync
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify energy_record_set.desc matches energy_record_set.proto
+        run: python util/proto_descriptor.py --check
+
   docker-build:
     name: Docker Build Smoke Test
     runs-on: ubuntu-latest
