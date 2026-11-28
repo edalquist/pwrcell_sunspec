@@ -44,19 +44,6 @@
       "semanticCommitScope": "deps"
     },
     {
-      "description": "Keep protobuf on major version 7 until pwrcell/protos/energy_record_set_pb2.py is regenerated",
-      "matchDatasources": [
-        "pypi"
-      ],
-      "matchPackageNames": [
-        "protobuf"
-      ],
-      "matchUpdateTypes": [
-        "major"
-      ],
-      "enabled": false
-    },
-    {
       "description": "Automerge non-major Dockerfile base image updates when CI and Docker build pass",
       "matchManagers": [
         "dockerfile"
